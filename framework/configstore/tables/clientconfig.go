@@ -43,6 +43,7 @@ type TableClientConfig struct {
 	// Compat plugin feature flags
 	CompatConvertTextToChat      bool `gorm:"column:compat_convert_text_to_chat;default:false" json:"-"`
 	CompatConvertChatToResponses bool `gorm:"column:compat_convert_chat_to_responses;default:false" json:"-"`
+	CompatConvertResponsesToChat bool `gorm:"column:compat_convert_responses_to_chat;default:false" json:"-"`
 	CompatShouldDropParams       bool `gorm:"column:compat_should_drop_params;default:false" json:"-"`
 	CompatShouldConvertParams    bool `gorm:"column:compat_should_convert_params;default:false" json:"-"`
 
