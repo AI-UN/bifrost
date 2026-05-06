@@ -9,6 +9,9 @@ func applyParameterConversion(req *schemas.BifrostRequest) {
 	if req == nil {
 		return
 	}
+	if req.ChatRequest != nil {
+		convertDeveloperMessages(req.ChatRequest)
+	}
 	if req.ResponsesRequest != nil {
 		flattenNamespaceTools(req.ResponsesRequest)
 		disableThinkingWithToolChoiceForResponses(req.ResponsesRequest)
@@ -50,6 +53,17 @@ func disableThinking(extraParams map[string]any) map[string]any {
 	}
 	extraParams["thinking"] = map[string]any{"type": "disabled"}
 	return extraParams
+}
+
+func convertDeveloperMessages(req *schemas.BifrostChatRequest) {
+	if req == nil {
+		return
+	}
+	for i := range req.Input {
+		if req.Input[i].Role == schemas.ChatMessageRoleDeveloper {
+			req.Input[i].Role = schemas.ChatMessageRoleSystem
+		}
+	}
 }
 
 // flattenNamespaceTools expands namespace scoped tools into a flat list of tools.
