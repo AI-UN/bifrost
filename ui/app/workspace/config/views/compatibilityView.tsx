@@ -26,6 +26,7 @@ export default function CompatibilityView() {
 		return (
 			localCompatConfig.convert_text_to_chat !== baseline.convert_text_to_chat ||
 			localCompatConfig.convert_chat_to_responses !== baseline.convert_chat_to_responses ||
+			localCompatConfig.convert_responses_to_chat !== baseline.convert_responses_to_chat ||
 			localCompatConfig.should_drop_params !== baseline.should_drop_params ||
 			localCompatConfig.should_convert_params !== baseline.should_convert_params
 		);
@@ -106,6 +107,25 @@ export default function CompatibilityView() {
 						size="md"
 						checked={localCompatConfig.convert_chat_to_responses}
 						onCheckedChange={(checked) => handleCompatChange("convert_chat_to_responses", checked)}
+						disabled={!hasSettingsUpdateAccess}
+					/>
+				</div>
+
+				<div className="flex items-center justify-between space-x-2">
+					<div className="space-y-0.5">
+						<label htmlFor="compat-convert-responses-to-chat" className="text-sm font-medium">
+							Convert Responses to Chat
+						</label>
+						<p className="text-muted-foreground text-sm">
+							Convert Responses API requests to chat completions for models that only support chat.
+						</p>
+					</div>
+					<Switch
+						id="compat-convert-responses-to-chat"
+						data-testid="compat-convert-responses-to-chat"
+						size="md"
+						checked={localCompatConfig.convert_responses_to_chat}
+						onCheckedChange={(checked) => handleCompatChange("convert_responses_to_chat", checked)}
 						disabled={!hasSettingsUpdateAccess}
 					/>
 				</div>

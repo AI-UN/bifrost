@@ -237,6 +237,7 @@ func (s *RDBConfigStore) UpdateClientConfig(ctx context.Context, config *ClientC
 		MaxRequestBodySizeMB:                  config.MaxRequestBodySizeMB,
 		CompatConvertTextToChat:               config.Compat.ConvertTextToChat,
 		CompatConvertChatToResponses:          config.Compat.ConvertChatToResponses,
+		CompatConvertResponsesToChat:          config.Compat.ConvertResponsesToChat,
 		CompatShouldDropParams:                config.Compat.ShouldDropParams,
 		CompatShouldConvertParams:             config.Compat.ShouldConvertParams,
 		MCPAgentDepth:                         config.MCPAgentDepth,
@@ -449,6 +450,7 @@ func (s *RDBConfigStore) GetClientConfig(ctx context.Context) (*ClientConfig, er
 		Compat: CompatConfig{
 			ConvertTextToChat:      dbConfig.CompatConvertTextToChat,
 			ConvertChatToResponses: dbConfig.CompatConvertChatToResponses,
+			ConvertResponsesToChat: dbConfig.CompatConvertResponsesToChat,
 			ShouldDropParams:       dbConfig.CompatShouldDropParams,
 			ShouldConvertParams:    dbConfig.CompatShouldConvertParams,
 		},

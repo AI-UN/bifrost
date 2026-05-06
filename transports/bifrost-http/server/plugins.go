@@ -118,7 +118,13 @@ func loadBuiltinPlugin(ctx context.Context, name string, pluginConfig any, bifro
 		if err != nil {
 			return nil, fmt.Errorf("failed to marshal compat plugin config: %w", err)
 		}
-		return compat.Init(*compatConfig, logger, bifrostConfig.ModelCatalog)
+		return compat.Init(*compatConfig, logger, bifrostConfig.ModelCatalog, func(provider schemas.ModelProvider) *schemas.CustomProviderConfig {
+			cfg, cfgErr := bifrostConfig.GetProviderConfigRaw(provider)
+			if cfgErr != nil || cfg == nil {
+				return nil
+			}
+			return cfg.CustomProviderConfig
+		})
 
 	default:
 		return nil, fmt.Errorf("unknown built-in plugin: %s", name)
@@ -237,6 +243,7 @@ func (s *BifrostHTTPServer) loadBuiltinPlugins(ctx context.Context) error {
 	compatCfg := &compat.Config{
 		ConvertTextToChat:      cc.ConvertTextToChat,
 		ConvertChatToResponses: cc.ConvertChatToResponses,
+		ConvertResponsesToChat: cc.ConvertResponsesToChat,
 		ShouldDropParams:       cc.ShouldDropParams,
 		ShouldConvertParams:    cc.ShouldConvertParams,
 	}
