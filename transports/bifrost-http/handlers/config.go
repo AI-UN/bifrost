@@ -600,12 +600,13 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 	newCompat := payload.ClientConfig.Compat
 	oldCompat := currentConfig.Compat
 	if newCompat != oldCompat {
-		newEnabled := newCompat.ConvertTextToChat || newCompat.ConvertChatToResponses || newCompat.ShouldDropParams || newCompat.ShouldConvertParams ||
+		newEnabled := newCompat.ConvertTextToChat || newCompat.ConvertChatToResponses || newCompat.ConvertResponsesToChat || newCompat.ShouldDropParams || newCompat.ShouldConvertParams ||
 			newCompat.AzureDeepseek
 		if newEnabled {
 			compatCfg := &compat.Config{
 				ConvertTextToChat:      newCompat.ConvertTextToChat,
 				ConvertChatToResponses: newCompat.ConvertChatToResponses,
+				ConvertResponsesToChat: newCompat.ConvertResponsesToChat,
 				ShouldDropParams:       newCompat.ShouldDropParams,
 				ShouldConvertParams:    newCompat.ShouldConvertParams,
 				AzureDeepseek:          newCompat.AzureDeepseek,
