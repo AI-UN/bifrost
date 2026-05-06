@@ -1113,6 +1113,7 @@ func HandleOpenAIChatCompletionStreaming(
 		var modelName string
 		var created int
 		forwardedTerminalFinishReason := false
+		var pendingResponsesTerminal *schemas.BifrostResponsesStreamResponse
 
 		for {
 			// If context was cancelled/timed out, let defer handle it
@@ -1206,14 +1207,12 @@ func HandleOpenAIChatCompletionStreaming(
 					}
 
 					if response.Type == schemas.ResponsesStreamResponseTypeCompleted || response.Type == schemas.ResponsesStreamResponseTypeIncomplete {
-						// Set raw request if enabled
-						if sendBackRawRequest {
-							providerUtils.ParseAndSetRawRequest(&response.ExtraFields, jsonBody)
-						}
-						response.ExtraFields.Latency = time.Since(startTime).Milliseconds()
-						ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
-						providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, response, nil, nil, nil), responseChan, postHookSpanFinalizer)
-						return
+						// Some OpenAI-compatible providers send a final usage-only chunk
+						// after the terminal finish_reason chunk. Cache the terminal event
+						// and continue reading until [DONE]/EOF so usage can be merged into
+						// response.completed before the final post-hook/logging pass.
+						pendingResponsesTerminal = response
+						continue
 					}
 
 					response.ExtraFields.Latency = time.Since(lastChunkTime).Milliseconds()
@@ -1315,7 +1314,19 @@ func HandleOpenAIChatCompletionStreaming(
 			}
 		}
 
-		if !isResponsesToChatCompletionsFallback {
+		if isResponsesToChatCompletionsFallback {
+			if pendingResponsesTerminal != nil {
+				if pendingResponsesTerminal.Response != nil && responsesStreamState.PendingUsage != nil {
+					pendingResponsesTerminal.Response.Usage = responsesStreamState.PendingUsage.ToResponsesResponseUsage()
+				}
+				if sendBackRawRequest {
+					providerUtils.ParseAndSetRawRequest(&pendingResponsesTerminal.ExtraFields, jsonBody)
+				}
+				pendingResponsesTerminal.ExtraFields.Latency = time.Since(startTime).Milliseconds()
+				ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+				providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, pendingResponsesTerminal, nil, nil, nil), responseChan, postHookSpanFinalizer)
+			}
+		} else {
 			finalFinishReason := finishReason
 			if forwardedTerminalFinishReason {
 				finalFinishReason = nil
