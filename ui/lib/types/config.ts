@@ -897,6 +897,7 @@ export interface BifrostConfig {
 export interface CompatConfig {
 	convert_text_to_chat: boolean;
 	convert_chat_to_responses: boolean;
+	convert_responses_to_chat: boolean;
 	should_drop_params: boolean;
 	should_convert_params: boolean;
 	azure_deepseek: boolean;
