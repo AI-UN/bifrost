@@ -473,6 +473,7 @@ const (
 	BifrostContextKeyMCPToolAppOnly                      BifrostContextKey = "bifrost-mcp-tool-app-only"                  // bool (set by bifrost - DO NOT SET THIS MANUALLY) - the MCP tool being executed is visible only to MCP Apps
 	BifrostContextKeyCompatConvertTextToChat             BifrostContextKey = "bifrost-compat-convert-text-to-chat"        // bool (per-request override from x-bf-compat header)
 	BifrostContextKeyCompatConvertChatToResponses        BifrostContextKey = "bifrost-compat-convert-chat-to-responses"   // bool (per-request override from x-bf-compat header)
+	BifrostContextKeyCompatConvertResponsesToChat        BifrostContextKey = "bifrost-compat-convert-responses-to-chat"   // bool (per-request override from x-bf-compat header)
 	BifrostContextKeyCompatShouldDropParams              BifrostContextKey = "bifrost-compat-should-drop-params"          // bool (per-request override from x-bf-compat header)
 	BifrostContextKeyCompatShouldConvertParams           BifrostContextKey = "bifrost-compat-should-convert-params"       // bool (per-request override from x-bf-compat header)
 	BifrostContextKeyCompatAzureDeepseek                 BifrostContextKey = "bifrost-compat-azure-deepseek"              // bool (per-request override from x-bf-compat header)
