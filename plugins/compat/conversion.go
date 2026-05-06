@@ -13,12 +13,26 @@ func applyParameterConversion(req *schemas.BifrostRequest) []string {
 		return nil
 	}
 	var applied []string
+	if req.ChatRequest != nil {
+		convertDeveloperMessages(req.ChatRequest)
+	}
 	if req.ResponsesRequest != nil {
 		if n := flattenNamespaceTools(req.ResponsesRequest); n > 0 {
 			applied = append(applied, fmt.Sprintf("flattened %d namespace tool(s)", n))
 		}
 	}
 	return applied
+}
+
+func convertDeveloperMessages(req *schemas.BifrostChatRequest) {
+	if req == nil {
+		return
+	}
+	for i := range req.Input {
+		if req.Input[i].Role == schemas.ChatMessageRoleDeveloper {
+			req.Input[i].Role = schemas.ChatMessageRoleSystem
+		}
+	}
 }
 
 // flattenNamespaceTools expands namespace scoped tools into a flat list of tools.
