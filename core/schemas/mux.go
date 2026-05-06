@@ -394,8 +394,10 @@ func (cm *ChatMessage) ToResponsesMessages() []ResponsesMessage {
 	}
 
 	var messages []ResponsesMessage
+	var reasoningMessages []ResponsesMessage
+	hasReasoningMessage := false
 
-	// Emit reasoning first so chat->responses->anthropic preserves reasoning content
+	// Buffer reasoning separately so chat->responses->anthropic preserves reasoning content
 	// (Anthropic signatures, OpenAI encrypted/summary entries) for clients to echo back; see symmetric ToChatMessages buffering.
 	if cm.Role == ChatMessageRoleAssistant && cm.ChatAssistantMessage != nil {
 		am := cm.ChatAssistantMessage
@@ -443,14 +445,15 @@ func (cm *ChatMessage) ToResponsesMessages() []ResponsesMessage {
 						EncryptedContent: encryptedContent,
 					}
 				}
-				messages = append(messages, rm)
+				reasoningMessages = append(reasoningMessages, rm)
+				hasReasoningMessage = true
 			}
 		} else if am.Reasoning != nil && *am.Reasoning != "" {
 			// Fallback for providers that surface plain reasoning text only (e.g. DeepSeek).
 			reasoningType := ResponsesMessageTypeReasoning
 			reasoningRole := ResponsesInputMessageRoleAssistant
 			reasoningText := *am.Reasoning
-			messages = append(messages, ResponsesMessage{
+			reasoningMessages = append(reasoningMessages, ResponsesMessage{
 				ID:   Ptr("rs_" + GetRandomString(50)),
 				Type: &reasoningType,
 				Role: &reasoningRole,
@@ -462,12 +465,21 @@ func (cm *ChatMessage) ToResponsesMessages() []ResponsesMessage {
 						},
 					},
 				},
+				ResponsesReasoning: &ResponsesReasoning{
+					Summary: []ResponsesReasoningSummary{
+						{Type: ResponsesReasoningContentBlockTypeSummaryText, Text: reasoningText},
+					},
+				},
 			})
+			hasReasoningMessage = true
 		}
 	}
 
 	// Check if this is an assistant message with multiple tool calls that need expansion
 	if cm.ChatAssistantMessage != nil && cm.ChatAssistantMessage.ToolCalls != nil && len(cm.ChatAssistantMessage.ToolCalls) > 0 {
+		if hasReasoningMessage {
+			messages = append(messages, reasoningMessages...)
+		}
 		// Expand multiple tool calls into separate function_call items
 		for _, tc := range cm.ChatAssistantMessage.ToolCalls {
 			messageType := ResponsesMessageTypeFunctionCall
@@ -699,7 +711,12 @@ func (cm *ChatMessage) ToResponsesMessages() []ResponsesMessage {
 		}
 	}
 
-	messages = append(messages, rm)
+	if !(messageType == ResponsesMessageTypeMessage && rm.Content == nil && rm.ResponsesToolMessage == nil && hasReasoningMessage) {
+		messages = append(messages, rm)
+	}
+	if hasReasoningMessage {
+		messages = append(reasoningMessages, messages...)
+	}
 	return messages
 }
 
@@ -753,6 +770,12 @@ func ToChatMessages(rms []ResponsesMessage) []ChatMessage {
 			if rm.ResponsesReasoning != nil {
 				for _, summary := range rm.ResponsesReasoning.Summary {
 					summaryText := summary.Text
+					if summaryText != "" {
+						if pendingReasoning.Len() > 0 {
+							pendingReasoning.WriteByte('\n')
+						}
+						pendingReasoning.WriteString(summaryText)
+					}
 					pendingReasoningDetails = append(pendingReasoningDetails, ChatReasoningDetails{
 						Index:   len(pendingReasoningDetails),
 						Type:    BifrostReasoningDetailsTypeSummary,
@@ -889,8 +912,19 @@ func ToChatMessages(rms []ResponsesMessage) []ChatMessage {
 					}
 				}
 			} else if rm.Content.ContentBlocks != nil {
-				chatBlocks := make([]ChatContentBlock, len(rm.Content.ContentBlocks))
-				for i, block := range rm.Content.ContentBlocks {
+				chatBlocks := make([]ChatContentBlock, 0, len(rm.Content.ContentBlocks))
+				var inlineReasoningDetails []ChatReasoningDetails
+				for _, block := range rm.Content.ContentBlocks {
+					if block.Type == ResponsesOutputMessageContentTypeReasoning {
+						if block.Text != nil && *block.Text != "" {
+							if pendingReasoning.Len() > 0 {
+								pendingReasoning.WriteByte('\n')
+							}
+							pendingReasoning.WriteString(*block.Text)
+						}
+						inlineReasoningDetails = append(inlineReasoningDetails, reasoningDetailsFromResponsesContentBlock(block)...)
+						continue
+					}
 					// Map ResponsesMessageContentBlockType to ChatContentBlockType
 					var chatBlockType ChatContentBlockType
 					switch block.Type {
@@ -907,39 +941,43 @@ func ToChatMessages(rms []ResponsesMessage) []ChatMessage {
 						chatBlockType = ChatContentBlockType(block.Type)
 					}
 
-					chatBlocks[i] = ChatContentBlock{
+					chatBlock := ChatContentBlock{
 						Type: chatBlockType,
 						Text: block.Text,
 					}
 
 					// Convert specific block types
 					if block.ResponsesInputMessageContentBlockImage != nil {
-						chatBlocks[i].ImageURLStruct = &ChatInputImage{
+						chatBlock.ImageURLStruct = &ChatInputImage{
 							Detail: block.ResponsesInputMessageContentBlockImage.Detail,
 						}
 						if block.ResponsesInputMessageContentBlockImage.ImageURL != nil {
-							chatBlocks[i].ImageURLStruct.URL = *block.ResponsesInputMessageContentBlockImage.ImageURL
+							chatBlock.ImageURLStruct.URL = *block.ResponsesInputMessageContentBlockImage.ImageURL
 						}
 					}
 					if block.ResponsesInputMessageContentBlockFile != nil {
-						chatBlocks[i].File = &ChatInputFile{
+						chatBlock.File = &ChatInputFile{
 							FileData: block.ResponsesInputMessageContentBlockFile.FileData,
 							Filename: block.ResponsesInputMessageContentBlockFile.Filename,
 							FileID:   block.FileID,
 						}
 					}
 					if block.Audio != nil {
-						chatBlocks[i].InputAudio = &ChatInputAudio{
+						chatBlock.InputAudio = &ChatInputAudio{
 							Data: block.Audio.Data,
 						}
 						if block.Audio.Format != "" {
-							chatBlocks[i].InputAudio.Format = &block.Audio.Format
+							chatBlock.InputAudio.Format = &block.Audio.Format
 						}
 					}
+					chatBlocks = append(chatBlocks, chatBlock)
 				}
-				cm.Content = &ChatMessageContent{
-					ContentBlocks: chatBlocks,
+				if len(chatBlocks) > 0 {
+					cm.Content = &ChatMessageContent{
+						ContentBlocks: chatBlocks,
+					}
 				}
+				pendingReasoningDetails = append(pendingReasoningDetails, inlineReasoningDetails...)
 			}
 		}
 
@@ -962,6 +1000,15 @@ func ToChatMessages(rms []ResponsesMessage) []ChatMessage {
 		assistant := &ChatAssistantMessage{
 			ToolCalls: toolCallsCopy,
 		}
+		attachPendingReasoning(assistant)
+		chatMessages = append(chatMessages, ChatMessage{
+			Role:                 ChatMessageRoleAssistant,
+			ChatAssistantMessage: assistant,
+		})
+	}
+
+	if pendingReasoning.Len() > 0 || len(pendingReasoningDetails) > 0 {
+		assistant := &ChatAssistantMessage{}
 		attachPendingReasoning(assistant)
 		chatMessages = append(chatMessages, ChatMessage{
 			Role:                 ChatMessageRoleAssistant,
@@ -1406,7 +1453,15 @@ func (cr *BifrostChatResponse) ToBifrostResponsesResponse() *BifrostResponsesRes
 		if choice.ChatNonStreamResponseChoice != nil && choice.ChatNonStreamResponseChoice.Message != nil {
 			// Convert ChatMessage to ResponsesMessages
 			responsesMessages := choice.ChatNonStreamResponseChoice.Message.ToResponsesMessages()
-			outputMessages = append(outputMessages, responsesMessages...)
+			var reasoningMessages []ResponsesMessage
+			for _, message := range responsesMessages {
+				if message.Type != nil && *message.Type == ResponsesMessageTypeReasoning {
+					reasoningMessages = append(reasoningMessages, message)
+					continue
+				}
+				outputMessages = append(outputMessages, message)
+			}
+			outputMessages = append(outputMessages, reasoningMessages...)
 		}
 	}
 
@@ -1513,6 +1568,7 @@ type ChatToResponsesStreamState struct {
 	ItemIDs               map[string]string // Maps tool call ID to item ID
 	ToolCallNames         map[string]string // Maps tool call ID to tool name
 	ToolCallIndexToID     map[uint16]string // Maps tool call index to tool call ID (for lookups when ID is missing)
+	PendingUsage          *BifrostLLMUsage  // Aggregated usage from chat usage-only chunks prior to terminal event
 	MessageID             *string           // Message ID from first chunk
 	Model                 *string           // Model name
 	CreatedAt             int               // Timestamp for created_at consistency
@@ -1522,6 +1578,10 @@ type ChatToResponsesStreamState struct {
 	TextItemClosed        bool              // Whether text item has been closed
 	TextItemHasContent    bool              // Whether text item has received any content deltas
 	TextBuffer            strings.Builder   // Accumulated text deltas for output_text.done/content_part.done
+	ReasoningItemAdded    bool              // Whether reasoning item has been added
+	ReasoningItemClosed   bool              // Whether reasoning item has been closed
+	ReasoningBuffer       strings.Builder   // Accumulated reasoning deltas for reasoning_summary_text.done
+	ReasoningOutputIndex  int               // Output index used for the reasoning item
 	CurrentOutputIndex    int               // Current output index counter
 	ToolCallOutputIndices map[string]int    // Maps tool call ID to output index
 	SequenceNumber        int               // Monotonic sequence number across all chunks
@@ -1545,6 +1605,10 @@ var chatToResponsesStreamStatePool = sync.Pool{
 			TextItemClosed:        false,
 			TextItemHasContent:    false,
 			TextBuffer:            strings.Builder{},
+			ReasoningItemAdded:    false,
+			ReasoningItemClosed:   false,
+			ReasoningBuffer:       strings.Builder{},
+			ReasoningOutputIndex:  -1,
 		}
 	},
 }
@@ -1581,6 +1645,7 @@ func AcquireChatToResponsesStreamState() *ChatToResponsesStreamState {
 	}
 	// Reset other fields
 	state.CurrentOutputIndex = 0
+	state.PendingUsage = nil
 	state.MessageID = nil
 	state.Model = nil
 	state.CreatedAt = int(time.Now().Unix())
@@ -1590,6 +1655,10 @@ func AcquireChatToResponsesStreamState() *ChatToResponsesStreamState {
 	state.TextItemClosed = false
 	state.TextItemHasContent = false
 	state.TextBuffer = strings.Builder{}
+	state.ReasoningItemAdded = false
+	state.ReasoningItemClosed = false
+	state.ReasoningBuffer = strings.Builder{}
+	state.ReasoningOutputIndex = -1
 	state.SequenceNumber = 0
 	return state
 }
@@ -1615,6 +1684,7 @@ func ReleaseChatToResponsesStreamState(state *ChatToResponsesStreamState) {
 		}
 		// Reset other fields
 		state.CurrentOutputIndex = 0
+		state.PendingUsage = nil
 		state.MessageID = nil
 		state.Model = nil
 		state.CreatedAt = int(time.Now().Unix())
@@ -1624,8 +1694,47 @@ func ReleaseChatToResponsesStreamState(state *ChatToResponsesStreamState) {
 		state.TextItemClosed = false
 		state.TextItemHasContent = false
 		state.TextBuffer = strings.Builder{}
+		state.ReasoningItemAdded = false
+		state.ReasoningItemClosed = false
+		state.ReasoningBuffer = strings.Builder{}
+		state.ReasoningOutputIndex = -1
 		state.SequenceNumber = 0
 		chatToResponsesStreamStatePool.Put(state)
+	}
+}
+
+func mergeUsageIntoChatToResponsesStreamState(state *ChatToResponsesStreamState, usage *BifrostLLMUsage) {
+	if state == nil || usage == nil {
+		return
+	}
+
+	if state.PendingUsage == nil {
+		copied := *usage
+		state.PendingUsage = &copied
+		return
+	}
+
+	if usage.PromptTokens > state.PendingUsage.PromptTokens {
+		state.PendingUsage.PromptTokens = usage.PromptTokens
+	}
+	if usage.CompletionTokens > state.PendingUsage.CompletionTokens {
+		state.PendingUsage.CompletionTokens = usage.CompletionTokens
+	}
+	if usage.TotalTokens > state.PendingUsage.TotalTokens {
+		state.PendingUsage.TotalTokens = usage.TotalTokens
+	}
+	calculatedTotal := state.PendingUsage.PromptTokens + state.PendingUsage.CompletionTokens
+	if calculatedTotal > state.PendingUsage.TotalTokens {
+		state.PendingUsage.TotalTokens = calculatedTotal
+	}
+	if usage.PromptTokensDetails != nil {
+		state.PendingUsage.PromptTokensDetails = usage.PromptTokensDetails
+	}
+	if usage.CompletionTokensDetails != nil {
+		state.PendingUsage.CompletionTokensDetails = usage.CompletionTokensDetails
+	}
+	if usage.Cost != nil {
+		state.PendingUsage.Cost = usage.Cost
 	}
 }
 
@@ -1635,6 +1744,10 @@ func ReleaseChatToResponsesStreamState(state *ChatToResponsesStreamState) {
 func (cr *BifrostChatResponse) ToBifrostResponsesStreamResponse(state *ChatToResponsesStreamState) []*BifrostResponsesStreamResponse {
 	if cr == nil || state == nil {
 		return nil
+	}
+
+	if cr.Usage != nil {
+		mergeUsageIntoChatToResponsesStreamState(state, cr.Usage)
 	}
 
 	// If no choices to convert, return early
@@ -1693,11 +1806,10 @@ func (cr *BifrostChatResponse) ToBifrostResponsesStreamResponse(state *ChatToRes
 
 	// Handle different types of streaming content
 	hasContent := delta.Content != nil && *delta.Content != ""
-	hasReasoning := delta.Reasoning != nil && *delta.Reasoning != ""
 
-	// Create output items if we have content OR reasoning (for reasoning-only models)
-	if hasContent || (hasReasoning && !state.TextItemAdded) {
-		// Text content delta (or reasoning-only response)
+	// Create output items for text content.
+	if hasContent {
+		// Text content delta
 		if !state.TextItemAdded {
 			// Add text item if not already added
 			outputIndex := 0
@@ -1755,19 +1867,12 @@ func (cr *BifrostChatResponse) ToBifrostResponsesStreamResponse(state *ChatToRes
 			state.SequenceNumber++
 		}
 
-		// Emit text delta - at least one is required for lifecycle validation
-		// Even for reasoning-only responses, we emit an empty delta on the first chunk
-		if hasContent || (!state.TextItemHasContent && (hasReasoning || hasContent)) {
+		// Emit text delta
+		if hasContent {
 			itemID := state.ItemIDs["text"]
 
-			var contentDelta string
-			if hasContent {
-				contentDelta = *delta.Content
-				state.TextBuffer.WriteString(contentDelta)
-			} else {
-				// For reasoning-only responses, emit empty delta on first chunk
-				contentDelta = ""
-			}
+			contentDelta := *delta.Content
+			state.TextBuffer.WriteString(contentDelta)
 
 			response := &BifrostResponsesStreamResponse{
 				Type:           ResponsesStreamResponseTypeOutputTextDelta,
@@ -1952,11 +2057,61 @@ func (cr *BifrostChatResponse) ToBifrostResponsesStreamResponse(state *ChatToRes
 	}
 
 	if delta.Reasoning != nil && *delta.Reasoning != "" {
+		if !state.ReasoningItemAdded {
+			if state.CurrentOutputIndex < 1 {
+				state.CurrentOutputIndex = 1
+			}
+			outputIndex := state.CurrentOutputIndex
+			state.CurrentOutputIndex++
+			state.ReasoningOutputIndex = outputIndex
+
+			var itemID string
+			if state.MessageID == nil {
+				itemID = fmt.Sprintf("reasoning_%d", outputIndex)
+			} else {
+				itemID = fmt.Sprintf("msg_%s_reasoning_%d", *state.MessageID, outputIndex)
+			}
+			state.ItemIDs["reasoning"] = itemID
+
+			statusInProgress := "in_progress"
+			role := ResponsesInputMessageRoleAssistant
+			item := &ResponsesMessage{
+				ID:     &itemID,
+				Type:   Ptr(ResponsesMessageTypeReasoning),
+				Role:   &role,
+				Status: &statusInProgress,
+				ResponsesReasoning: &ResponsesReasoning{
+					Summary: []ResponsesReasoningSummary{},
+				},
+			}
+			responses = append(responses, &BifrostResponsesStreamResponse{
+				Type:           ResponsesStreamResponseTypeOutputItemAdded,
+				SequenceNumber: state.SequenceNumber,
+				OutputIndex:    Ptr(outputIndex),
+				ItemID:         &itemID,
+				Item:           item,
+				ExtraFields:    cr.ExtraFields,
+			})
+			state.SequenceNumber++
+
+			responses = append(responses, &BifrostResponsesStreamResponse{
+				Type:           ResponsesStreamResponseTypeReasoningSummaryPartAdded,
+				SequenceNumber: state.SequenceNumber,
+				OutputIndex:    Ptr(outputIndex),
+				ItemID:         &itemID,
+				ExtraFields:    cr.ExtraFields,
+			})
+			state.SequenceNumber++
+			state.ReasoningItemAdded = true
+		}
+
+		state.ReasoningBuffer.WriteString(*delta.Reasoning)
 		// Reasoning/thought content delta (for models that support reasoning)
 		response := &BifrostResponsesStreamResponse{
 			Type:           ResponsesStreamResponseTypeReasoningSummaryTextDelta,
 			SequenceNumber: state.SequenceNumber,
-			OutputIndex:    Ptr(0),
+			OutputIndex:    Ptr(state.ReasoningOutputIndex),
+			ItemID:         Ptr(state.ItemIDs["reasoning"]),
 			Delta:          delta.Reasoning,
 			ExtraFields:    cr.ExtraFields,
 		}
@@ -1980,6 +2135,55 @@ func (cr *BifrostChatResponse) ToBifrostResponsesStreamResponse(state *ChatToRes
 	// Check if this is a completion chunk with finish_reason
 	if choice.FinishReason != nil {
 		terminalEventType, terminalStatus, terminalIncompleteDetails := responsesTerminalFromChatFinishReason(choice.FinishReason)
+
+		if state.ReasoningItemAdded && !state.ReasoningItemClosed {
+			outputIndex := state.ReasoningOutputIndex
+			itemID := state.ItemIDs["reasoning"]
+			finalReasoning := state.ReasoningBuffer.String()
+
+			responses = append(responses, &BifrostResponsesStreamResponse{
+				Type:           ResponsesStreamResponseTypeReasoningSummaryTextDone,
+				SequenceNumber: state.SequenceNumber,
+				OutputIndex:    Ptr(outputIndex),
+				ItemID:         &itemID,
+				Text:           &finalReasoning,
+				ExtraFields:    cr.ExtraFields,
+			})
+			state.SequenceNumber++
+
+			responses = append(responses, &BifrostResponsesStreamResponse{
+				Type:           ResponsesStreamResponseTypeReasoningSummaryPartDone,
+				SequenceNumber: state.SequenceNumber,
+				OutputIndex:    Ptr(outputIndex),
+				ItemID:         &itemID,
+				ExtraFields:    cr.ExtraFields,
+			})
+			state.SequenceNumber++
+
+			summary := []ResponsesReasoningSummary{{
+				Type: ResponsesReasoningContentBlockTypeSummaryText,
+				Text: finalReasoning,
+			}}
+			statusFinal := terminalStatus
+			responses = append(responses, &BifrostResponsesStreamResponse{
+				Type:           ResponsesStreamResponseTypeOutputItemDone,
+				SequenceNumber: state.SequenceNumber,
+				OutputIndex:    Ptr(outputIndex),
+				ItemID:         &itemID,
+				Item: &ResponsesMessage{
+					ID:     &itemID,
+					Type:   Ptr(ResponsesMessageTypeReasoning),
+					Role:   Ptr(ResponsesInputMessageRoleAssistant),
+					Status: &statusFinal,
+					ResponsesReasoning: &ResponsesReasoning{
+						Summary: summary,
+					},
+				},
+				ExtraFields: cr.ExtraFields,
+			})
+			state.SequenceNumber++
+			state.ReasoningItemClosed = true
+		}
 
 		// Close text item if still open (regardless of whether it has content, to support reasoning-only responses)
 		if state.TextItemAdded && !state.TextItemClosed {
@@ -2113,7 +2317,9 @@ func (cr *BifrostChatResponse) ToBifrostResponsesStreamResponse(state *ChatToRes
 
 		// Emit terminal response event.
 		var usage *ResponsesResponseUsage
-		if cr.Usage != nil {
+		if state.PendingUsage != nil {
+			usage = state.PendingUsage.ToResponsesResponseUsage()
+		} else if cr.Usage != nil {
 			usage = cr.Usage.ToResponsesResponseUsage()
 		}
 
@@ -2131,7 +2337,11 @@ func (cr *BifrostChatResponse) ToBifrostResponsesStreamResponse(state *ChatToRes
 		if state.Model != nil {
 			response.Model = *state.Model
 		}
-		var allOutput []ResponsesMessage
+		type outputEntry struct {
+			outputIndex int
+			message     ResponsesMessage
+		}
+		var allOutputEntries []outputEntry
 
 		if state.TextItemAdded {
 			statusFinal := terminalStatus
@@ -2161,7 +2371,29 @@ func (cr *BifrostChatResponse) ToBifrostResponsesStreamResponse(state *ChatToRes
 			if itemID != "" {
 				msg.ID = &itemID
 			}
-			allOutput = append(allOutput, msg)
+			allOutputEntries = append(allOutputEntries, outputEntry{outputIndex: 0, message: msg})
+		}
+
+		if state.ReasoningItemAdded {
+			statusFinal := terminalStatus
+			messageType := ResponsesMessageTypeReasoning
+			itemID := state.ItemIDs["reasoning"]
+			summary := []ResponsesReasoningSummary{{
+				Type: ResponsesReasoningContentBlockTypeSummaryText,
+				Text: state.ReasoningBuffer.String(),
+			}}
+			msg := ResponsesMessage{
+				Type:   &messageType,
+				Role:   Ptr(ResponsesInputMessageRoleAssistant),
+				Status: &statusFinal,
+				ResponsesReasoning: &ResponsesReasoning{
+					Summary: summary,
+				},
+			}
+			if itemID != "" {
+				msg.ID = &itemID
+			}
+			allOutputEntries = append(allOutputEntries, outputEntry{outputIndex: state.ReasoningOutputIndex, message: msg})
 		}
 
 		// Collect tool call IDs sorted by outputIndex for deterministic order
@@ -2200,10 +2432,17 @@ func (cr *BifrostChatResponse) ToBifrostResponsesStreamResponse(state *ChatToRes
 			if itemID != "" {
 				fcMsg.ID = &itemID
 			}
-			allOutput = append(allOutput, fcMsg)
+			allOutputEntries = append(allOutputEntries, outputEntry{outputIndex: entry.outputIndex, message: fcMsg})
 		}
 
-		if len(allOutput) > 0 {
+		sort.Slice(allOutputEntries, func(i, j int) bool {
+			return allOutputEntries[i].outputIndex < allOutputEntries[j].outputIndex
+		})
+		if len(allOutputEntries) > 0 {
+			allOutput := make([]ResponsesMessage, 0, len(allOutputEntries))
+			for _, entry := range allOutputEntries {
+				allOutput = append(allOutput, entry.message)
+			}
 			response.Output = allOutput
 		}
 
@@ -2228,6 +2467,21 @@ func (cr *BifrostChatResponse) ToBifrostResponsesStreamResponse(state *ChatToRes
 	}
 
 	return responses
+}
+
+func reasoningDetailsFromResponsesContentBlock(block ResponsesMessageContentBlock) []ChatReasoningDetails {
+	if block.Type != ResponsesOutputMessageContentTypeReasoning || block.Text == nil || *block.Text == "" {
+		return nil
+	}
+
+	text := *block.Text
+	detail := ChatReasoningDetails{
+		Index:     0,
+		Type:      BifrostReasoningDetailsTypeText,
+		Text:      &text,
+		Signature: block.Signature,
+	}
+	return []ChatReasoningDetails{detail}
 }
 
 // ToBifrostChatResponse converts a BifrostResponsesStreamResponse chunk to a BifrostChatResponse (chat.completion.chunk).
