@@ -6,12 +6,13 @@ icon: "train"
 
 ## Compatibility Transformations
 
-The LiteLLM compatibility plugin provides two transformations:
+The LiteLLM compatibility plugin provides three request-shape transformations:
 
 1. **Text-to-Chat Conversion** - Automatically converts text completion requests to chat completion format for models that only support chat APIs
 2. **Chat-to-Responses Conversion** - Automatically converts chat completion requests to responses format for models that only support responses APIs
-3. **Drop Unsupported Params** - Automatically drops unsupported parameters if the model doesn't support them
-4. **Unsupported Parameter Conversion** - Automatically converts unsupported parameters to their supported equivalents
+3. **Responses-to-Chat Conversion** - Automatically converts Responses API requests to chat completion format for models that only support chat APIs
+4. **Drop Unsupported Params** - Automatically drops unsupported parameters if the model doesn't support them
+5. **Unsupported Parameter Conversion** - Automatically converts unsupported parameters to their supported equivalents
 
 When either transformation is applied, responses include `extra_fields.converted_request_type: <transformed_request_type>`. If request parameters are dropped, the keys are added in `extra_fields.dropped_compat_plugin_params`.
 
@@ -73,6 +74,19 @@ Some AI models (like OpenAI o1-pro) only support the responses API and don't sup
 
 This allows you to use a unified chat completion interface across all providers, even those that only support responses API.
 
+## 3. Responses-to-Chat Conversion
+
+Some providers and models expose chat completions upstream but do not implement native Responses endpoints. LiteLLM compatibility mode automatically handles this by:
+
+1. Checking if the model supports Responses natively (using the model catalog)
+2. If not supported, converting your Responses input to chat completion format
+3. Calling the chat completions endpoint internally
+4. Transforming the response or stream back to Responses format
+
+<Note>
+**Symmetric Fallback**: The conversion only happens when the model doesn't support Responses natively. If a model has native Responses support, Bifrost uses it directly without any conversion.
+</Note>
+
 ## How It Works
 
 When LiteLLM compatibility is enabled and you make a chat completion request, Bifrost first checks if the model supports chat completion:
@@ -99,6 +113,7 @@ F --> G
 3. There you can enable the features you need:
    - **Convert Text to Chat** - converts text completion requests to chat for models that only support chat
    - **Convert Chat to Responses** - converts chat completion requests to responses for models that only support responses
+   - **Convert Responses to Chat** - converts Responses API requests to chat completions for models that only support chat
    - **Drop Unsupported Params** - drops unsupported parameters based on model catalog allowlist
    - **Convert Unsupported Params Values** - converts unsupported parameters values to their supported equivalents. See the list of [supported parameters](#supported-parameters) below.
 4. Save your configuration
@@ -115,6 +130,7 @@ F --> G
     "compat": {
       "convert_text_to_chat": true,
       "convert_chat_to_responses": true,
+      "convert_responses_to_chat": true,
       "should_drop_params": true,
       "should_convert_params": true
     }
@@ -154,6 +170,15 @@ Chat completion to responses conversion works with any provider that supports re
 |----------|----------------------|------------------|
 | OpenAI (o1-pro) | No | Yes |
 
+Responses to chat completion conversion works with providers that support chat completions but lack native Responses support:
+
+| Provider | Native Responses | With Fallback |
+|----------|------------------|---------------|
+| Groq | No | Yes |
+| Cerebras | No | Yes |
+| Ollama | No | Yes |
+| vLLM | No | Yes |
+
 ## Behavior Details
 
 **Model Capability Detection:**
@@ -185,6 +210,15 @@ Chat completion to responses conversion works with any provider that supports re
 | Request | Chat message with `role: "user"` | Responses input with `role: "user"` |
 | Request | `chat_completion` request type | `responses` request type |
 
+### Transformation 3: Responses-to-Chat Conversion
+
+**Applies to:** Responses requests on chat-only models
+
+| Phase | Original | Transformed |
+|-------|----------|-------------|
+| Request | Responses input with `role: "user"` | Chat message with `role: "user"` |
+| Request | `responses` or `responses_stream` request type | `chat_completion` request type |
+
 ### Metadata Set on Transformed Responses
 
 When either transformation is applied:
@@ -206,7 +240,7 @@ When errors occur on transformed requests:
 
 To enable compat plugins per request, you can use `x-bf-compat` header:
 - When `x-bf-compat: true` or `x-bf-compat: ["*"]`, enables all compat plugins options
-- When `x-bf-compat: ["<setting1>","<setting2>"]`, enables the specified settings (available settings: `convert_text_to_chat`, `convert_chat_to_responses`, `should_drop_params`, `should_convert_params`)
+- When `x-bf-compat: ["<setting1>","<setting2>"]`, enables the specified settings (available settings: `convert_text_to_chat`, `convert_chat_to_responses`, `convert_responses_to_chat`, `should_drop_params`, `should_convert_params`)
 
 ## What's Preserved
 
@@ -219,7 +253,7 @@ To enable compat plugins per request, you can use `x-bf-compat` header:
 
 **Good Use Cases:**
 - Migrating from LiteLLM to Bifrost without code changes
-- Maintaining backward compatibility with text completion interfaces or chat completion interfaces
+- Maintaining backward compatibility with text completion, chat completion, or Responses interfaces
 - Using a unified API across providers with different capabilities
 
 **Consider Alternatives When:**
