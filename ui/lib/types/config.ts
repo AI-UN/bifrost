@@ -664,6 +664,7 @@ export interface BifrostConfig {
 export interface CompatConfig {
 	convert_text_to_chat: boolean;
 	convert_chat_to_responses: boolean;
+	convert_responses_to_chat: boolean;
 	should_drop_params: boolean;
 	should_convert_params: boolean;
 	azure_deepseek: boolean;
@@ -739,6 +740,7 @@ export const DefaultCoreConfig: CoreConfig = {
 	compat: {
 		convert_text_to_chat: false,
 		convert_chat_to_responses: false,
+		convert_responses_to_chat: false,
 		should_drop_params: false,
 		should_convert_params: false,
 		azure_deepseek: false,
