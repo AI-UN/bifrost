@@ -681,6 +681,7 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, store HandlerStore) (*sch
 		if keyStr == "x-bf-compat" {
 			bifrostCtx.ClearValue(schemas.BifrostContextKeyCompatConvertTextToChat)
 			bifrostCtx.ClearValue(schemas.BifrostContextKeyCompatConvertChatToResponses)
+			bifrostCtx.ClearValue(schemas.BifrostContextKeyCompatConvertResponsesToChat)
 			bifrostCtx.ClearValue(schemas.BifrostContextKeyCompatShouldDropParams)
 			bifrostCtx.ClearValue(schemas.BifrostContextKeyCompatShouldConvertParams)
 			bifrostCtx.ClearValue(schemas.BifrostContextKeyCompatAzureDeepseek)
@@ -688,6 +689,7 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, store HandlerStore) (*sch
 			if valueStr == "true" {
 				bifrostCtx.SetValue(schemas.BifrostContextKeyCompatConvertTextToChat, true)
 				bifrostCtx.SetValue(schemas.BifrostContextKeyCompatConvertChatToResponses, true)
+				bifrostCtx.SetValue(schemas.BifrostContextKeyCompatConvertResponsesToChat, true)
 				bifrostCtx.SetValue(schemas.BifrostContextKeyCompatShouldDropParams, true)
 				bifrostCtx.SetValue(schemas.BifrostContextKeyCompatShouldConvertParams, true)
 				bifrostCtx.SetValue(schemas.BifrostContextKeyCompatAzureDeepseek, true)
@@ -697,6 +699,7 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, store HandlerStore) (*sch
 					if len(features) == 1 && features[0] == "*" {
 						bifrostCtx.SetValue(schemas.BifrostContextKeyCompatConvertTextToChat, true)
 						bifrostCtx.SetValue(schemas.BifrostContextKeyCompatConvertChatToResponses, true)
+						bifrostCtx.SetValue(schemas.BifrostContextKeyCompatConvertResponsesToChat, true)
 						bifrostCtx.SetValue(schemas.BifrostContextKeyCompatShouldDropParams, true)
 						bifrostCtx.SetValue(schemas.BifrostContextKeyCompatShouldConvertParams, true)
 						bifrostCtx.SetValue(schemas.BifrostContextKeyCompatAzureDeepseek, true)
@@ -707,6 +710,8 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, store HandlerStore) (*sch
 								bifrostCtx.SetValue(schemas.BifrostContextKeyCompatConvertTextToChat, true)
 							case "convert_chat_to_responses":
 								bifrostCtx.SetValue(schemas.BifrostContextKeyCompatConvertChatToResponses, true)
+							case "convert_responses_to_chat":
+								bifrostCtx.SetValue(schemas.BifrostContextKeyCompatConvertResponsesToChat, true)
 							case "should_drop_params":
 								bifrostCtx.SetValue(schemas.BifrostContextKeyCompatShouldDropParams, true)
 							case "should_convert_params":
