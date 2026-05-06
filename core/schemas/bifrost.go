@@ -292,6 +292,7 @@ const (
 	BifrostContextKeyMCPLogID                            BifrostContextKey = "bifrost-mcp-log-id"                            // string (unique UUID for each MCP tool log entry - set per goroutine by agent executor - DO NOT SET THIS MANUALLY)
 	BifrostContextKeyCompatConvertTextToChat             BifrostContextKey = "bifrost-compat-convert-text-to-chat"           // bool (per-request override from x-bf-compat header)
 	BifrostContextKeyCompatConvertChatToResponses        BifrostContextKey = "bifrost-compat-convert-chat-to-responses"      // bool (per-request override from x-bf-compat header)
+	BifrostContextKeyCompatConvertResponsesToChat        BifrostContextKey = "bifrost-compat-convert-responses-to-chat"      // bool (per-request override from x-bf-compat header)
 	BifrostContextKeyCompatShouldDropParams              BifrostContextKey = "bifrost-compat-should-drop-params"             // bool (per-request override from x-bf-compat header)
 	BifrostContextKeyCompatShouldConvertParams           BifrostContextKey = "bifrost-compat-should-convert-params"          // bool (per-request override from x-bf-compat header)
 	BifrostContextKeySupportsAssistantPrefill            BifrostContextKey = "bifrost-supports-assistant-prefill"            // bool (set by compat plugin) - if model supports assistant prefill
