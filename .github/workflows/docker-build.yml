@@ -36,7 +36,9 @@ jobs:
           BASE_VERSION="${BASH_REMATCH[1]}"
           OSS_TAG="v${BASE_VERSION}-oss"
           BUILD_VERSION="${BASE_VERSION}-oss"
-          IMAGE_REPO="${{ env.REGISTRY }}/${{ github.repository_owner }}/${{ github.event.repository.name }}"
+          OWNER_LOWER="$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')"
+          REPO_LOWER="$(echo '${{ github.event.repository.name }}' | tr '[:upper:]' '[:lower:]')"
+          IMAGE_REPO="${{ env.REGISTRY }}/${OWNER_LOWER}/${REPO_LOWER}"
 
           echo "oss_tag=${OSS_TAG}" >> "$GITHUB_OUTPUT"
           echo "build_version=${BUILD_VERSION}" >> "$GITHUB_OUTPUT"
