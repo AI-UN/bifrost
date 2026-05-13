@@ -102,6 +102,8 @@ jobs:
         run: bash ./.github/workflows/scripts/install-cross-compilers.sh
 
       - name: Build executables
+        env:
+          LOCAL_WORKSPACE_BUILD: "true"
         run: bash ./.github/workflows/scripts/build-executables.sh "${{ needs.prepare.outputs.fork_version }}" "darwin/amd64 darwin/arm64 linux/amd64 windows/amd64"
 
       - name: Configure R2
@@ -142,6 +144,8 @@ jobs:
         run: make build-ui
 
       - name: Build linux/arm64 binary
+        env:
+          LOCAL_WORKSPACE_BUILD: "true"
         run: bash ./.github/workflows/scripts/build-executables.sh "${{ needs.prepare.outputs.fork_version }}" "linux/arm64"
 
       - name: Configure R2

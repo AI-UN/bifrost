@@ -133,7 +133,7 @@ jobs:
           docker buildx build \
             --platform linux/amd64 \
             --push \
-            --file ./transports/Dockerfile \
+            --file ./transports/Dockerfile.local \
             --build-arg "VERSION=${FORK_VERSION}" \
             "${tag_args[@]}" \
             .
@@ -184,7 +184,7 @@ jobs:
           docker buildx build \
             --platform linux/arm64 \
             --push \
-            --file ./transports/Dockerfile \
+            --file ./transports/Dockerfile.local \
             --build-arg "VERSION=${FORK_VERSION}" \
             "${tag_args[@]}" \
             .
