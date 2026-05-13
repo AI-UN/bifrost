@@ -1,0 +1,191 @@
+name: Fork Transport Release
+
+on:
+  push:
+    tags:
+      - 'transports/v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Fork transport tag to release, for example transports/v1.5.2-0'
+        required: false
+        type: string
+      upstream_tag:
+        description: 'Source upstream transports/v* tag'
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: fork-transport-release-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      ref: ${{ steps.meta.outputs.ref }}
+      fork_tag: ${{ steps.meta.outputs.fork_tag }}
+      fork_version: ${{ steps.meta.outputs.fork_version }}
+      upstream_tag: ${{ steps.meta.outputs.upstream_tag }}
+      ghcr_registry: ${{ steps.meta.outputs.ghcr_registry }}
+      ghcr_image_ref: ${{ steps.meta.outputs.ghcr_image_ref }}
+    env:
+      REPOSITORY_DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+      GHCR_IMAGE_NAME: ${{ vars.GHCR_IMAGE_NAME }}
+      GHCR_REGISTRY: ${{ vars.GHCR_REGISTRY }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Resolve release metadata
+        id: meta
+        run: |
+          set -euo pipefail
+          source ./.github/workflows/scripts/fork-workflow-config.sh
+          source ./.github/workflows/scripts/fork-sync-state.sh
+
+          fork_set_workflow_defaults
+
+          REF="${{ inputs.tag }}"
+          if [[ -z "$REF" ]]; then
+            REF="${GITHUB_REF_NAME}"
+          fi
+          if [[ -z "$REF" ]]; then
+            echo "Unable to resolve release ref" >&2
+            exit 1
+          fi
+
+          UPSTREAM_TAG="${{ inputs.upstream_tag }}"
+          if [[ -z "$UPSTREAM_TAG" ]]; then
+            UPSTREAM_TAG="$(fork_upstream_tag_from_fork_tag "$REF")"
+          fi
+
+          FORK_VERSION="$(fork_transport_version_from_tag "$REF")"
+          GHCR_IMAGE_REF="${GHCR_REGISTRY}/${GHCR_IMAGE_NAME}"
+
+          {
+            echo "ref=${REF}"
+            echo "fork_tag=${REF}"
+            echo "fork_version=${FORK_VERSION}"
+            echo "upstream_tag=${UPSTREAM_TAG}"
+            echo "ghcr_registry=${GHCR_REGISTRY}"
+            echo "ghcr_image_ref=${GHCR_IMAGE_REF}"
+          } >> "$GITHUB_OUTPUT"
+
+  build-binaries-x86:
+    needs: [prepare]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.ref }}
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.2'
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '25'
+
+      - name: Build UI
+        run: make build-ui
+
+      - name: Install cross-compilation toolchains
+        run: bash ./.github/workflows/scripts/install-cross-compilers.sh
+
+      - name: Build executables
+        run: bash ./.github/workflows/scripts/build-executables.sh "${{ needs.prepare.outputs.fork_version }}" "darwin/amd64 darwin/arm64 linux/amd64 windows/amd64"
+
+      - name: Configure R2
+        env:
+          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+        run: bash ./.github/workflows/scripts/configure-r2.sh
+
+      - name: Upload binaries to R2
+        env:
+          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+          SKIP_LATEST_UPLOAD: "true"
+        run: bash ./.github/workflows/scripts/upload-to-r2.sh "transports/v${{ needs.prepare.outputs.fork_version }}"
+
+  build-binaries-arm64:
+    needs: [prepare]
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.ref }}
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.2'
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '25'
+
+      - name: Build UI
+        run: make build-ui
+
+      - name: Build linux/arm64 binary
+        run: bash ./.github/workflows/scripts/build-executables.sh "${{ needs.prepare.outputs.fork_version }}" "linux/arm64"
+
+      - name: Configure R2
+        env:
+          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+        run: bash ./.github/workflows/scripts/configure-r2.sh
+
+      - name: Upload binaries to R2
+        env:
+          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+          SKIP_LATEST_UPLOAD: "true"
+        run: bash ./.github/workflows/scripts/upload-to-r2.sh "transports/v${{ needs.prepare.outputs.fork_version }}"
+
+  release:
+    needs: [prepare, build-binaries-x86, build-binaries-arm64]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.ref }}
+          fetch-depth: 0
+          fetch-tags: true
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Configure R2
+        env:
+          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+        run: bash ./.github/workflows/scripts/configure-r2.sh
+
+      - name: Finalize fork transport release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+          TRANSPORT_TAG_NAME: ${{ needs.prepare.outputs.fork_tag }}
+          UPSTREAM_SOURCE_TAG: ${{ needs.prepare.outputs.upstream_tag }}
+          SKIP_GIT_TAG_CREATE: "true"
+          ALLOW_SAME_CHANGELOG: "true"
+          DOCKER_IMAGE_REFERENCE: ${{ needs.prepare.outputs.ghcr_image_ref }}
+          RELEASE_TITLE_OVERRIDE: Fork Bifrost HTTP ${{ needs.prepare.outputs.fork_version }}
+        run: bash ./.github/workflows/scripts/release-bifrost-http-finalize.sh "${{ needs.prepare.outputs.fork_version }}"

@@ -7,7 +7,24 @@ VERSION="$1"
 REGISTRY="docker.io"
 ACCOUNT="maximhq"
 IMAGE_NAME="bifrost"
-IMAGE="${REGISTRY}/${ACCOUNT}/${IMAGE_NAME}"
+IMAGE="${IMAGE_REF:-${REGISTRY}/${ACCOUNT}/${IMAGE_NAME}}"
+SOURCE_TAG_FOR_LATEST="${SOURCE_TAG_FOR_LATEST:-}"
+PUBLISH_LATEST_TAGS="${PUBLISH_LATEST_TAGS:-}"
+
+if [[ -z "$PUBLISH_LATEST_TAGS" ]]; then
+  if [[ -n "$SOURCE_TAG_FOR_LATEST" ]]; then
+    SOURCE_VERSION="${SOURCE_TAG_FOR_LATEST#transports/v}"
+    if [[ "$SOURCE_VERSION" != *-* ]]; then
+      PUBLISH_LATEST_TAGS="true"
+    else
+      PUBLISH_LATEST_TAGS="false"
+    fi
+  elif [[ "$VERSION" != *-* ]]; then
+    PUBLISH_LATEST_TAGS="true"
+  else
+    PUBLISH_LATEST_TAGS="false"
+  fi
+fi
 
 AMD64_DIGEST=$(docker manifest inspect ${IMAGE}:v${VERSION}-ubi9-amd64 | jq -r '.manifests[0].digest')
 ARM64_DIGEST=$(docker manifest inspect ${IMAGE}:v${VERSION}-ubi9-arm64 | jq -r '.manifests[0].digest')
@@ -22,7 +39,7 @@ docker manifest create \
 
 docker manifest push ${IMAGE}:v${VERSION}-ubi9
 
-if [[ "$VERSION" != *-* ]]; then
+if [[ "$PUBLISH_LATEST_TAGS" == "true" ]]; then
     docker manifest create \
         ${IMAGE}:latest-ubi9 \
         ${IMAGE}@${AMD64_DIGEST} \
