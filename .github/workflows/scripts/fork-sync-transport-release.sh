@@ -54,22 +54,28 @@ remote_tag_exists() {
 dispatch_downstream_workflows() {
   local fork_tag="$1"
   local upstream_tag="$2"
+  local dispatch_release="${3:-true}"
+  local dispatch_docker="${4:-true}"
 
   if [[ "$DRY_RUN" == "true" || -z "${GH_TOKEN:-}" || -z "$REPO_SLUG" ]]; then
     return 0
   fi
 
-  gh workflow run "$RELEASE_WORKFLOW_NAME" \
-    --repo "$REPO_SLUG" \
-    --ref "$PATCH_BRANCH" \
-    -f tag="$fork_tag" \
-    -f upstream_tag="$upstream_tag" >/dev/null
+  if [[ "$dispatch_release" == "true" ]]; then
+    gh workflow run "$RELEASE_WORKFLOW_NAME" \
+      --repo "$REPO_SLUG" \
+      --ref "$PATCH_BRANCH" \
+      -f tag="$fork_tag" \
+      -f upstream_tag="$upstream_tag" >/dev/null
+  fi
 
-  gh workflow run "$DOCKER_WORKFLOW_NAME" \
-    --repo "$REPO_SLUG" \
-    --ref "$PATCH_BRANCH" \
-    -f tag="$fork_tag" \
-    -f upstream_tag="$upstream_tag" >/dev/null
+  if [[ "$dispatch_docker" == "true" ]]; then
+    gh workflow run "$DOCKER_WORKFLOW_NAME" \
+      --repo "$REPO_SLUG" \
+      --ref "$PATCH_BRANCH" \
+      -f tag="$fork_tag" \
+      -f upstream_tag="$upstream_tag" >/dev/null
+  fi
 }
 
 record_release_sync_state() {
@@ -103,6 +109,8 @@ main() {
   local docker_missing="false"
   local state_changed="false"
   local commit_message=""
+  local dispatch_release="false"
+  local dispatch_docker="false"
 
   fork_require_command git
   fork_require_command gh
@@ -179,8 +187,21 @@ main() {
     git push origin "$PATCH_BRANCH" --force-with-lease
   fi
 
-  if [[ "$tag_created" == "true" || "$release_missing" == "true" || "$docker_missing" == "true" ]]; then
-    dispatch_downstream_workflows "$fork_tag" "$latest_upstream_tag"
+  if [[ "$tag_created" == "true" ]]; then
+    echo "Fork tag ${fork_tag} was created; relying on tag push workflows for downstream release publishing."
+    return 0
+  fi
+
+  if [[ "$release_missing" == "true" ]]; then
+    dispatch_release="true"
+  fi
+
+  if [[ "$docker_missing" == "true" ]]; then
+    dispatch_docker="true"
+  fi
+
+  if [[ "$dispatch_release" == "true" || "$dispatch_docker" == "true" ]]; then
+    dispatch_downstream_workflows "$fork_tag" "$latest_upstream_tag" "$dispatch_release" "$dispatch_docker"
     echo "Fork transport release sync dispatched downstream workflows for ${fork_tag}."
     return 0
   fi

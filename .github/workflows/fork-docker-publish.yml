@@ -31,6 +31,7 @@ jobs:
       fork_tag: ${{ steps.meta.outputs.fork_tag }}
       fork_version: ${{ steps.meta.outputs.fork_version }}
       upstream_tag: ${{ steps.meta.outputs.upstream_tag }}
+      workflow_ref: ${{ steps.meta.outputs.workflow_ref }}
       ghcr_registry: ${{ steps.meta.outputs.ghcr_registry }}
       ghcr_image_ref: ${{ steps.meta.outputs.ghcr_image_ref }}
       dockerhub_image_ref: ${{ steps.meta.outputs.dockerhub_image_ref }}
@@ -72,6 +73,10 @@ jobs:
           FORK_VERSION="$(fork_transport_version_from_tag "$REF")"
           GHCR_IMAGE_REF="${GHCR_REGISTRY}/${GHCR_IMAGE_NAME}"
           DOCKERHUB_ENABLED="false"
+          WORKFLOW_REF="${PATCH_BRANCH}"
+          if [[ "${GITHUB_EVENT_NAME:-}" == "workflow_dispatch" && -n "${GITHUB_REF_NAME:-}" ]]; then
+            WORKFLOW_REF="${GITHUB_REF_NAME}"
+          fi
           if fork_has_dockerhub_publish_config; then
             DOCKERHUB_ENABLED="true"
           fi
@@ -81,6 +86,7 @@ jobs:
             echo "fork_tag=${REF}"
             echo "fork_version=${FORK_VERSION}"
             echo "upstream_tag=${UPSTREAM_TAG}"
+            echo "workflow_ref=${WORKFLOW_REF}"
             echo "ghcr_registry=${GHCR_REGISTRY}"
             echo "ghcr_image_ref=${GHCR_IMAGE_REF}"
             echo "dockerhub_image_ref=${DOCKERHUB_IMAGE_NAME}"
@@ -91,10 +97,22 @@ jobs:
     needs: [prepare]
     runs-on: ubuntu-latest
     steps:
+      - name: Checkout fork automation branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.workflow_ref }}
+          path: _workflow
+
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
           ref: ${{ needs.prepare.outputs.ref }}
+
+      - name: Overlay fork maintenance scripts
+        run: |
+          rm -rf .github/workflows/scripts
+          mkdir -p .github/workflows
+          cp -R _workflow/.github/workflows/scripts .github/workflows/scripts
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -142,10 +160,22 @@ jobs:
     needs: [prepare]
     runs-on: ubuntu-24.04-arm
     steps:
+      - name: Checkout fork automation branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.workflow_ref }}
+          path: _workflow
+
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
           ref: ${{ needs.prepare.outputs.ref }}
+
+      - name: Overlay fork maintenance scripts
+        run: |
+          rm -rf .github/workflows/scripts
+          mkdir -p .github/workflows
+          cp -R _workflow/.github/workflows/scripts .github/workflows/scripts
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -193,10 +223,22 @@ jobs:
     needs: [prepare, build-amd64, build-arm64]
     runs-on: ubuntu-latest
     steps:
+      - name: Checkout fork automation branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.workflow_ref }}
+          path: _workflow
+
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
           ref: ${{ needs.prepare.outputs.ref }}
+
+      - name: Overlay fork maintenance scripts
+        run: |
+          rm -rf .github/workflows/scripts
+          mkdir -p .github/workflows
+          cp -R _workflow/.github/workflows/scripts .github/workflows/scripts
 
       - name: Login to GHCR
         uses: docker/login-action@v3

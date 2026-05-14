@@ -31,9 +31,9 @@ This repository now includes a fork-maintenance workflow set for keeping a maint
 ## Workflows
 
 - `fork-upstream-sync.yml`: scheduled and manual upstream rebase sync for the maintained branch
-- `fork-sync-transport-release.yml`: detects the newest reachable upstream `transports/v*` tag and creates or reuses the matching fork tag
-- `fork-transport-release.yml`: builds transport artifacts from an explicit fork tag and creates the fork GitHub release
-- `fork-docker-publish.yml`: publishes fork multi-arch Docker images to GHCR by default and Docker Hub when configured
+- `fork-sync-transport-release.yml`: detects the newest reachable upstream `transports/v*` tag on its schedule or via manual dispatch and creates or reuses the matching fork tag
+- `fork-transport-release.yml`: builds transport artifacts from an explicit fork tag and creates the fork GitHub release, while always overlaying the latest fork maintenance scripts from the maintained branch
+- `fork-docker-publish.yml`: publishes fork multi-arch Docker images to GHCR by default and Docker Hub when configured, while always overlaying the latest fork maintenance scripts from the maintained branch
 
 ## Manual Dry-Run Order
 
