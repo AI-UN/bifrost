@@ -3,6 +3,8 @@ package bifrost
 import (
 	"context"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"runtime"
 	"strings"
 	"sync"
@@ -11,6 +13,7 @@ import (
 	"time"
 
 	mistralprovider "github.com/maximhq/bifrost/core/providers/mistral"
+	openaiprovider "github.com/maximhq/bifrost/core/providers/openai"
 	schemas "github.com/maximhq/bifrost/core/schemas"
 	"golang.org/x/text/cases"
 	"golang.org/x/text/language"
@@ -615,6 +618,291 @@ func TestHandleProviderRequest_OCROperationNotAllowed(t *testing.T) {
 	}
 	if err.ExtraFields.OriginalModelRequested != "custom-mistral/mistral-ocr-latest" {
 		t.Fatalf("expected model to be preserved, got %q", err.ExtraFields.OriginalModelRequested)
+	}
+}
+
+func TestHandleProviderRequest_ResponsesToChatFallback(t *testing.T) {
+	var requestedPath string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestedPath = r.URL.Path
+		if r.URL.Path != "/v1/chat/completions" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"chatcmpl-1","object":"chat.completion","created":1710000000,"model":"gpt-4o-mini","choices":[{"index":0,"message":{"role":"assistant","content":"hello from chat"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":2,"total_tokens":3}}`))
+	}))
+	defer server.Close()
+
+	providerConfig := &schemas.ProviderConfig{
+		NetworkConfig: schemas.NetworkConfig{
+			BaseURL:                        server.URL,
+			DefaultRequestTimeoutInSeconds: 1,
+		},
+	}
+	provider := openaiprovider.NewOpenAIProvider(providerConfig, NewDefaultLogger(schemas.LogLevelError))
+	bifrost := &Bifrost{}
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyChangeRequestType, schemas.ChatCompletionRequest)
+
+	request := &ChannelMessage{
+		Context: ctx,
+		BifrostRequest: schemas.BifrostRequest{
+			RequestType: schemas.ResponsesRequest,
+			ResponsesRequest: &schemas.BifrostResponsesRequest{
+				Provider: schemas.OpenAI,
+				Model:    "gpt-4o-mini",
+				Input: []schemas.ResponsesMessage{
+					{
+						Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+						Content: &schemas.ResponsesMessageContent{
+							ContentBlocks: []schemas.ResponsesMessageContentBlock{
+								{Type: schemas.ResponsesInputMessageContentBlockTypeText, Text: schemas.Ptr("say hello")},
+							},
+						},
+					},
+				},
+				Params: &schemas.ResponsesParameters{},
+			},
+		},
+	}
+
+	response, err := bifrost.handleProviderRequest(provider, providerConfig, request, schemas.Key{}, nil)
+	if err != nil {
+		t.Fatalf("expected nil error, got %v", err)
+	}
+	if requestedPath != "/v1/chat/completions" {
+		t.Fatalf("expected chat completions path, got %q", requestedPath)
+	}
+	if response == nil || response.ResponsesResponse == nil {
+		t.Fatalf("expected responses response, got %#v", response)
+	}
+	if response.ResponsesResponse.Object != "response" {
+		t.Fatalf("expected responses object, got %q", response.ResponsesResponse.Object)
+	}
+	if len(response.ResponsesResponse.Output) == 0 {
+		t.Fatalf("expected converted output, got %#v", response.ResponsesResponse.Output)
+	}
+	first := response.ResponsesResponse.Output[0]
+	if first.Content == nil || len(first.Content.ContentBlocks) == 0 || first.Content.ContentBlocks[0].Text == nil {
+		t.Fatalf("expected text output block, got %#v", first)
+	}
+	if *first.Content.ContentBlocks[0].Text != "hello from chat" {
+		t.Fatalf("expected converted text %q, got %q", "hello from chat", *first.Content.ContentBlocks[0].Text)
+	}
+}
+
+func TestHandleProviderStreamRequest_ResponsesToChatFallback(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/chat/completions" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("Cache-Control", "no-cache")
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			t.Fatal("expected http flusher")
+		}
+
+		events := []string{
+			`data: {"id":"chatcmpl-1","object":"chat.completion.chunk","created":1710000000,"model":"gpt-4o-mini","choices":[{"index":0,"delta":{"role":"assistant"}}]}` + "\n\n",
+			`data: {"id":"chatcmpl-1","object":"chat.completion.chunk","created":1710000000,"model":"gpt-4o-mini","choices":[{"index":0,"delta":{"content":"hello"}}]}` + "\n\n",
+			`data: {"id":"chatcmpl-1","object":"chat.completion.chunk","created":1710000000,"model":"gpt-4o-mini","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}` + "\n\n",
+			"data: [DONE]\n\n",
+		}
+
+		for _, event := range events {
+			_, _ = w.Write([]byte(event))
+			flusher.Flush()
+		}
+	}))
+	defer server.Close()
+
+	providerConfig := &schemas.ProviderConfig{
+		NetworkConfig: schemas.NetworkConfig{
+			BaseURL:                        server.URL,
+			DefaultRequestTimeoutInSeconds: 1,
+		},
+	}
+	provider := openaiprovider.NewOpenAIProvider(providerConfig, NewDefaultLogger(schemas.LogLevelError))
+	bifrost := &Bifrost{}
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyChangeRequestType, schemas.ChatCompletionRequest)
+
+	request := &ChannelMessage{
+		Context: ctx,
+		BifrostRequest: schemas.BifrostRequest{
+			RequestType: schemas.ResponsesStreamRequest,
+			ResponsesRequest: &schemas.BifrostResponsesRequest{
+				Provider: schemas.OpenAI,
+				Model:    "gpt-4o-mini",
+				Input: []schemas.ResponsesMessage{
+					{
+						Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+						Content: &schemas.ResponsesMessageContent{
+							ContentBlocks: []schemas.ResponsesMessageContentBlock{
+								{Type: schemas.ResponsesInputMessageContentBlockTypeText, Text: schemas.Ptr("say hello")},
+							},
+						},
+					},
+				},
+				Params: &schemas.ResponsesParameters{},
+			},
+		},
+	}
+
+	postHookRunner := func(_ *schemas.BifrostContext, result *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+		return result, bifrostErr
+	}
+
+	stream, err := bifrost.handleProviderStreamRequest(provider, request, schemas.Key{}, postHookRunner, nil)
+	if err != nil {
+		t.Fatalf("expected nil error, got %v", err)
+	}
+	if fallback, _ := ctx.Value(schemas.BifrostContextKeyIsResponsesToChatCompletionFallback).(bool); !fallback {
+		t.Fatal("expected responses-to-chat streaming fallback flag to be set")
+	}
+
+	var sawResponsesChunk bool
+	var sawCompleted bool
+
+	timeout := time.After(5 * time.Second)
+	for {
+		select {
+		case chunk, ok := <-stream:
+			if !ok {
+				if !sawResponsesChunk {
+					t.Fatal("expected at least one responses stream chunk")
+				}
+				if !sawCompleted {
+					t.Fatal("expected completed responses stream event")
+				}
+				return
+			}
+			if chunk == nil {
+				continue
+			}
+			if chunk.BifrostError != nil {
+				t.Fatalf("unexpected stream error: %#v", chunk.BifrostError)
+			}
+			if chunk.BifrostResponsesStreamResponse != nil {
+				sawResponsesChunk = true
+				if chunk.BifrostResponsesStreamResponse.Type == schemas.ResponsesStreamResponseTypeCompleted {
+					sawCompleted = true
+				}
+			}
+		case <-timeout:
+			t.Fatal("timed out waiting for converted responses stream")
+		}
+	}
+}
+
+func TestHandleProviderStreamRequest_ResponsesToChatFallback_UsageOnlyChunkAfterTerminal(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/chat/completions" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("Cache-Control", "no-cache")
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			t.Fatal("expected http flusher")
+		}
+
+		events := []string{
+			`data: {"id":"chatcmpl-usage-tail","object":"chat.completion.chunk","created":1710000000,"model":"mimo-v2.5-pro","choices":[{"index":0,"delta":{"role":"assistant","content":""}}]}` + "\n\n",
+			`data: {"id":"chatcmpl-usage-tail","object":"chat.completion.chunk","created":1710000000,"model":"mimo-v2.5-pro","choices":[{"index":0,"delta":{"content":"hello"}}]}` + "\n\n",
+			`data: {"id":"chatcmpl-usage-tail","object":"chat.completion.chunk","created":1710000000,"model":"mimo-v2.5-pro","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":null}` + "\n\n",
+			`data: {"id":"chatcmpl-usage-tail","object":"chat.completion.chunk","created":1710000000,"model":"mimo-v2.5-pro","choices":[],"usage":{"prompt_tokens":55,"completion_tokens":123,"total_tokens":178,"completion_tokens_details":{"reasoning_tokens":71}}}` + "\n\n",
+			"data: [DONE]\n\n",
+		}
+
+		for _, event := range events {
+			_, _ = w.Write([]byte(event))
+			flusher.Flush()
+		}
+	}))
+	defer server.Close()
+
+	providerConfig := &schemas.ProviderConfig{
+		NetworkConfig: schemas.NetworkConfig{
+			BaseURL:                        server.URL,
+			DefaultRequestTimeoutInSeconds: 1,
+		},
+	}
+	provider := openaiprovider.NewOpenAIProvider(providerConfig, NewDefaultLogger(schemas.LogLevelError))
+	bifrost := &Bifrost{}
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyChangeRequestType, schemas.ChatCompletionRequest)
+
+	request := &ChannelMessage{
+		Context: ctx,
+		BifrostRequest: schemas.BifrostRequest{
+			RequestType: schemas.ResponsesStreamRequest,
+			ResponsesRequest: &schemas.BifrostResponsesRequest{
+				Provider: schemas.OpenAI,
+				Model:    "mimo-v2.5-pro",
+				Input: []schemas.ResponsesMessage{
+					{
+						Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+						Content: &schemas.ResponsesMessageContent{
+							ContentBlocks: []schemas.ResponsesMessageContentBlock{
+								{Type: schemas.ResponsesInputMessageContentBlockTypeText, Text: schemas.Ptr("say hello")},
+							},
+						},
+					},
+				},
+				Params: &schemas.ResponsesParameters{},
+			},
+		},
+	}
+
+	postHookRunner := func(_ *schemas.BifrostContext, result *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+		return result, bifrostErr
+	}
+
+	stream, err := bifrost.handleProviderStreamRequest(provider, request, schemas.Key{}, postHookRunner, nil)
+	if err != nil {
+		t.Fatalf("expected nil error, got %v", err)
+	}
+
+	var completed *schemas.BifrostResponsesStreamResponse
+	timeout := time.After(5 * time.Second)
+	for {
+		select {
+		case chunk, ok := <-stream:
+			if !ok {
+				if completed == nil || completed.Response == nil || completed.Response.Usage == nil {
+					t.Fatal("expected completed response with usage from trailing usage-only chunk")
+				}
+				if completed.Response.Usage.InputTokens != 55 {
+					t.Fatalf("expected input tokens 55, got %d", completed.Response.Usage.InputTokens)
+				}
+				if completed.Response.Usage.OutputTokens != 123 {
+					t.Fatalf("expected output tokens 123, got %d", completed.Response.Usage.OutputTokens)
+				}
+				if completed.Response.Usage.TotalTokens != 178 {
+					t.Fatalf("expected total tokens 178, got %d", completed.Response.Usage.TotalTokens)
+				}
+				if completed.Response.Usage.OutputTokensDetails == nil || completed.Response.Usage.OutputTokensDetails.ReasoningTokens != 71 {
+					t.Fatal("expected reasoning token details to be preserved")
+				}
+				return
+			}
+			if chunk == nil {
+				continue
+			}
+			if chunk.BifrostError != nil {
+				t.Fatalf("unexpected stream error: %#v", chunk.BifrostError)
+			}
+			if chunk.BifrostResponsesStreamResponse != nil && chunk.BifrostResponsesStreamResponse.Type == schemas.ResponsesStreamResponseTypeCompleted {
+				completed = chunk.BifrostResponsesStreamResponse
+			}
+		case <-timeout:
+			t.Fatal("timed out waiting for converted responses stream with trailing usage chunk")
+		}
 	}
 }
 

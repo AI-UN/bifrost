@@ -16,26 +16,75 @@ func cloneBifrostReq(req *schemas.BifrostRequest) *schemas.BifrostRequest {
 
 	if req.TextCompletionRequest != nil {
 		textReq := *req.TextCompletionRequest
-		cloned.TextCompletionRequest = &textReq
-		if req.TextCompletionRequest.Params != nil {
-			cloned.TextCompletionRequest.Params = cloneTextCompletionParameters(req.TextCompletionRequest.Params)
+		if req.TextCompletionRequest.Input != nil {
+			textReq.Input = cloneTextCompletionInput(req.TextCompletionRequest.Input)
 		}
+		if req.TextCompletionRequest.Params != nil {
+			textReq.Params = cloneTextCompletionParameters(req.TextCompletionRequest.Params)
+		}
+		if req.TextCompletionRequest.Fallbacks != nil {
+			textReq.Fallbacks = slices.Clone(req.TextCompletionRequest.Fallbacks)
+		}
+		if req.TextCompletionRequest.RawRequestBody != nil {
+			textReq.RawRequestBody = slices.Clone(req.TextCompletionRequest.RawRequestBody)
+		}
+		cloned.TextCompletionRequest = &textReq
 	}
 	if req.ChatRequest != nil {
 		chatReq := *req.ChatRequest
-		cloned.ChatRequest = &chatReq
-		if req.ChatRequest.Params != nil {
-			cloned.ChatRequest.Params = cloneChatParameters(req.ChatRequest.Params)
+		if req.ChatRequest.Input != nil {
+			chatReq.Input = make([]schemas.ChatMessage, len(req.ChatRequest.Input))
+			for i, message := range req.ChatRequest.Input {
+				chatReq.Input[i] = schemas.DeepCopyChatMessage(message)
+			}
 		}
+		if req.ChatRequest.Params != nil {
+			chatReq.Params = cloneChatParameters(req.ChatRequest.Params)
+		}
+		if req.ChatRequest.Fallbacks != nil {
+			chatReq.Fallbacks = slices.Clone(req.ChatRequest.Fallbacks)
+		}
+		if req.ChatRequest.RawRequestBody != nil {
+			chatReq.RawRequestBody = slices.Clone(req.ChatRequest.RawRequestBody)
+		}
+		cloned.ChatRequest = &chatReq
 	}
 	if req.ResponsesRequest != nil {
 		responsesReq := *req.ResponsesRequest
-		cloned.ResponsesRequest = &responsesReq
-		if req.ResponsesRequest.Params != nil {
-			cloned.ResponsesRequest.Params = cloneResponsesParameters(req.ResponsesRequest.Params)
+		if req.ResponsesRequest.Input != nil {
+			responsesReq.Input = make([]schemas.ResponsesMessage, len(req.ResponsesRequest.Input))
+			for i, message := range req.ResponsesRequest.Input {
+				responsesReq.Input[i] = schemas.DeepCopyResponsesMessage(message)
+			}
 		}
+		if req.ResponsesRequest.Params != nil {
+			responsesReq.Params = cloneResponsesParameters(req.ResponsesRequest.Params)
+		}
+		if req.ResponsesRequest.Fallbacks != nil {
+			responsesReq.Fallbacks = slices.Clone(req.ResponsesRequest.Fallbacks)
+		}
+		if req.ResponsesRequest.RawRequestBody != nil {
+			responsesReq.RawRequestBody = slices.Clone(req.ResponsesRequest.RawRequestBody)
+		}
+		cloned.ResponsesRequest = &responsesReq
 	}
 
+	return &cloned
+}
+
+func cloneTextCompletionInput(input *schemas.TextCompletionInput) *schemas.TextCompletionInput {
+	if input == nil {
+		return nil
+	}
+
+	cloned := *input
+	if input.PromptStr != nil {
+		prompt := *input.PromptStr
+		cloned.PromptStr = &prompt
+	}
+	if input.PromptArray != nil {
+		cloned.PromptArray = slices.Clone(input.PromptArray)
+	}
 	return &cloned
 }
 

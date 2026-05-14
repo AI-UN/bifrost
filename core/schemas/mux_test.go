@@ -323,6 +323,80 @@ func TestToBifrostResponsesStreamResponse_PopulatesFinalDoneTextAndCompletedOutp
 	}
 }
 
+func TestToBifrostResponsesStreamResponse_CarriesUsageFromUsageOnlyChunkToCompleted(t *testing.T) {
+	state := AcquireChatToResponsesStreamState()
+	defer ReleaseChatToResponsesStreamState(state)
+
+	makeChunk := func(role *string, content *string, finishReason *string, usage *BifrostLLMUsage) *BifrostChatResponse {
+		resp := &BifrostChatResponse{
+			ID:    "chatcmpl-test",
+			Model: "test-model",
+			Usage: usage,
+		}
+		if role != nil || content != nil || finishReason != nil {
+			resp.Choices = []BifrostResponseChoice{
+				{
+					FinishReason: finishReason,
+					ChatStreamResponseChoice: &ChatStreamResponseChoice{
+						Delta: &ChatStreamResponseChoiceDelta{
+							Role:    role,
+							Content: content,
+						},
+					},
+				},
+			}
+		}
+		return resp
+	}
+
+	role := string(ChatMessageRoleAssistant)
+	part := "Hello"
+	stop := string(BifrostFinishReasonStop)
+	usage := &BifrostLLMUsage{
+		PromptTokens:     258,
+		CompletionTokens: 30,
+		TotalTokens:      288,
+		PromptTokensDetails: &ChatPromptTokensDetails{
+			CachedReadTokens: 192,
+		},
+		CompletionTokensDetails: &ChatCompletionTokensDetails{
+			ReasoningTokens: 11,
+		},
+	}
+
+	var all []*BifrostResponsesStreamResponse
+	all = append(all, makeChunk(&role, nil, nil, nil).ToBifrostResponsesStreamResponse(state)...)
+	all = append(all, makeChunk(nil, &part, nil, nil).ToBifrostResponsesStreamResponse(state)...)
+	all = append(all, makeChunk(nil, nil, nil, usage).ToBifrostResponsesStreamResponse(state)...)
+	all = append(all, makeChunk(nil, nil, &stop, nil).ToBifrostResponsesStreamResponse(state)...)
+
+	var completed *BifrostResponsesStreamResponse
+	for _, evt := range all {
+		if evt != nil && evt.Type == ResponsesStreamResponseTypeCompleted {
+			completed = evt
+		}
+	}
+
+	if completed == nil || completed.Response == nil || completed.Response.Usage == nil {
+		t.Fatal("expected response.completed to include usage from usage-only chunk")
+	}
+	if completed.Response.Usage.InputTokens != 258 {
+		t.Fatalf("expected input tokens 258, got %d", completed.Response.Usage.InputTokens)
+	}
+	if completed.Response.Usage.OutputTokens != 30 {
+		t.Fatalf("expected output tokens 30, got %d", completed.Response.Usage.OutputTokens)
+	}
+	if completed.Response.Usage.TotalTokens != 288 {
+		t.Fatalf("expected total tokens 288, got %d", completed.Response.Usage.TotalTokens)
+	}
+	if completed.Response.Usage.InputTokensDetails == nil || completed.Response.Usage.InputTokensDetails.CachedReadTokens != 192 {
+		t.Fatal("expected cached_read_tokens to be preserved on response.completed")
+	}
+	if completed.Response.Usage.OutputTokensDetails == nil || completed.Response.Usage.OutputTokensDetails.ReasoningTokens != 11 {
+		t.Fatal("expected reasoning_tokens to be preserved on response.completed")
+	}
+}
+
 func TestToBifrostResponsesResponse_MapsLengthToIncomplete(t *testing.T) {
 	length := string(BifrostFinishReasonLength)
 	resp := (&BifrostChatResponse{
@@ -401,6 +475,147 @@ func TestToBifrostResponsesResponse_UnknownFinishReasonLeavesStatusUnset(t *test
 	}
 	if resp.IncompleteDetails != nil {
 		t.Fatal("expected incomplete_details to be nil")
+	}
+}
+
+func TestToBifrostResponsesResponse_PreservesAssistantReasoning(t *testing.T) {
+	stop := string(BifrostFinishReasonStop)
+	reasoning := "I should answer briefly."
+	content := "Hello there."
+
+	resp := (&BifrostChatResponse{
+		Choices: []BifrostResponseChoice{
+			{
+				FinishReason: &stop,
+				ChatNonStreamResponseChoice: &ChatNonStreamResponseChoice{
+					Message: &ChatMessage{
+						Role: ChatMessageRoleAssistant,
+						Content: &ChatMessageContent{
+							ContentStr: &content,
+						},
+						ChatAssistantMessage: &ChatAssistantMessage{
+							Reasoning: &reasoning,
+						},
+					},
+				},
+			},
+		},
+	}).ToBifrostResponsesResponse()
+
+	if resp == nil {
+		t.Fatal("expected non-nil response")
+	}
+	if len(resp.Output) != 2 {
+		t.Fatalf("expected 2 output items (message + reasoning), got %d", len(resp.Output))
+	}
+
+	textItem := resp.Output[0]
+	if textItem.Type == nil || *textItem.Type != ResponsesMessageTypeMessage {
+		t.Fatalf("expected first output type %q, got %v", ResponsesMessageTypeMessage, textItem.Type)
+	}
+	if textItem.Content == nil || len(textItem.Content.ContentBlocks) == 0 || textItem.Content.ContentBlocks[0].Text == nil {
+		t.Fatal("expected text output content")
+	}
+	if *textItem.Content.ContentBlocks[0].Text != content {
+		t.Fatalf("expected text %q, got %q", content, *textItem.Content.ContentBlocks[0].Text)
+	}
+
+	reasoningItem := resp.Output[1]
+	if reasoningItem.Type == nil || *reasoningItem.Type != ResponsesMessageTypeReasoning {
+		t.Fatalf("expected second output type %q, got %v", ResponsesMessageTypeReasoning, reasoningItem.Type)
+	}
+	if reasoningItem.ResponsesReasoning == nil || len(reasoningItem.Summary) != 1 {
+		t.Fatal("expected reasoning summary to be preserved")
+	}
+	if reasoningItem.Summary[0].Text != reasoning {
+		t.Fatalf("expected reasoning summary %q, got %q", reasoning, reasoningItem.Summary[0].Text)
+	}
+}
+
+func TestToChatMessages_AttachesReasoningItemToAssistantMessage(t *testing.T) {
+	reasoning := "Need to reason first."
+	answer := "Here is the answer."
+	messages := []ResponsesMessage{
+		{
+			Type:   Ptr(ResponsesMessageTypeReasoning),
+			Role:   Ptr(ResponsesInputMessageRoleAssistant),
+			Status: Ptr("completed"),
+			ResponsesReasoning: &ResponsesReasoning{
+				Summary: []ResponsesReasoningSummary{
+					{Type: ResponsesReasoningContentBlockTypeSummaryText, Text: reasoning},
+				},
+			},
+		},
+		{
+			Type: Ptr(ResponsesMessageTypeMessage),
+			Role: Ptr(ResponsesInputMessageRoleAssistant),
+			Content: &ResponsesMessageContent{
+				ContentBlocks: []ResponsesMessageContentBlock{
+					{
+						Type:                              ResponsesOutputMessageContentTypeText,
+						Text:                              Ptr(answer),
+						ResponsesOutputMessageContentText: &ResponsesOutputMessageContentText{},
+					},
+				},
+			},
+		},
+	}
+
+	chatMessages := ToChatMessages(messages)
+	if len(chatMessages) != 1 {
+		t.Fatalf("expected 1 chat message, got %d", len(chatMessages))
+	}
+	msg := chatMessages[0]
+	if msg.ChatAssistantMessage == nil {
+		t.Fatal("expected assistant metadata to be present")
+	}
+	if msg.ChatAssistantMessage.Reasoning == nil || *msg.ChatAssistantMessage.Reasoning != reasoning {
+		t.Fatalf("expected reasoning %q, got %v", reasoning, msg.ChatAssistantMessage.Reasoning)
+	}
+	if len(msg.ChatAssistantMessage.ReasoningDetails) != 1 {
+		t.Fatalf("expected 1 reasoning detail, got %d", len(msg.ChatAssistantMessage.ReasoningDetails))
+	}
+	if msg.ChatAssistantMessage.ReasoningDetails[0].Summary == nil || *msg.ChatAssistantMessage.ReasoningDetails[0].Summary != reasoning {
+		t.Fatal("expected reasoning detail summary to be preserved")
+	}
+	if msg.Content == nil || msg.Content.ContentStr == nil || *msg.Content.ContentStr != answer {
+		t.Fatalf("expected assistant content %q, got %#v", answer, msg.Content)
+	}
+}
+
+func TestToChatMessages_ExtractsReasoningTextBlocksFromAssistantContent(t *testing.T) {
+	reasoning := "internal chain"
+	answer := "external answer"
+	messages := []ResponsesMessage{
+		{
+			Type: Ptr(ResponsesMessageTypeMessage),
+			Role: Ptr(ResponsesInputMessageRoleAssistant),
+			Content: &ResponsesMessageContent{
+				ContentBlocks: []ResponsesMessageContentBlock{
+					{
+						Type: ResponsesOutputMessageContentTypeReasoning,
+						Text: Ptr(reasoning),
+					},
+					{
+						Type:                              ResponsesOutputMessageContentTypeText,
+						Text:                              Ptr(answer),
+						ResponsesOutputMessageContentText: &ResponsesOutputMessageContentText{},
+					},
+				},
+			},
+		},
+	}
+
+	chatMessages := ToChatMessages(messages)
+	if len(chatMessages) != 1 {
+		t.Fatalf("expected 1 chat message, got %d", len(chatMessages))
+	}
+	msg := chatMessages[0]
+	if msg.ChatAssistantMessage == nil || msg.ChatAssistantMessage.Reasoning == nil || *msg.ChatAssistantMessage.Reasoning != reasoning {
+		t.Fatalf("expected extracted reasoning %q, got %#v", reasoning, msg.ChatAssistantMessage)
+	}
+	if msg.Content == nil || len(msg.Content.ContentBlocks) != 1 || msg.Content.ContentBlocks[0].Text == nil || *msg.Content.ContentBlocks[0].Text != answer {
+		t.Fatalf("expected remaining answer block %q, got %#v", answer, msg.Content)
 	}
 }
 
@@ -1034,5 +1249,86 @@ func TestToChatRequest_TextFormat_TypedFields(t *testing.T) {
 	}
 	if schemaMap["type"] != "object" {
 		t.Fatalf("expected schema.type=object, got %v", schemaMap["type"])
+	}
+}
+
+func TestToBifrostResponsesStreamResponse_PreservesReasoningLifecycle(t *testing.T) {
+	state := AcquireChatToResponsesStreamState()
+	defer ReleaseChatToResponsesStreamState(state)
+
+	makeChunk := func(role *string, content *string, reasoning *string, finishReason *string) *BifrostChatResponse {
+		return &BifrostChatResponse{
+			ID:    "chatcmpl-test",
+			Model: "test-model",
+			Choices: []BifrostResponseChoice{
+				{
+					FinishReason: finishReason,
+					ChatStreamResponseChoice: &ChatStreamResponseChoice{
+						Delta: &ChatStreamResponseChoiceDelta{
+							Role:      role,
+							Content:   content,
+							Reasoning: reasoning,
+						},
+					},
+				},
+			},
+		}
+	}
+
+	role := string(ChatMessageRoleAssistant)
+	reason1 := "think "
+	reason2 := "carefully"
+	answer := "Done."
+	stop := string(BifrostFinishReasonStop)
+
+	var all []*BifrostResponsesStreamResponse
+	all = append(all, makeChunk(&role, nil, nil, nil).ToBifrostResponsesStreamResponse(state)...)
+	all = append(all, makeChunk(nil, nil, &reason1, nil).ToBifrostResponsesStreamResponse(state)...)
+	all = append(all, makeChunk(nil, nil, &reason2, nil).ToBifrostResponsesStreamResponse(state)...)
+	all = append(all, makeChunk(nil, &answer, nil, nil).ToBifrostResponsesStreamResponse(state)...)
+	all = append(all, makeChunk(nil, nil, nil, &stop).ToBifrostResponsesStreamResponse(state)...)
+
+	var sawPartAdded, sawTextDone, sawPartDone, sawOutputItemDone bool
+	var completed *BifrostResponsesStreamResponse
+	for _, evt := range all {
+		if evt == nil {
+			continue
+		}
+		switch evt.Type {
+		case ResponsesStreamResponseTypeReasoningSummaryPartAdded:
+			sawPartAdded = true
+		case ResponsesStreamResponseTypeReasoningSummaryTextDone:
+			sawTextDone = true
+			if evt.Text == nil || *evt.Text != "think carefully" {
+				t.Fatalf("expected final reasoning text %q, got %v", "think carefully", evt.Text)
+			}
+		case ResponsesStreamResponseTypeReasoningSummaryPartDone:
+			sawPartDone = true
+		case ResponsesStreamResponseTypeOutputItemDone:
+			if evt.Item != nil && evt.Item.Type != nil && *evt.Item.Type == ResponsesMessageTypeReasoning {
+				sawOutputItemDone = true
+			}
+		case ResponsesStreamResponseTypeCompleted:
+			completed = evt
+		}
+	}
+
+	if !sawPartAdded || !sawTextDone || !sawPartDone || !sawOutputItemDone {
+		t.Fatalf("expected full reasoning lifecycle, got partAdded=%v textDone=%v partDone=%v outputItemDone=%v", sawPartAdded, sawTextDone, sawPartDone, sawOutputItemDone)
+	}
+	if completed == nil || completed.Response == nil {
+		t.Fatal("expected completed response")
+	}
+	if len(completed.Response.Output) != 2 {
+		t.Fatalf("expected 2 completed output items (text + reasoning), got %d", len(completed.Response.Output))
+	}
+	if completed.Response.Output[1].Type == nil || *completed.Response.Output[1].Type != ResponsesMessageTypeReasoning {
+		t.Fatalf("expected second completed output to be reasoning, got %v", completed.Response.Output[1].Type)
+	}
+	if completed.Response.Output[1].ResponsesReasoning == nil || len(completed.Response.Output[1].Summary) != 1 {
+		t.Fatal("expected completed reasoning summary")
+	}
+	if completed.Response.Output[1].Summary[0].Text != "think carefully" {
+		t.Fatalf("expected completed reasoning %q, got %q", "think carefully", completed.Response.Output[1].Summary[0].Text)
 	}
 }
