@@ -188,7 +188,8 @@ main() {
   fi
 
   if [[ "$tag_created" == "true" ]]; then
-    echo "Fork tag ${fork_tag} was created; relying on tag push workflows for downstream release publishing."
+    dispatch_downstream_workflows "$fork_tag" "$latest_upstream_tag" "true" "true"
+    echo "Fork tag ${fork_tag} was created; dispatched downstream release workflows explicitly."
     return 0
   fi
 
