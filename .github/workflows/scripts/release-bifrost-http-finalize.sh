@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Finalize bifrost-http release: changelog, tagging, GitHub release, R2 latest copy
+# Finalize bifrost-http release: changelog, tagging, GitHub release, optional release assets, optional R2 latest copy
 # Usage: ./release-bifrost-http-finalize.sh <version>
 
 if [[ -z "${1:-}" ]]; then
@@ -16,6 +16,28 @@ SKIP_GIT_TAG_CREATE="${SKIP_GIT_TAG_CREATE:-false}"
 ALLOW_SAME_CHANGELOG="${ALLOW_SAME_CHANGELOG:-false}"
 DOCKER_IMAGE_REFERENCE="${DOCKER_IMAGE_REFERENCE:-maximhq/bifrost}"
 TITLE="${RELEASE_TITLE_OVERRIDE:-Bifrost HTTP v$VERSION}"
+RELEASE_ASSET_DIR="${RELEASE_ASSET_DIR:-}"
+
+release_assets=()
+if [[ -n "$RELEASE_ASSET_DIR" ]]; then
+  if [[ ! -d "$RELEASE_ASSET_DIR" ]]; then
+    echo "❌ Release asset directory not found: $RELEASE_ASSET_DIR" >&2
+    exit 1
+  fi
+
+  shopt -s nullglob
+  for asset_path in "$RELEASE_ASSET_DIR"/*; do
+    if [[ -f "$asset_path" ]]; then
+      release_assets+=("$asset_path")
+    fi
+  done
+  shopt -u nullglob
+
+  if [[ ${#release_assets[@]} -eq 0 ]]; then
+    echo "❌ Release asset directory is empty: $RELEASE_ASSET_DIR" >&2
+    exit 1
+  fi
+fi
 
 echo "🏷️ Finalizing bifrost-http v$VERSION release..."
 
@@ -103,14 +125,6 @@ if [[ -z "${GH_TOKEN:-}" && -z "${GITHUB_TOKEN:-}" ]]; then
   exit 1
 fi
 
-if gh release view "$TAG_NAME" >/dev/null 2>&1; then
-  echo "ℹ️ GitHub release already exists for $TAG_NAME"
-  if [[ -n "${GITHUB_OUTPUT:-}" ]]; then
-    echo "success=true" >> "$GITHUB_OUTPUT"
-  fi
-  exit 0
-fi
-
 PRERELEASE_FLAG=""
 if [[ "$SOURCE_VERSION" == *-* ]]; then
   PRERELEASE_FLAG="--prerelease"
@@ -136,6 +150,19 @@ This release includes the following plugin versions:
   done
 fi
 
+BINARY_INSTALLATION_SECTION="#### Binary Download
+\`\`\`bash
+npx @maximhq/bifrost --transport-version v$VERSION
+\`\`\`"
+
+if [[ ${#release_assets[@]} -gt 0 ]]; then
+  BINARY_INSTALLATION_SECTION="#### Binary Download
+Download the archive matching your platform from the release assets attached to this release.
+
+#### Checksum Verification
+Use \`bifrost-http_${VERSION}_checksums.txt\` to verify the archive you downloaded."
+fi
+
 BODY="## Bifrost HTTP Transport Release v$VERSION
 
 ### Source Upstream Release
@@ -150,10 +177,7 @@ ${CHANGELOG_BODY}${PLUGIN_UPDATES}
 docker run -p 8080:8080 ${DOCKER_IMAGE_REFERENCE}:v$VERSION
 \`\`\`
 
-#### Binary Download
-\`\`\`bash
-npx @maximhq/bifrost --transport-version v$VERSION
-\`\`\`
+${BINARY_INSTALLATION_SECTION}
 
 ### Docker Images
 - **\`${DOCKER_IMAGE_REFERENCE}:v$VERSION\`** - This specific version
@@ -162,11 +186,27 @@ npx @maximhq/bifrost --transport-version v$VERSION
 ---
 _This release was automatically created with dependencies: core \`${CORE_VERSION}\`, framework \`${FRAMEWORK_VERSION}\`. All plugins have been validated and updated._"
 
-echo "🎉 Creating GitHub release for $TITLE..."
-gh release create "$TAG_NAME" \
-  --title "$TITLE" \
-  --notes "$BODY" \
-  ${PRERELEASE_FLAG} ${LATEST_FLAG}
+release_status="Updated"
+if gh release view "$TAG_NAME" >/dev/null 2>&1; then
+  echo "ℹ️ GitHub release already exists for $TAG_NAME"
+else
+  echo "🎉 Creating GitHub release for $TITLE..."
+  release_command=(gh release create "$TAG_NAME" --title "$TITLE" --notes "$BODY")
+  if [[ -n "$PRERELEASE_FLAG" ]]; then
+    release_command+=("$PRERELEASE_FLAG")
+  fi
+  if [[ -n "$LATEST_FLAG" ]]; then
+    release_command+=("$LATEST_FLAG")
+  fi
+  "${release_command[@]}"
+  release_status="Created"
+fi
+
+if [[ ${#release_assets[@]} -gt 0 ]]; then
+  echo "📦 Uploading ${#release_assets[@]} release assets..."
+  gh release upload "$TAG_NAME" --clobber "${release_assets[@]}"
+  echo "✅ Release assets uploaded"
+fi
 
 echo "✅ Bifrost HTTP released successfully"
 
@@ -195,7 +235,10 @@ if [[ ${#PLUGINS_USED[@]} -gt 0 ]]; then
 else
   echo "   🔌 Available plugins: $(printf '%s ' "${!PLUGIN_VERSIONS[@]}")"
 fi
-echo "   🎉 GitHub release: Created"
+if [[ ${#release_assets[@]} -gt 0 ]]; then
+  echo "   📎 Release assets: ${#release_assets[@]} attached"
+fi
+echo "   🎉 GitHub release: ${release_status}"
 
 if [[ -n "${GITHUB_OUTPUT:-}" ]]; then
   echo "success=true" >> "$GITHUB_OUTPUT"

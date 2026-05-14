@@ -128,19 +128,12 @@ jobs:
           LOCAL_WORKSPACE_BUILD: "true"
         run: bash ./.github/workflows/scripts/build-executables.sh "${{ needs.prepare.outputs.fork_version }}" "darwin/amd64 darwin/arm64 linux/amd64 windows/amd64"
 
-      - name: Configure R2
-        env:
-          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
-          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
-          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
-        run: bash ./.github/workflows/scripts/configure-r2.sh
-
-      - name: Upload binaries to R2
-        env:
-          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
-          R2_BUCKET: ${{ secrets.R2_BUCKET }}
-          SKIP_LATEST_UPLOAD: "true"
-        run: bash ./.github/workflows/scripts/upload-to-r2.sh "transports/v${{ needs.prepare.outputs.fork_version }}"
+      - name: Upload x86 build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: fork-transport-dist-x86
+          path: dist/
+          if-no-files-found: error
 
   build-binaries-arm64:
     needs: [prepare]
@@ -182,19 +175,12 @@ jobs:
           LOCAL_WORKSPACE_BUILD: "true"
         run: bash ./.github/workflows/scripts/build-executables.sh "${{ needs.prepare.outputs.fork_version }}" "linux/arm64"
 
-      - name: Configure R2
-        env:
-          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
-          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
-          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
-        run: bash ./.github/workflows/scripts/configure-r2.sh
-
-      - name: Upload binaries to R2
-        env:
-          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
-          R2_BUCKET: ${{ secrets.R2_BUCKET }}
-          SKIP_LATEST_UPLOAD: "true"
-        run: bash ./.github/workflows/scripts/upload-to-r2.sh "transports/v${{ needs.prepare.outputs.fork_version }}"
+      - name: Upload arm64 build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: fork-transport-dist-arm64
+          path: dist/
+          if-no-files-found: error
 
   release:
     needs: [prepare, build-binaries-x86, build-binaries-arm64]
@@ -220,22 +206,31 @@ jobs:
           mkdir -p .github/workflows
           cp -R _workflow/.github/workflows/scripts .github/workflows/scripts
 
-      - name: Configure R2
-        env:
-          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
-          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
-          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
-        run: bash ./.github/workflows/scripts/configure-r2.sh
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: fork-transport-dist-*
+          path: _artifacts
+
+      - name: Merge build artifacts
+        run: |
+          set -euo pipefail
+          rm -rf dist
+          mkdir -p dist
+          cp -R _artifacts/fork-transport-dist-x86/. dist/
+          cp -R _artifacts/fork-transport-dist-arm64/. dist/
+
+      - name: Package release assets
+        run: bash ./.github/workflows/scripts/package-bifrost-http-release-assets.sh "${{ needs.prepare.outputs.fork_version }}"
 
       - name: Finalize fork transport release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
-          R2_BUCKET: ${{ secrets.R2_BUCKET }}
           TRANSPORT_TAG_NAME: ${{ needs.prepare.outputs.fork_tag }}
           UPSTREAM_SOURCE_TAG: ${{ needs.prepare.outputs.upstream_tag }}
           SKIP_GIT_TAG_CREATE: "true"
           ALLOW_SAME_CHANGELOG: "true"
           DOCKER_IMAGE_REFERENCE: ${{ needs.prepare.outputs.ghcr_image_ref }}
+          RELEASE_ASSET_DIR: release-assets
           RELEASE_TITLE_OVERRIDE: Fork Bifrost HTTP ${{ needs.prepare.outputs.fork_version }}
         run: bash ./.github/workflows/scripts/release-bifrost-http-finalize.sh "${{ needs.prepare.outputs.fork_version }}"

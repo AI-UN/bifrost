@@ -21,10 +21,6 @@ This repository now includes a fork-maintenance workflow set for keeping a maint
 ## Repository Secrets
 
 - Built-in `GITHUB_TOKEN`: used for pushing sync commits, creating tags, creating releases, and dispatching downstream workflows
-- `R2_ENDPOINT`
-- `R2_ACCESS_KEY_ID`
-- `R2_SECRET_ACCESS_KEY`
-- `R2_BUCKET`
 - `DOCKERHUB_USERNAME` (optional, only needed when Docker Hub publication is enabled)
 - `DOCKERHUB_TOKEN` (optional, only needed when Docker Hub publication is enabled)
 
@@ -32,7 +28,7 @@ This repository now includes a fork-maintenance workflow set for keeping a maint
 
 - `fork-upstream-sync.yml`: scheduled and manual upstream rebase sync for the maintained branch
 - `fork-sync-transport-release.yml`: detects the newest reachable upstream `transports/v*` tag on its schedule or via manual dispatch and creates or reuses the matching fork tag `vX.Y.Z-oss`
-- `fork-transport-release.yml`: builds transport artifacts from an explicit fork tag such as `v1.5.2-oss` and creates the fork GitHub release, while always overlaying the latest fork maintenance scripts from the maintained branch
+- `fork-transport-release.yml`: builds transport artifacts from an explicit fork tag such as `v1.5.2-oss`, packages multi-platform archives plus checksums, and attaches them to the fork GitHub release, while always overlaying the latest fork maintenance scripts from the maintained branch
 - `fork-docker-publish.yml`: publishes fork multi-arch Docker images to GHCR by default and Docker Hub when configured, while always overlaying the latest fork maintenance scripts from the maintained branch; manual runs on `patched` with no tag publish `:dev`
 
 ## Manual Dry-Run Order
