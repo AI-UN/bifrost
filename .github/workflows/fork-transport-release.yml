@@ -29,6 +29,7 @@ jobs:
       ref: ${{ steps.meta.outputs.ref }}
       fork_tag: ${{ steps.meta.outputs.fork_tag }}
       fork_version: ${{ steps.meta.outputs.fork_version }}
+      upstream_repo: ${{ steps.meta.outputs.upstream_repo }}
       upstream_tag: ${{ steps.meta.outputs.upstream_tag }}
       workflow_ref: ${{ steps.meta.outputs.workflow_ref }}
       ghcr_registry: ${{ steps.meta.outputs.ghcr_registry }}
@@ -79,6 +80,7 @@ jobs:
             echo "ref=${REF}"
             echo "fork_tag=${REF}"
             echo "fork_version=${FORK_VERSION}"
+            echo "upstream_repo=${UPSTREAM_REPO}"
             echo "upstream_tag=${UPSTREAM_TAG}"
             echo "workflow_ref=${WORKFLOW_REF}"
             echo "ghcr_registry=${GHCR_REGISTRY}"
@@ -126,7 +128,7 @@ jobs:
       - name: Build executables
         env:
           LOCAL_WORKSPACE_BUILD: "true"
-        run: bash ./.github/workflows/scripts/build-executables.sh "${{ needs.prepare.outputs.fork_version }}" "darwin/amd64 darwin/arm64 linux/amd64 windows/amd64"
+        run: bash ./.github/workflows/scripts/build-executables.sh "${{ needs.prepare.outputs.fork_version }}" "darwin/amd64 darwin/arm64 linux/amd64 windows/amd64 windows/arm64"
 
       - name: Upload x86 build artifacts
         uses: actions/upload-artifact@v4
@@ -227,6 +229,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TRANSPORT_TAG_NAME: ${{ needs.prepare.outputs.fork_tag }}
+          UPSTREAM_REPO_SLUG: ${{ needs.prepare.outputs.upstream_repo }}
           UPSTREAM_SOURCE_TAG: ${{ needs.prepare.outputs.upstream_tag }}
           SKIP_GIT_TAG_CREATE: "true"
           ALLOW_SAME_CHANGELOG: "true"

@@ -1397,7 +1397,7 @@ jobs:
         run: bash ./.github/workflows/scripts/install-cross-compilers.sh
 
       - name: Build executables
-        run: bash ./.github/workflows/scripts/build-executables.sh "${{ needs.detect-changes.outputs.transport-version }}" "darwin/amd64 darwin/arm64 linux/amd64 windows/amd64"
+        run: bash ./.github/workflows/scripts/build-executables.sh "${{ needs.detect-changes.outputs.transport-version }}" "darwin/amd64 darwin/arm64 linux/amd64 windows/amd64 windows/arm64"
 
       - name: Configure R2
         env:

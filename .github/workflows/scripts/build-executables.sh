@@ -5,7 +5,7 @@ set -euo pipefail
 # Usage: ./build-executables.sh <version> [platforms]
 # Examples:
 #   ./build-executables.sh 1.4.15                                          # Build all platforms
-#   ./build-executables.sh 1.4.15 "darwin/amd64 darwin/arm64 linux/amd64 windows/amd64"  # Build specific platforms
+#   ./build-executables.sh 1.4.15 "darwin/amd64 darwin/arm64 linux/amd64 windows/amd64 windows/arm64"  # Build specific platforms
 #   ./build-executables.sh 1.4.15 "linux/arm64"                            # Build single platform (native on ARM)
 
 # Require version argument (matches usage)
@@ -41,6 +41,7 @@ all_platforms=(
   "linux/amd64"
   "linux/arm64"
   "windows/amd64"
+  "windows/arm64"
 )
 
 if [[ -n "$PLATFORM_FILTER" ]]; then
@@ -111,6 +112,12 @@ for platform in "${platforms[@]}"; do
     if [[ "$GOARCH" = "amd64" ]]; then
       CC_COMPILER="x86_64-w64-mingw32-gcc"
       CXX_COMPILER="x86_64-w64-mingw32-g++"
+    elif [[ "$GOARCH" = "arm64" ]]; then
+      CC_COMPILER="aarch64-w64-mingw32-gcc"
+      CXX_COMPILER="aarch64-w64-mingw32-g++"
+    else
+      echo "Unsupported Windows architecture: $GOARCH" >&2
+      exit 1
     fi
 
     env "${workspace_env[@]}" CGO_ENABLED=1 GOOS="$GOOS" GOARCH="$GOARCH" CC="$CC_COMPILER" CXX="$CXX_COMPILER" \

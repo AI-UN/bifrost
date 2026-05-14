@@ -38,10 +38,12 @@ mkdir -p "$OUTPUT_DIR"
 OUTPUT_DIR_ABS="$(cd "$OUTPUT_DIR" && pwd)"
 
 package_binary() {
-  local goos="$1"
-  local goarch="$2"
-  local binary_name="$3"
-  local source_path="$DIST_DIR/$goos/$goarch/$binary_name"
+  local source_path="$1"
+  local relative_path="${source_path#${DIST_DIR}/}"
+  local goos="${relative_path%%/*}"
+  local remainder="${relative_path#*/}"
+  local goarch="${remainder%%/*}"
+  local binary_name="${source_path##*/}"
 
   if [[ ! -f "$source_path" ]]; then
     echo "❌ Missing built binary: $source_path" >&2
@@ -62,11 +64,18 @@ package_binary() {
   rm -rf "$staging_dir"
 }
 
-package_binary darwin amd64 bifrost-http
-package_binary darwin arm64 bifrost-http
-package_binary linux amd64 bifrost-http
-package_binary linux arm64 bifrost-http
-package_binary windows amd64 bifrost-http.exe
+shopt -s nullglob
+binaries=("$DIST_DIR"/*/*/bifrost-http "$DIST_DIR"/*/*/bifrost-http.exe)
+shopt -u nullglob
+
+if [[ ${#binaries[@]} -eq 0 ]]; then
+  echo "❌ No built bifrost-http binaries found under $DIST_DIR" >&2
+  exit 1
+fi
+
+for source_path in "${binaries[@]}"; do
+  package_binary "$source_path"
+done
 
 shopt -s nullglob
 assets=("$OUTPUT_DIR"/*.tar.gz "$OUTPUT_DIR"/*.zip)

@@ -17,6 +17,46 @@ ALLOW_SAME_CHANGELOG="${ALLOW_SAME_CHANGELOG:-false}"
 DOCKER_IMAGE_REFERENCE="${DOCKER_IMAGE_REFERENCE:-maximhq/bifrost}"
 TITLE="${RELEASE_TITLE_OVERRIDE:-Bifrost HTTP v$VERSION}"
 RELEASE_ASSET_DIR="${RELEASE_ASSET_DIR:-}"
+UPSTREAM_REPO_SLUG="${UPSTREAM_REPO_SLUG:-maximhq/bifrost}"
+
+trim_installation_sections() {
+  awk '
+    NR == 1 && /^## Bifrost HTTP Transport Release / { next }
+    /^### Installation$/ { exit }
+    { print }
+  '
+}
+
+load_changelog_body() {
+  local body=""
+  local upstream_body=""
+
+  body="$(grep -v '^<!--' transports/changelog.md | grep -v '^-->' || true)"
+  if [[ -n "$body" ]]; then
+    printf '%s' "$body"
+    return 0
+  fi
+
+  if ! command -v gh >/dev/null 2>&1; then
+    return 0
+  fi
+
+  if [[ -z "${UPSTREAM_SOURCE_TAG:-}" ]]; then
+    return 0
+  fi
+
+  upstream_body="$(gh release view "$UPSTREAM_SOURCE_TAG" --repo "$UPSTREAM_REPO_SLUG" --json body --jq '.body' 2>/dev/null || true)"
+  if [[ -z "$upstream_body" ]]; then
+    return 0
+  fi
+
+  body="$(printf '%s\n' "$upstream_body" | trim_installation_sections)"
+  if [[ -n "$body" ]]; then
+    echo "ℹ️ Using upstream release notes from ${UPSTREAM_REPO_SLUG}@${UPSTREAM_SOURCE_TAG}" >&2
+  fi
+
+  printf '%s' "$body"
+}
 
 release_assets=()
 if [[ -n "$RELEASE_ASSET_DIR" ]]; then
@@ -82,9 +122,9 @@ for plugin_name in "${!PLUGIN_VERSIONS[@]}"; do
   echo "     - $plugin_name: ${PLUGIN_VERSIONS[$plugin_name]}"
 done
 
-CHANGELOG_BODY="$(grep -v '^<!--' transports/changelog.md | grep -v '^-->' || true)"
+CHANGELOG_BODY="$(load_changelog_body)"
 if [[ -z "$CHANGELOG_BODY" ]]; then
-  echo "❌ Changelog is empty"
+  echo "❌ Changelog is empty and upstream release notes could not be loaded"
   exit 1
 fi
 
