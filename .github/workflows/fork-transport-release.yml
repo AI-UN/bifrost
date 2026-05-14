@@ -3,11 +3,11 @@ name: Fork Transport Release
 on:
   push:
     tags:
-      - 'transports/v*'
+      - 'v*-oss'
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Fork transport tag to release, for example transports/v1.5.2-0'
+        description: 'Fork release tag to release, for example v1.5.2-oss'
         required: false
         type: string
       upstream_tag:
@@ -51,17 +51,21 @@ jobs:
           fork_set_workflow_defaults
 
           REF="${{ inputs.tag }}"
-          if [[ -z "$REF" ]]; then
+          if [[ -z "$REF" && "${GITHUB_REF_TYPE:-}" == "tag" && -n "${GITHUB_REF_NAME:-}" ]]; then
             REF="${GITHUB_REF_NAME}"
           fi
           if [[ -z "$REF" ]]; then
-            echo "Unable to resolve release ref" >&2
+            echo "Fork Transport Release requires an explicit fork release tag. Use Fork Docker Publish for dev builds from ${PATCH_BRANCH}." >&2
             exit 1
           fi
 
           UPSTREAM_TAG="${{ inputs.upstream_tag }}"
           if [[ -z "$UPSTREAM_TAG" ]]; then
             UPSTREAM_TAG="$(fork_upstream_tag_from_fork_tag "$REF")"
+          fi
+          if [[ -z "$UPSTREAM_TAG" ]]; then
+            echo "Unable to resolve source upstream tag for ${REF}" >&2
+            exit 1
           fi
 
           FORK_VERSION="$(fork_transport_version_from_tag "$REF")"

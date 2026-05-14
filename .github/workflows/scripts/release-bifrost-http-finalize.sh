@@ -10,7 +10,7 @@ if [[ -z "${1:-}" ]]; then
 fi
 
 VERSION="$1"
-TAG_NAME="${TRANSPORT_TAG_NAME:-transports/v${VERSION}}"
+TAG_NAME="${TRANSPORT_TAG_NAME:-v${VERSION}}"
 UPSTREAM_SOURCE_TAG="${UPSTREAM_SOURCE_TAG:-$TAG_NAME}"
 SKIP_GIT_TAG_CREATE="${SKIP_GIT_TAG_CREATE:-false}"
 ALLOW_SAME_CHANGELOG="${ALLOW_SAME_CHANGELOG:-false}"
@@ -21,7 +21,10 @@ echo "🏷️ Finalizing bifrost-http v$VERSION release..."
 
 SOURCE_VERSION="${UPSTREAM_SOURCE_TAG#transports/v}"
 if [[ "$SOURCE_VERSION" == "$UPSTREAM_SOURCE_TAG" ]]; then
-  SOURCE_VERSION="$VERSION"
+  SOURCE_VERSION="${UPSTREAM_SOURCE_TAG#v}"
+fi
+if [[ "$SOURCE_VERSION" == "$UPSTREAM_SOURCE_TAG" ]]; then
+  SOURCE_VERSION="${VERSION%-oss}"
 fi
 
 CORE_VERSION="v$(tr -d '\n\r' < core/version)"
@@ -64,9 +67,9 @@ if [[ -z "$CHANGELOG_BODY" ]]; then
 fi
 
 echo "🔍 Finding previous tag..."
-PREV_TAG="$(git tag -l 'transports/v*' | sort -V | tail -1)"
+PREV_TAG="$(git tag -l 'v*-oss' | sort -V | tail -1)"
 if [[ "$PREV_TAG" == "$TAG_NAME" ]]; then
-  PREV_TAG="$(git tag -l 'transports/v*' | sort -V | tail -2 | head -1)"
+  PREV_TAG="$(git tag -l 'v*-oss' | sort -V | tail -2 | head -1)"
 fi
 echo "🔍 Previous tag: ${PREV_TAG:-<none>}"
 

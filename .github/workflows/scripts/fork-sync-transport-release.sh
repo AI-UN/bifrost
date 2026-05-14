@@ -156,7 +156,7 @@ main() {
     return 0
   fi
 
-  fork_tag="transports/v$(fork_transport_version_from_tag "$latest_upstream_tag")-0"
+  fork_tag="$(fork_fork_tag_from_upstream_tag "$latest_upstream_tag")"
   commit_message="chore(fork-upstream-release-sync): record ${fork_tag} from ${latest_upstream_tag} --skip-ci --skip-pipeline"
 
   if ! remote_tag_exists "$fork_tag"; then

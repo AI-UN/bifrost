@@ -58,8 +58,16 @@ fork_set_sync_state_value() {
 
 fork_transport_version_from_tag() {
   local tag="$1"
-  tag="${tag#transports/v}"
+  tag="${tag#transports/}"
+  tag="${tag#v}"
   printf '%s\n' "$tag"
+}
+
+fork_fork_tag_from_upstream_tag() {
+  local upstream_tag="$1"
+  local version=""
+  version="$(fork_transport_version_from_tag "$upstream_tag")"
+  printf 'v%s-oss\n' "$version"
 }
 
 fork_list_upstream_transport_tags() {
@@ -78,7 +86,10 @@ fork_upstream_tag_from_fork_tag() {
   local fork_tag="$1"
   local version=""
   version="$(fork_transport_version_from_tag "$fork_tag")"
-  version="${version%-*}"
+  if [[ "$version" == "dev" ]]; then
+    return 1
+  fi
+  version="${version%-oss}"
   printf 'transports/v%s\n' "$version"
 }
 

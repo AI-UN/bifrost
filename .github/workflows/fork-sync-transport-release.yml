@@ -10,7 +10,7 @@ on:
         required: false
         type: string
       upstream_tag:
-        description: 'Specific upstream transports/v* tag to evaluate'
+        description: 'Specific upstream transports/v* tag to evaluate, for example transports/v1.5.2'
         required: false
         type: string
       dry_run:
