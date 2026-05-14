@@ -55,38 +55,11 @@ else
   echo "📋 Building all platforms: ${platforms[*]}"
 fi
 
-# Detect host OS/architecture for native build detection
-HOST_OS_RAW=$(uname -s)
-case "${HOST_OS_RAW,,}" in
-  linux*)
-    HOST_GOOS="linux"
-    ;;
-  darwin*)
-    HOST_GOOS="darwin"
-    ;;
-  msys*|mingw*|cygwin*)
-    HOST_GOOS="windows"
-    ;;
-  *)
-    HOST_GOOS="unknown"
-    ;;
-esac
-
-HOST_ARCH_RAW=$(uname -m)
-case "$HOST_ARCH_RAW" in
-  x86_64|amd64)
-    HOST_GOARCH="amd64"
-    ;;
-  aarch64|arm64)
-    HOST_GOARCH="arm64"
-    ;;
-  i386|i686)
-    HOST_GOARCH="386"
-    ;;
-  *)
-    HOST_GOARCH="$HOST_ARCH_RAW"
-    ;;
-esac
+# Detect host OS/architecture for native build detection.
+# Prefer Go's own host introspection instead of uname so Windows ARM runners
+# don't get misdetected through the Git Bash compatibility layer.
+HOST_GOOS="$(go env GOHOSTOS)"
+HOST_GOARCH="$(go env GOHOSTARCH)"
 
 MODULE_PATH="$PROJECT_ROOT/transports/bifrost-http"
 
