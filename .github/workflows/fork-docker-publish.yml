@@ -1,0 +1,292 @@
+name: Fork Docker Publish
+
+on:
+  push:
+    tags:
+      - 'v*-oss'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Fork release tag to publish, for example v1.5.2-oss; leave empty on patched to publish :dev'
+        required: false
+        type: string
+      upstream_tag:
+        description: 'Source upstream transports/v* tag'
+        required: false
+        type: string
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: fork-docker-publish-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      ref: ${{ steps.meta.outputs.ref }}
+      fork_tag: ${{ steps.meta.outputs.fork_tag }}
+      fork_version: ${{ steps.meta.outputs.fork_version }}
+      image_tag: ${{ steps.meta.outputs.image_tag }}
+      upstream_tag: ${{ steps.meta.outputs.upstream_tag }}
+      publish_latest_tags: ${{ steps.meta.outputs.publish_latest_tags }}
+      workflow_ref: ${{ steps.meta.outputs.workflow_ref }}
+      ghcr_registry: ${{ steps.meta.outputs.ghcr_registry }}
+      ghcr_image_ref: ${{ steps.meta.outputs.ghcr_image_ref }}
+      dockerhub_image_ref: ${{ steps.meta.outputs.dockerhub_image_ref }}
+      dockerhub_enabled: ${{ steps.meta.outputs.dockerhub_enabled }}
+    env:
+      REPOSITORY_DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+      GHCR_IMAGE_NAME: ${{ vars.GHCR_IMAGE_NAME }}
+      GHCR_REGISTRY: ${{ vars.GHCR_REGISTRY }}
+      DOCKERHUB_IMAGE_NAME: ${{ vars.DOCKERHUB_IMAGE_NAME }}
+      DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+      DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Resolve docker metadata
+        id: meta
+        run: |
+          set -euo pipefail
+          source ./.github/workflows/scripts/fork-workflow-config.sh
+          source ./.github/workflows/scripts/fork-sync-state.sh
+
+          fork_set_workflow_defaults
+
+          REF="${{ inputs.tag }}"
+          IMAGE_TAG=""
+          PUBLISH_LATEST_TAGS=""
+          if [[ -z "$REF" && "${GITHUB_REF_TYPE:-}" == "tag" && -n "${GITHUB_REF_NAME:-}" ]]; then
+            REF="${GITHUB_REF_NAME}"
+          fi
+          GHCR_IMAGE_REF="${GHCR_REGISTRY}/${GHCR_IMAGE_NAME}"
+          DOCKERHUB_ENABLED="false"
+          WORKFLOW_REF="${PATCH_BRANCH}"
+          if [[ "${GITHUB_EVENT_NAME:-}" == "workflow_dispatch" && -n "${GITHUB_REF_NAME:-}" ]]; then
+            WORKFLOW_REF="${GITHUB_REF_NAME}"
+          fi
+
+          UPSTREAM_TAG="${{ inputs.upstream_tag }}"
+          if [[ -z "$REF" ]]; then
+            if [[ "${GITHUB_EVENT_NAME:-}" == "workflow_dispatch" && "${GITHUB_REF_NAME:-}" == "$PATCH_BRANCH" ]]; then
+              REF="$PATCH_BRANCH"
+              FORK_VERSION="dev"
+              IMAGE_TAG="dev"
+              PUBLISH_LATEST_TAGS="false"
+              if [[ -z "$UPSTREAM_TAG" ]]; then
+                UPSTREAM_TAG="$(fork_latest_reachable_upstream_transport_tag "$REF")"
+              fi
+            else
+              echo "Manual docker publish without a tag is only supported on ${PATCH_BRANCH}." >&2
+              exit 1
+            fi
+          else
+            if [[ -z "$UPSTREAM_TAG" ]]; then
+              UPSTREAM_TAG="$(fork_upstream_tag_from_fork_tag "$REF")"
+            fi
+            FORK_VERSION="$(fork_transport_version_from_tag "$REF")"
+            IMAGE_TAG="v${FORK_VERSION}"
+          fi
+
+          if fork_has_dockerhub_publish_config; then
+            DOCKERHUB_ENABLED="true"
+          fi
+
+          {
+            echo "ref=${REF}"
+            echo "fork_tag=${REF}"
+            echo "fork_version=${FORK_VERSION}"
+            echo "image_tag=${IMAGE_TAG}"
+            echo "upstream_tag=${UPSTREAM_TAG}"
+            echo "publish_latest_tags=${PUBLISH_LATEST_TAGS}"
+            echo "workflow_ref=${WORKFLOW_REF}"
+            echo "ghcr_registry=${GHCR_REGISTRY}"
+            echo "ghcr_image_ref=${GHCR_IMAGE_REF}"
+            echo "dockerhub_image_ref=${DOCKERHUB_IMAGE_NAME}"
+            echo "dockerhub_enabled=${DOCKERHUB_ENABLED}"
+          } >> "$GITHUB_OUTPUT"
+
+  build-amd64:
+    needs: [prepare]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout fork automation branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.workflow_ref }}
+          path: _workflow
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.ref }}
+
+      - name: Overlay fork maintenance scripts
+        run: |
+          rm -rf .github/workflows/scripts
+          mkdir -p .github/workflows
+          cp -R _workflow/.github/workflows/scripts .github/workflows/scripts
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ needs.prepare.outputs.ghcr_registry }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Login to Docker Hub
+        if: needs.prepare.outputs.dockerhub_enabled == 'true'
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build and push amd64 image
+        env:
+          GHCR_IMAGE_REF: ${{ needs.prepare.outputs.ghcr_image_ref }}
+          DOCKERHUB_IMAGE_REF: ${{ needs.prepare.outputs.dockerhub_image_ref }}
+          FORK_VERSION: ${{ needs.prepare.outputs.fork_version }}
+          IMAGE_TAG: ${{ needs.prepare.outputs.image_tag }}
+          DOCKERHUB_ENABLED: ${{ needs.prepare.outputs.dockerhub_enabled }}
+        run: |
+          set -euo pipefail
+          tags=("${GHCR_IMAGE_REF}:${IMAGE_TAG}-amd64")
+          if [[ "$DOCKERHUB_ENABLED" == 'true' ]]; then
+            tags+=("${DOCKERHUB_IMAGE_REF}:${IMAGE_TAG}-amd64")
+          fi
+          tag_args=()
+          for tag in "${tags[@]}"; do
+            tag_args+=(--tag "$tag")
+          done
+
+          docker buildx build \
+            --platform linux/amd64 \
+            --push \
+            --file ./transports/Dockerfile.local \
+            --build-arg "VERSION=${FORK_VERSION}" \
+            "${tag_args[@]}" \
+            .
+
+  build-arm64:
+    needs: [prepare]
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - name: Checkout fork automation branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.workflow_ref }}
+          path: _workflow
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.ref }}
+
+      - name: Overlay fork maintenance scripts
+        run: |
+          rm -rf .github/workflows/scripts
+          mkdir -p .github/workflows
+          cp -R _workflow/.github/workflows/scripts .github/workflows/scripts
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ needs.prepare.outputs.ghcr_registry }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Login to Docker Hub
+        if: needs.prepare.outputs.dockerhub_enabled == 'true'
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build and push arm64 image
+        env:
+          GHCR_IMAGE_REF: ${{ needs.prepare.outputs.ghcr_image_ref }}
+          DOCKERHUB_IMAGE_REF: ${{ needs.prepare.outputs.dockerhub_image_ref }}
+          FORK_VERSION: ${{ needs.prepare.outputs.fork_version }}
+          IMAGE_TAG: ${{ needs.prepare.outputs.image_tag }}
+          DOCKERHUB_ENABLED: ${{ needs.prepare.outputs.dockerhub_enabled }}
+        run: |
+          set -euo pipefail
+          tags=("${GHCR_IMAGE_REF}:${IMAGE_TAG}-arm64")
+          if [[ "$DOCKERHUB_ENABLED" == 'true' ]]; then
+            tags+=("${DOCKERHUB_IMAGE_REF}:${IMAGE_TAG}-arm64")
+          fi
+          tag_args=()
+          for tag in "${tags[@]}"; do
+            tag_args+=(--tag "$tag")
+          done
+
+          docker buildx build \
+            --platform linux/arm64 \
+            --push \
+            --file ./transports/Dockerfile.local \
+            --build-arg "VERSION=${FORK_VERSION}" \
+            "${tag_args[@]}" \
+            .
+
+  manifest:
+    needs: [prepare, build-amd64, build-arm64]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout fork automation branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.workflow_ref }}
+          path: _workflow
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.ref }}
+
+      - name: Overlay fork maintenance scripts
+        run: |
+          rm -rf .github/workflows/scripts
+          mkdir -p .github/workflows
+          cp -R _workflow/.github/workflows/scripts .github/workflows/scripts
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ needs.prepare.outputs.ghcr_registry }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Login to Docker Hub
+        if: needs.prepare.outputs.dockerhub_enabled == 'true'
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Publish GHCR manifest
+        env:
+          IMAGE_REF: ${{ needs.prepare.outputs.ghcr_image_ref }}
+          IMAGE_TAG: ${{ needs.prepare.outputs.image_tag }}
+          PUBLISH_LATEST_TAGS: ${{ needs.prepare.outputs.publish_latest_tags }}
+          SOURCE_TAG_FOR_LATEST: ${{ needs.prepare.outputs.upstream_tag }}
+        run: bash ./.github/workflows/scripts/create-docker-manifest.sh "${{ needs.prepare.outputs.fork_version }}"
+
+      - name: Publish Docker Hub manifest
+        if: needs.prepare.outputs.dockerhub_enabled == 'true'
+        env:
+          IMAGE_REF: ${{ needs.prepare.outputs.dockerhub_image_ref }}
+          IMAGE_TAG: ${{ needs.prepare.outputs.image_tag }}
+          PUBLISH_LATEST_TAGS: ${{ needs.prepare.outputs.publish_latest_tags }}
+          SOURCE_TAG_FOR_LATEST: ${{ needs.prepare.outputs.upstream_tag }}
+        run: bash ./.github/workflows/scripts/create-docker-manifest.sh "${{ needs.prepare.outputs.fork_version }}"

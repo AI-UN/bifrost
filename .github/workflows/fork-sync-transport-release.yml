@@ -1,0 +1,58 @@
+name: Fork Sync Transport Release
+
+on:
+  schedule:
+    - cron: '47 * * * *'
+  workflow_dispatch:
+    inputs:
+      patch_branch:
+        description: 'Maintained fork branch to inspect'
+        required: false
+        type: string
+      upstream_tag:
+        description: 'Specific upstream transports/v* tag to evaluate, for example transports/v1.5.2'
+        required: false
+        type: string
+      dry_run:
+        description: 'Run detection without creating tags or dispatching downstream workflows'
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  actions: write
+  contents: write
+  packages: read
+
+concurrency:
+  group: fork-sync-transport-release
+  cancel-in-progress: false
+
+jobs:
+  sync-release:
+    runs-on: ubuntu-latest
+    env:
+      REPOSITORY_DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+      UPSTREAM_REPO: ${{ vars.UPSTREAM_REPO }}
+      UPSTREAM_BRANCH: ${{ vars.UPSTREAM_BRANCH }}
+      PATCH_BRANCH: ${{ inputs.patch_branch || vars.PATCH_BRANCH }}
+      GHCR_REGISTRY: ${{ vars.GHCR_REGISTRY }}
+      GHCR_IMAGE_NAME: ${{ vars.GHCR_IMAGE_NAME }}
+      FORK_SYNC_STATE_FILE: .fork-upstream-sync.env
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      UPSTREAM_TAG: ${{ inputs.upstream_tag }}
+      DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run || 'false' }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Configure Git identity
+        run: |
+          git config user.name "fork-upstream-release-sync[bot]"
+          git config user.email "fork-upstream-release-sync@users.noreply.github.com"
+
+      - name: Run transport release sync
+        run: bash ./.github/workflows/scripts/fork-sync-transport-release.sh

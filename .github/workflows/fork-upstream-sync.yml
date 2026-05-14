@@ -1,0 +1,48 @@
+name: Fork Upstream Sync
+
+on:
+  schedule:
+    - cron: '17 3 * * *'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Run sync without pushing branches or dispatching downstream workflows'
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  actions: write
+  contents: write
+  issues: write
+
+concurrency:
+  group: fork-upstream-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    env:
+      REPOSITORY_DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+      UPSTREAM_REPO: ${{ vars.UPSTREAM_REPO }}
+      UPSTREAM_BRANCH: ${{ vars.UPSTREAM_BRANCH }}
+      PATCH_BRANCH: ${{ vars.PATCH_BRANCH }}
+      TRACKING_ISSUE_LABEL: fork-upstream-sync-blocked
+      FORK_SYNC_STATE_FILE: .fork-upstream-sync.env
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run || 'false' }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Configure Git identity
+        run: |
+          git config user.name "fork-upstream-sync[bot]"
+          git config user.email "fork-upstream-sync@users.noreply.github.com"
+
+      - name: Run fork upstream sync
+        run: bash ./.github/workflows/scripts/fork-upstream-sync.sh

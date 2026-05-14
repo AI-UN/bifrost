@@ -15,12 +15,20 @@ if [[ -z "${1:-}" ]]; then
 fi
 VERSION="$1"
 PLATFORM_FILTER="${2:-}"
+LOCAL_WORKSPACE_BUILD="${LOCAL_WORKSPACE_BUILD:-false}"
 
 echo "🔨 Building Go executables with version: $VERSION"
 
 # Get the script directory and project root
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
+
+if [[ "$LOCAL_WORKSPACE_BUILD" == "true" ]]; then
+  echo "🔧 Enabling local Go workspace build"
+  cd "$PROJECT_ROOT"
+  # Tags may point at commits before go.work was tracked; create one on demand.
+  source "$SCRIPT_DIR/setup-go-workspace.sh"
+fi
 
 # Clean and create dist directory
 rm -rf "$PROJECT_ROOT/dist"
@@ -68,6 +76,11 @@ for platform in "${platforms[@]}"; do
   echo "Building bifrost-http for $PLATFORM_DIR/$GOARCH..."
   mkdir -p "$PROJECT_ROOT/dist/$PLATFORM_DIR/$GOARCH"
 
+  workspace_env=()
+  if [[ "$LOCAL_WORKSPACE_BUILD" != "true" ]]; then
+    workspace_env+=(GOWORK=off)
+  fi
+
   # Change to the module directory for building
   cd "$MODULE_PATH"
 
@@ -89,7 +102,7 @@ for platform in "${platforms[@]}"; do
       CXX_COMPILER="aarch64-linux-musl-g++"
     fi
 
-    env GOWORK=off CGO_ENABLED=1 GOOS="$GOOS" GOARCH="$GOARCH" CC="$CC_COMPILER" CXX="$CXX_COMPILER" \
+    env "${workspace_env[@]}" CGO_ENABLED=1 GOOS="$GOOS" GOARCH="$GOARCH" CC="$CC_COMPILER" CXX="$CXX_COMPILER" \
       go build -trimpath -tags "netgo,osusergo,sqlite_static" \
       -ldflags "-s -w -buildid= -extldflags '-static' -X main.Version=v${VERSION}" \
       -o "$PROJECT_ROOT/dist/$PLATFORM_DIR/$GOARCH/$output_name" .
@@ -100,7 +113,7 @@ for platform in "${platforms[@]}"; do
       CXX_COMPILER="x86_64-w64-mingw32-g++"
     fi
 
-    env GOWORK=off CGO_ENABLED=1 GOOS="$GOOS" GOARCH="$GOARCH" CC="$CC_COMPILER" CXX="$CXX_COMPILER" \
+    env "${workspace_env[@]}" CGO_ENABLED=1 GOOS="$GOOS" GOARCH="$GOARCH" CC="$CC_COMPILER" CXX="$CXX_COMPILER" \
       go build -trimpath -ldflags "-s -w -buildid= -X main.Version=v${VERSION}" \
       -o "$PROJECT_ROOT/dist/$PLATFORM_DIR/$GOARCH/$output_name" .
 
@@ -113,7 +126,7 @@ for platform in "${platforms[@]}"; do
       CXX_COMPILER="oa64-clang++"
     fi
 
-    env GOWORK=off CGO_ENABLED=1 GOOS="$GOOS" GOARCH="$GOARCH" CC="$CC_COMPILER" CXX="$CXX_COMPILER" \
+    env "${workspace_env[@]}" CGO_ENABLED=1 GOOS="$GOOS" GOARCH="$GOARCH" CC="$CC_COMPILER" CXX="$CXX_COMPILER" \
       go build -trimpath -ldflags "-s -w -buildid= -X main.Version=v${VERSION}" \
       -o "$PROJECT_ROOT/dist/$PLATFORM_DIR/$GOARCH/$output_name" .
   fi
