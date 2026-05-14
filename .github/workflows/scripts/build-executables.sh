@@ -55,8 +55,38 @@ else
   echo "📋 Building all platforms: ${platforms[*]}"
 fi
 
-# Detect host architecture for native build detection
-HOST_ARCH=$(uname -m)
+# Detect host OS/architecture for native build detection
+HOST_OS_RAW=$(uname -s)
+case "${HOST_OS_RAW,,}" in
+  linux*)
+    HOST_GOOS="linux"
+    ;;
+  darwin*)
+    HOST_GOOS="darwin"
+    ;;
+  msys*|mingw*|cygwin*)
+    HOST_GOOS="windows"
+    ;;
+  *)
+    HOST_GOOS="unknown"
+    ;;
+esac
+
+HOST_ARCH_RAW=$(uname -m)
+case "$HOST_ARCH_RAW" in
+  x86_64|amd64)
+    HOST_GOARCH="amd64"
+    ;;
+  aarch64|arm64)
+    HOST_GOARCH="arm64"
+    ;;
+  i386|i686)
+    HOST_GOARCH="386"
+    ;;
+  *)
+    HOST_GOARCH="$HOST_ARCH_RAW"
+    ;;
+esac
 
 MODULE_PATH="$PROJECT_ROOT/transports/bifrost-http"
 
@@ -87,12 +117,8 @@ for platform in "${platforms[@]}"; do
 
   if [[ "$GOOS" = "linux" ]]; then
     # Detect native build: if target arch matches host, use system compiler
-    if [[ "$GOARCH" = "arm64" ]] && [[ "$HOST_ARCH" = "aarch64" || "$HOST_ARCH" = "arm64" ]]; then
-      echo "  🏠 Native ARM64 build detected — using system compiler"
-      CC_COMPILER="${CC:-gcc}"
-      CXX_COMPILER="${CXX:-g++}"
-    elif [[ "$GOARCH" = "amd64" ]] && [[ "$HOST_ARCH" = "x86_64" ]]; then
-      echo "  🏠 Native AMD64 build detected — using system compiler"
+    if [[ "$GOOS" == "$HOST_GOOS" && "$GOARCH" == "$HOST_GOARCH" ]]; then
+      echo "  🏠 Native Linux ${GOARCH} build detected — using system compiler"
       CC_COMPILER="${CC:-gcc}"
       CXX_COMPILER="${CXX:-g++}"
     elif [[ "$GOARCH" = "amd64" ]]; then
@@ -101,6 +127,9 @@ for platform in "${platforms[@]}"; do
     elif [[ "$GOARCH" = "arm64" ]]; then
       CC_COMPILER="aarch64-linux-musl-gcc"
       CXX_COMPILER="aarch64-linux-musl-g++"
+    else
+      echo "Unsupported Linux architecture: $GOARCH" >&2
+      exit 1
     fi
 
     env "${workspace_env[@]}" CGO_ENABLED=1 GOOS="$GOOS" GOARCH="$GOARCH" CC="$CC_COMPILER" CXX="$CXX_COMPILER" \
@@ -109,7 +138,11 @@ for platform in "${platforms[@]}"; do
       -o "$PROJECT_ROOT/dist/$PLATFORM_DIR/$GOARCH/$output_name" .
 
   elif [[ "$GOOS" = "windows" ]]; then
-    if [[ "$GOARCH" = "amd64" ]]; then
+    if [[ "$GOOS" == "$HOST_GOOS" && "$GOARCH" == "$HOST_GOARCH" ]]; then
+      echo "  🏠 Native Windows ${GOARCH} build detected — using system compiler"
+      CC_COMPILER="${CC:-gcc}"
+      CXX_COMPILER="${CXX:-g++}"
+    elif [[ "$GOARCH" = "amd64" ]]; then
       CC_COMPILER="x86_64-w64-mingw32-gcc"
       CXX_COMPILER="x86_64-w64-mingw32-g++"
     elif [[ "$GOARCH" = "arm64" ]]; then
@@ -125,12 +158,19 @@ for platform in "${platforms[@]}"; do
       -o "$PROJECT_ROOT/dist/$PLATFORM_DIR/$GOARCH/$output_name" .
 
    else # Darwin (macOS)
-    if [[ "$GOARCH" = "amd64" ]]; then
+    if [[ "$GOOS" == "$HOST_GOOS" && "$GOARCH" == "$HOST_GOARCH" ]]; then
+      echo "  🏠 Native Darwin ${GOARCH} build detected — using system compiler"
+      CC_COMPILER="${CC:-clang}"
+      CXX_COMPILER="${CXX:-clang++}"
+    elif [[ "$GOARCH" = "amd64" ]]; then
       CC_COMPILER="o64-clang"
       CXX_COMPILER="o64-clang++"
     elif [[ "$GOARCH" = "arm64" ]]; then
       CC_COMPILER="oa64-clang"
       CXX_COMPILER="oa64-clang++"
+    else
+      echo "Unsupported Darwin architecture: $GOARCH" >&2
+      exit 1
     fi
 
     env "${workspace_env[@]}" CGO_ENABLED=1 GOOS="$GOOS" GOARCH="$GOARCH" CC="$CC_COMPILER" CXX="$CXX_COMPILER" \
