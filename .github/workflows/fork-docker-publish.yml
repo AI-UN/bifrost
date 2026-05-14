@@ -115,16 +115,16 @@ jobs:
     needs: [prepare]
     runs-on: ubuntu-latest
     steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.ref }}
+
       - name: Checkout fork automation branch
         uses: actions/checkout@v4
         with:
           ref: ${{ needs.prepare.outputs.workflow_ref }}
           path: _workflow
-
-      - name: Checkout repository
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ needs.prepare.outputs.ref }}
 
       - name: Overlay fork maintenance scripts
         run: |
@@ -179,16 +179,16 @@ jobs:
     needs: [prepare]
     runs-on: ubuntu-24.04-arm
     steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.ref }}
+
       - name: Checkout fork automation branch
         uses: actions/checkout@v4
         with:
           ref: ${{ needs.prepare.outputs.workflow_ref }}
           path: _workflow
-
-      - name: Checkout repository
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ needs.prepare.outputs.ref }}
 
       - name: Overlay fork maintenance scripts
         run: |
@@ -243,16 +243,16 @@ jobs:
     needs: [prepare, build-amd64, build-arm64]
     runs-on: ubuntu-latest
     steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.ref }}
+
       - name: Checkout fork automation branch
         uses: actions/checkout@v4
         with:
           ref: ${{ needs.prepare.outputs.workflow_ref }}
           path: _workflow
-
-      - name: Checkout repository
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ needs.prepare.outputs.ref }}
 
       - name: Overlay fork maintenance scripts
         run: |

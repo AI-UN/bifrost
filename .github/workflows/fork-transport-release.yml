@@ -89,17 +89,17 @@ jobs:
     needs: [prepare]
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout fork automation branch
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ needs.prepare.outputs.workflow_ref }}
-          path: _workflow
-
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
           ref: ${{ needs.prepare.outputs.ref }}
           fetch-depth: 0
+
+      - name: Checkout fork automation branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.workflow_ref }}
+          path: _workflow
 
       - name: Overlay fork maintenance scripts
         run: |
@@ -146,17 +146,17 @@ jobs:
     needs: [prepare]
     runs-on: ubuntu-24.04-arm
     steps:
-      - name: Checkout fork automation branch
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ needs.prepare.outputs.workflow_ref }}
-          path: _workflow
-
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
           ref: ${{ needs.prepare.outputs.ref }}
           fetch-depth: 0
+
+      - name: Checkout fork automation branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.workflow_ref }}
+          path: _workflow
 
       - name: Overlay fork maintenance scripts
         run: |
@@ -200,12 +200,6 @@ jobs:
     needs: [prepare, build-binaries-x86, build-binaries-arm64]
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout fork automation branch
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ needs.prepare.outputs.workflow_ref }}
-          path: _workflow
-
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
@@ -213,6 +207,12 @@ jobs:
           fetch-depth: 0
           fetch-tags: true
           token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Checkout fork automation branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.workflow_ref }}
+          path: _workflow
 
       - name: Overlay fork maintenance scripts
         run: |
