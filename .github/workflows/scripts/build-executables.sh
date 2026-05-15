@@ -5,7 +5,7 @@ set -euo pipefail
 # Usage: ./build-executables.sh <version> [platforms]
 # Examples:
 #   ./build-executables.sh 1.4.15                                          # Build all platforms
-#   ./build-executables.sh 1.4.15 "darwin/amd64 darwin/arm64 linux/amd64 windows/amd64"  # Build specific platforms
+#   ./build-executables.sh 1.4.15 "darwin/amd64 darwin/arm64 linux/amd64 windows/amd64 windows/arm64"  # Build specific platforms
 #   ./build-executables.sh 1.4.15 "linux/arm64"                            # Build single platform (native on ARM)
 
 # Require version argument (matches usage)
@@ -15,12 +15,20 @@ if [[ -z "${1:-}" ]]; then
 fi
 VERSION="$1"
 PLATFORM_FILTER="${2:-}"
+LOCAL_WORKSPACE_BUILD="${LOCAL_WORKSPACE_BUILD:-false}"
 
 echo "🔨 Building Go executables with version: $VERSION"
 
 # Get the script directory and project root
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
+
+if [[ "$LOCAL_WORKSPACE_BUILD" == "true" ]]; then
+  echo "🔧 Enabling local Go workspace build"
+  cd "$PROJECT_ROOT"
+  # Tags may point at commits before go.work was tracked; create one on demand.
+  source "$SCRIPT_DIR/setup-go-workspace.sh"
+fi
 
 # Clean and create dist directory
 rm -rf "$PROJECT_ROOT/dist"
@@ -33,6 +41,7 @@ all_platforms=(
   "linux/amd64"
   "linux/arm64"
   "windows/amd64"
+  "windows/arm64"
 )
 
 if [[ -n "$PLATFORM_FILTER" ]]; then
@@ -46,10 +55,18 @@ else
   echo "📋 Building all platforms: ${platforms[*]}"
 fi
 
-# Detect host architecture for native build detection
-HOST_ARCH=$(uname -m)
+# Detect host OS/architecture for native build detection.
+# Prefer Go's own host introspection instead of uname so Windows ARM runners
+# don't get misdetected through the Git Bash compatibility layer.
+HOST_GOOS="$(go env GOHOSTOS)"
+HOST_GOARCH="$(go env GOHOSTARCH)"
 
 MODULE_PATH="$PROJECT_ROOT/transports/bifrost-http"
+
+build_env=(env)
+if [[ "$LOCAL_WORKSPACE_BUILD" != "true" ]]; then
+  build_env+=(GOWORK=off)
+fi
 
 
 for platform in "${platforms[@]}"; do
@@ -73,12 +90,8 @@ for platform in "${platforms[@]}"; do
 
   if [[ "$GOOS" = "linux" ]]; then
     # Detect native build: if target arch matches host, use system compiler
-    if [[ "$GOARCH" = "arm64" ]] && [[ "$HOST_ARCH" = "aarch64" || "$HOST_ARCH" = "arm64" ]]; then
-      echo "  🏠 Native ARM64 build detected — using system compiler"
-      CC_COMPILER="${CC:-gcc}"
-      CXX_COMPILER="${CXX:-g++}"
-    elif [[ "$GOARCH" = "amd64" ]] && [[ "$HOST_ARCH" = "x86_64" ]]; then
-      echo "  🏠 Native AMD64 build detected — using system compiler"
+    if [[ "$GOOS" == "$HOST_GOOS" && "$GOARCH" == "$HOST_GOARCH" ]]; then
+      echo "  🏠 Native Linux ${GOARCH} build detected — using system compiler"
       CC_COMPILER="${CC:-gcc}"
       CXX_COMPILER="${CXX:-g++}"
     elif [[ "$GOARCH" = "amd64" ]]; then
@@ -87,33 +100,58 @@ for platform in "${platforms[@]}"; do
     elif [[ "$GOARCH" = "arm64" ]]; then
       CC_COMPILER="aarch64-linux-musl-gcc"
       CXX_COMPILER="aarch64-linux-musl-g++"
+    else
+      echo "Unsupported Linux architecture: $GOARCH" >&2
+      exit 1
     fi
 
-    env GOWORK=off CGO_ENABLED=1 GOOS="$GOOS" GOARCH="$GOARCH" CC="$CC_COMPILER" CXX="$CXX_COMPILER" \
+    "${build_env[@]}" CGO_ENABLED=1 GOOS="$GOOS" GOARCH="$GOARCH" CC="$CC_COMPILER" CXX="$CXX_COMPILER" \
       go build -trimpath -tags "netgo,osusergo,sqlite_static" \
       -ldflags "-s -w -buildid= -extldflags '-static' -X main.Version=v${VERSION}" \
       -o "$PROJECT_ROOT/dist/$PLATFORM_DIR/$GOARCH/$output_name" .
 
   elif [[ "$GOOS" = "windows" ]]; then
-    if [[ "$GOARCH" = "amd64" ]]; then
+    if [[ "$GOOS" == "$HOST_GOOS" && "$GOARCH" == "$HOST_GOARCH" ]]; then
+      echo "  🏠 Native Windows ${GOARCH} build detected — using system compiler"
+      if [[ "$GOARCH" = "arm64" ]]; then
+        CC_COMPILER="${CC:-clang}"
+        CXX_COMPILER="${CXX:-clang++}"
+      else
+        CC_COMPILER="${CC:-gcc}"
+        CXX_COMPILER="${CXX:-g++}"
+      fi
+    elif [[ "$GOARCH" = "amd64" ]]; then
       CC_COMPILER="x86_64-w64-mingw32-gcc"
       CXX_COMPILER="x86_64-w64-mingw32-g++"
+    elif [[ "$GOARCH" = "arm64" ]]; then
+      CC_COMPILER="aarch64-w64-mingw32-gcc"
+      CXX_COMPILER="aarch64-w64-mingw32-g++"
+    else
+      echo "Unsupported Windows architecture: $GOARCH" >&2
+      exit 1
     fi
 
-    env GOWORK=off CGO_ENABLED=1 GOOS="$GOOS" GOARCH="$GOARCH" CC="$CC_COMPILER" CXX="$CXX_COMPILER" \
+    "${build_env[@]}" CGO_ENABLED=1 GOOS="$GOOS" GOARCH="$GOARCH" CC="$CC_COMPILER" CXX="$CXX_COMPILER" \
       go build -trimpath -ldflags "-s -w -buildid= -X main.Version=v${VERSION}" \
       -o "$PROJECT_ROOT/dist/$PLATFORM_DIR/$GOARCH/$output_name" .
 
    else # Darwin (macOS)
-    if [[ "$GOARCH" = "amd64" ]]; then
+    if [[ "$GOOS" == "$HOST_GOOS" && "$GOARCH" == "$HOST_GOARCH" ]]; then
+      echo "  🏠 Native Darwin ${GOARCH} build detected — using system compiler"
+      CC_COMPILER="${CC:-clang}"
+      CXX_COMPILER="${CXX:-clang++}"
+    elif [[ "$GOARCH" = "amd64" ]]; then
       CC_COMPILER="o64-clang"
       CXX_COMPILER="o64-clang++"
     elif [[ "$GOARCH" = "arm64" ]]; then
       CC_COMPILER="oa64-clang"
       CXX_COMPILER="oa64-clang++"
+    else
+      echo "Unsupported Darwin architecture: $GOARCH" >&2
+      exit 1
     fi
 
-    env GOWORK=off CGO_ENABLED=1 GOOS="$GOOS" GOARCH="$GOARCH" CC="$CC_COMPILER" CXX="$CXX_COMPILER" \
+    "${build_env[@]}" CGO_ENABLED=1 GOOS="$GOOS" GOARCH="$GOARCH" CC="$CC_COMPILER" CXX="$CXX_COMPILER" \
       go build -trimpath -ldflags "-s -w -buildid= -X main.Version=v${VERSION}" \
       -o "$PROJECT_ROOT/dist/$PLATFORM_DIR/$GOARCH/$output_name" .
   fi

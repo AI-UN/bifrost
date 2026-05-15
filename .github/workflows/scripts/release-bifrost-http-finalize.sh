@@ -1,42 +1,111 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Finalize bifrost-http release: changelog, tagging, GitHub release, R2 latest copy
+# Finalize bifrost-http release: changelog, tagging, GitHub release, optional release assets, optional R2 latest copy
 # Usage: ./release-bifrost-http-finalize.sh <version>
 
-# Validate input argument
-if [ "${1:-}" = "" ]; then
+if [[ -z "${1:-}" ]]; then
   echo "Usage: $0 <version>" >&2
   exit 1
 fi
 
 VERSION="$1"
-TAG_NAME="transports/v${VERSION}"
+TAG_NAME="${TRANSPORT_TAG_NAME:-v${VERSION}}"
+UPSTREAM_SOURCE_TAG="${UPSTREAM_SOURCE_TAG:-$TAG_NAME}"
+SKIP_GIT_TAG_CREATE="${SKIP_GIT_TAG_CREATE:-false}"
+ALLOW_SAME_CHANGELOG="${ALLOW_SAME_CHANGELOG:-false}"
+DOCKER_IMAGE_REFERENCE="${DOCKER_IMAGE_REFERENCE:-maximhq/bifrost}"
+TITLE="${RELEASE_TITLE_OVERRIDE:-Bifrost HTTP v$VERSION}"
+RELEASE_ASSET_DIR="${RELEASE_ASSET_DIR:-}"
+UPSTREAM_REPO_SLUG="${UPSTREAM_REPO_SLUG:-maximhq/bifrost}"
+
+trim_installation_sections() {
+  awk '
+    NR == 1 && /^## Bifrost HTTP Transport Release / { next }
+    /^### Installation$/ { exit }
+    { print }
+  '
+}
+
+load_changelog_body() {
+  local body=""
+  local upstream_body=""
+
+  body="$(grep -v '^<!--' transports/changelog.md | grep -v '^-->' || true)"
+  if [[ -n "$body" ]]; then
+    printf '%s' "$body"
+    return 0
+  fi
+
+  if ! command -v gh >/dev/null 2>&1; then
+    return 0
+  fi
+
+  if [[ -z "${UPSTREAM_SOURCE_TAG:-}" ]]; then
+    return 0
+  fi
+
+  upstream_body="$(gh release view "$UPSTREAM_SOURCE_TAG" --repo "$UPSTREAM_REPO_SLUG" --json body --jq '.body' 2>/dev/null || true)"
+  if [[ -z "$upstream_body" ]]; then
+    return 0
+  fi
+
+  body="$(printf '%s\n' "$upstream_body" | trim_installation_sections)"
+  if [[ -n "$body" ]]; then
+    echo "ℹ️ Using upstream release notes from ${UPSTREAM_REPO_SLUG}@${UPSTREAM_SOURCE_TAG}" >&2
+  fi
+
+  printf '%s' "$body"
+}
+
+release_assets=()
+if [[ -n "$RELEASE_ASSET_DIR" ]]; then
+  if [[ ! -d "$RELEASE_ASSET_DIR" ]]; then
+    echo "❌ Release asset directory not found: $RELEASE_ASSET_DIR" >&2
+    exit 1
+  fi
+
+  shopt -s nullglob
+  for asset_path in "$RELEASE_ASSET_DIR"/*; do
+    if [[ -f "$asset_path" ]]; then
+      release_assets+=("$asset_path")
+    fi
+  done
+  shopt -u nullglob
+
+  if [[ ${#release_assets[@]} -eq 0 ]]; then
+    echo "❌ Release asset directory is empty: $RELEASE_ASSET_DIR" >&2
+    exit 1
+  fi
+fi
 
 echo "🏷️ Finalizing bifrost-http v$VERSION release..."
 
-# Get core and framework versions from version files
+SOURCE_VERSION="${UPSTREAM_SOURCE_TAG#transports/v}"
+if [[ "$SOURCE_VERSION" == "$UPSTREAM_SOURCE_TAG" ]]; then
+  SOURCE_VERSION="${UPSTREAM_SOURCE_TAG#v}"
+fi
+if [[ "$SOURCE_VERSION" == "$UPSTREAM_SOURCE_TAG" ]]; then
+  SOURCE_VERSION="${VERSION%-oss}"
+fi
+
 CORE_VERSION="v$(tr -d '\n\r' < core/version)"
 FRAMEWORK_VERSION="v$(tr -d '\n\r' < framework/version)"
 
-# Re-compute plugin versions from version files and transports/go.mod
 declare -A PLUGIN_VERSIONS
 PLUGINS_USED=()
 
 for plugin_dir in plugins/*/; do
-  if [ -d "$plugin_dir" ]; then
-    plugin_name=$(basename "$plugin_dir")
-    PLUGIN_VERSION="v$(tr -d '\n\r' < "${plugin_dir}version")"
-    PLUGIN_VERSIONS["$plugin_name"]="$PLUGIN_VERSION"
+  if [[ -d "$plugin_dir" ]]; then
+    plugin_name="$(basename "$plugin_dir")"
+    plugin_version="v$(tr -d '\n\r' < "${plugin_dir}version")"
+    PLUGIN_VERSIONS["$plugin_name"]="$plugin_version"
   fi
 done
 
-# Check which plugins are actually used by the transport
 while IFS= read -r plugin_line; do
-  plugin_name=$(echo "$plugin_line" | awk -F'/' '{print $NF}' | awk '{print $1}')
-  plugin_version=$(echo "$plugin_line" | awk '{print $NF}')
-
-  # Use version file version if available, otherwise use go.mod version
+  plugin_name="$(echo "$plugin_line" | awk -F'/' '{print $NF}' | awk '{print $1}')"
+  plugin_version="$(echo "$plugin_line" | awk '{print $NF}')"
   if [[ -n "${PLUGIN_VERSIONS[$plugin_name]:-}" ]]; then
     PLUGINS_USED+=("$plugin_name:${PLUGIN_VERSIONS[$plugin_name]}")
   else
@@ -53,124 +122,136 @@ for plugin_name in "${!PLUGIN_VERSIONS[@]}"; do
   echo "     - $plugin_name: ${PLUGIN_VERSIONS[$plugin_name]}"
 done
 
-# Capturing changelog
-CHANGELOG_BODY=$(cat transports/changelog.md)
-# Skip comments from changelog
-CHANGELOG_BODY=$(echo "$CHANGELOG_BODY" | grep -v '^<!--' | grep -v '^-->')
-# If changelog is empty, return error
-if [ -z "$CHANGELOG_BODY" ]; then
-  echo "❌ Changelog is empty"
+CHANGELOG_BODY="$(load_changelog_body)"
+if [[ -z "$CHANGELOG_BODY" ]]; then
+  echo "❌ Changelog is empty and upstream release notes could not be loaded"
   exit 1
 fi
-echo "📝 New changelog: $CHANGELOG_BODY"
 
-# Finding previous tag
 echo "🔍 Finding previous tag..."
-PREV_TAG=$(git tag -l "transports/v*" | sort -V | tail -1)
+PREV_TAG="$(git tag -l 'v*-oss' | sort -V | tail -1)"
 if [[ "$PREV_TAG" == "$TAG_NAME" ]]; then
-  PREV_TAG=$(git tag -l "transports/v*" | sort -V | tail -2 | head -1)
+  PREV_TAG="$(git tag -l 'v*-oss' | sort -V | tail -2 | head -1)"
 fi
-echo "🔍 Previous tag: $PREV_TAG"
+echo "🔍 Previous tag: ${PREV_TAG:-<none>}"
 
-# Get message of the tag
-echo "🔍 Getting previous tag message..."
-PREV_CHANGELOG=$(git tag -l --format='%(contents)' "$PREV_TAG")
-echo "📝 Previous changelog body: $PREV_CHANGELOG"
+PREV_CHANGELOG=""
+if [[ -n "$PREV_TAG" ]]; then
+  PREV_CHANGELOG="$(git tag -l --format='%(contents)' "$PREV_TAG")"
+fi
 
-# Checking if tag message is the same as the changelog
-if [[ "$PREV_CHANGELOG" == "$CHANGELOG_BODY" ]]; then
+if [[ "$ALLOW_SAME_CHANGELOG" != "true" && "$PREV_CHANGELOG" == "$CHANGELOG_BODY" ]]; then
   echo "❌ Changelog is the same as the previous changelog"
   exit 1
 fi
 
-# Create and push tag
-echo "🏷️ Creating tag: $TAG_NAME"
 git config user.name "github-actions[bot]"
 git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-git tag "$TAG_NAME" -m "Release transports v$VERSION" -m "$CHANGELOG_BODY"
-git push origin "$TAG_NAME"
 
-# Create GitHub release
-TITLE="Bifrost HTTP v$VERSION"
+if [[ "$SKIP_GIT_TAG_CREATE" == "true" ]]; then
+  if ! git rev-parse "$TAG_NAME" >/dev/null 2>&1; then
+    echo "❌ Expected existing tag not found: $TAG_NAME"
+    exit 1
+  fi
+  echo "🏷️ Reusing existing tag: $TAG_NAME"
+else
+  echo "🏷️ Creating tag: $TAG_NAME"
+  git tag "$TAG_NAME" -m "Release transports v$VERSION" -m "$CHANGELOG_BODY"
+  git push origin "$TAG_NAME"
+fi
 
-# Mark prereleases when version contains a hyphen
+if [[ -z "${GH_TOKEN:-}" && -z "${GITHUB_TOKEN:-}" ]]; then
+  echo "Error: GH_TOKEN or GITHUB_TOKEN is not set. Please export one to authenticate the GitHub CLI."
+  exit 1
+fi
+
 PRERELEASE_FLAG=""
-if [[ "$VERSION" == *-* ]]; then
+if [[ "$SOURCE_VERSION" == *-* ]]; then
   PRERELEASE_FLAG="--prerelease"
 fi
 
 LATEST_FLAG=""
-if [[ "$VERSION" != *-* ]]; then
+if [[ "$SOURCE_VERSION" != *-* ]]; then
   LATEST_FLAG="--latest"
 fi
 
-# Generate plugin version summary
 PLUGIN_UPDATES=""
-if [ ${#PLUGINS_USED[@]} -gt 0 ]; then
+if [[ ${#PLUGINS_USED[@]} -gt 0 ]]; then
   PLUGIN_UPDATES="
 
-### 🔌 Plugin Versions
+### Plugin Versions
 This release includes the following plugin versions:
 "
   for plugin_info in "${PLUGINS_USED[@]}"; do
     plugin_name="${plugin_info%%:*}"
     plugin_version="${plugin_info##*:}"
-    PLUGIN_UPDATES="$PLUGIN_UPDATES- **$plugin_name**: \`$plugin_version\`
-"
-  done
-else
-  # Show all available plugin versions even if not directly used
-  PLUGIN_UPDATES="
-
-### 🔌 Available Plugin Versions
-The following plugin versions are compatible with this release:
-"
-  for plugin_name in "${!PLUGIN_VERSIONS[@]}"; do
-    plugin_version="${PLUGIN_VERSIONS[$plugin_name]}"
-    PLUGIN_UPDATES="$PLUGIN_UPDATES- **$plugin_name**: \`$plugin_version\`
+    PLUGIN_UPDATES+="- **${plugin_name}**: \`${plugin_version}\`
 "
   done
 fi
 
+BINARY_INSTALLATION_SECTION="#### Binary Download
+\`\`\`bash
+npx @maximhq/bifrost --transport-version v$VERSION
+\`\`\`"
+
+if [[ ${#release_assets[@]} -gt 0 ]]; then
+  BINARY_INSTALLATION_SECTION="#### Binary Download
+Download the archive matching your platform from the release assets attached to this release.
+
+#### Checksum Verification
+Use \`bifrost-http_${VERSION}_checksums.txt\` to verify the archive you downloaded."
+fi
+
 BODY="## Bifrost HTTP Transport Release v$VERSION
 
-$CHANGELOG_BODY
+### Source Upstream Release
+- Source tag: \`${UPSTREAM_SOURCE_TAG}\`
+
+${CHANGELOG_BODY}${PLUGIN_UPDATES}
 
 ### Installation
 
 #### Docker
 \`\`\`bash
-docker run -p 8080:8080 maximhq/bifrost:v$VERSION
+docker run -p 8080:8080 ${DOCKER_IMAGE_REFERENCE}:v$VERSION
 \`\`\`
 
-#### Binary Download
-\`\`\`bash
-npx @maximhq/bifrost --transport-version v$VERSION
-\`\`\`
+${BINARY_INSTALLATION_SECTION}
 
 ### Docker Images
-- **\`maximhq/bifrost:v$VERSION\`** - This specific version
-- **\`maximhq/bifrost:latest\`** - Latest version (updated with this release)
+- **\`${DOCKER_IMAGE_REFERENCE}:v$VERSION\`** - This specific version
+- **\`${DOCKER_IMAGE_REFERENCE}:latest\`** - Latest stable version when the source upstream tag is stable
 
 ---
-_This release was automatically created with dependencies: core \`$CORE_VERSION\`, framework \`$FRAMEWORK_VERSION\`. All plugins have been validated and updated._"
+_This release was automatically created with dependencies: core \`${CORE_VERSION}\`, framework \`${FRAMEWORK_VERSION}\`. All plugins have been validated and updated._"
 
-if [ -z "${GH_TOKEN:-}" ] && [ -z "${GITHUB_TOKEN:-}" ]; then
-  echo "Error: GH_TOKEN or GITHUB_TOKEN is not set. Please export one to authenticate the GitHub CLI."
-  exit 1
+release_status="Updated"
+if gh release view "$TAG_NAME" >/dev/null 2>&1; then
+  echo "ℹ️ GitHub release already exists for $TAG_NAME"
+else
+  echo "🎉 Creating GitHub release for $TITLE..."
+  release_command=(gh release create "$TAG_NAME" --title "$TITLE" --notes "$BODY")
+  if [[ -n "$PRERELEASE_FLAG" ]]; then
+    release_command+=("$PRERELEASE_FLAG")
+  fi
+  if [[ -n "$LATEST_FLAG" ]]; then
+    release_command+=("$LATEST_FLAG")
+  fi
+  "${release_command[@]}"
+  release_status="Created"
 fi
 
-echo "🎉 Creating GitHub release for $TITLE..."
-gh release create "$TAG_NAME" \
-  --title "$TITLE" \
-  --notes "$BODY" \
-  ${PRERELEASE_FLAG} ${LATEST_FLAG}
+if [[ ${#release_assets[@]} -gt 0 ]]; then
+  echo "📦 Uploading ${#release_assets[@]} release assets..."
+  gh release upload "$TAG_NAME" --clobber "${release_assets[@]}"
+  echo "✅ Release assets uploaded"
+fi
 
 echo "✅ Bifrost HTTP released successfully"
 
-# Copy versioned R2 path to latest/ for stable releases
-if [[ "$VERSION" != *-* ]]; then
-  if [ -n "${R2_ENDPOINT:-}" ] && [ -n "${R2_BUCKET:-}" ]; then
+if [[ "$SOURCE_VERSION" != *-* ]]; then
+  if [[ -n "${R2_ENDPOINT:-}" && -n "${R2_BUCKET:-}" ]]; then
     echo "📤 Copying versioned binaries to latest/ on R2..."
     R2_ENDPOINT="$(echo "$R2_ENDPOINT" | tr -d '[:space:]')"
     aws s3 sync "s3://$R2_BUCKET/bifrost/v$VERSION/" "s3://$R2_BUCKET/bifrost/latest/" \
@@ -182,18 +263,23 @@ if [[ "$VERSION" != *-* ]]; then
   fi
 fi
 
-# Print summary
 echo ""
 echo "📋 Release Summary:"
 echo "   🏷️  Tag: $TAG_NAME"
+echo "   🧭 Source tag: $UPSTREAM_SOURCE_TAG"
 echo "   🔧 Core version: $CORE_VERSION"
 echo "   🔧 Framework version: $FRAMEWORK_VERSION"
 echo "   📦 Transport: Updated"
-if [ ${#PLUGINS_USED[@]} -gt 0 ]; then
+if [[ ${#PLUGINS_USED[@]} -gt 0 ]]; then
   echo "   🔌 Plugins used: ${PLUGINS_USED[*]}"
 else
-  echo "   🔌 Available plugins: $(printf "%s " "${!PLUGIN_VERSIONS[@]}")"
+  echo "   🔌 Available plugins: $(printf '%s ' "${!PLUGIN_VERSIONS[@]}")"
 fi
-echo "   🎉 GitHub release: Created"
+if [[ ${#release_assets[@]} -gt 0 ]]; then
+  echo "   📎 Release assets: ${#release_assets[@]} attached"
+fi
+echo "   🎉 GitHub release: ${release_status}"
 
-echo "success=true" >> "$GITHUB_OUTPUT"
+if [[ -n "${GITHUB_OUTPUT:-}" ]]; then
+  echo "success=true" >> "$GITHUB_OUTPUT"
+fi
