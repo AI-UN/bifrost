@@ -16,6 +16,7 @@ const PluginName = "compat"
 type Config struct {
 	ConvertTextToChat      bool `json:"convert_text_to_chat"`
 	ConvertChatToResponses bool `json:"convert_chat_to_responses"`
+	ConvertResponsesToChat bool `json:"convert_responses_to_chat"`
 	ShouldDropParams       bool `json:"should_drop_params"`
 	ShouldConvertParams    bool `json:"should_convert_params"`
 }
@@ -41,7 +42,7 @@ func (c *Config) UnmarshalJSON(data []byte) error {
 
 // IsEnabled returns true if any compat feature is enabled
 func (c Config) IsEnabled() bool {
-	return c.ConvertTextToChat || c.ConvertChatToResponses || c.ShouldDropParams || c.ShouldConvertParams
+	return c.ConvertTextToChat || c.ConvertChatToResponses || c.ConvertResponsesToChat || c.ShouldDropParams || c.ShouldConvertParams
 }
 
 // CompatPlugin provides LiteLLM-compatible request/response transformations.
@@ -50,10 +51,11 @@ func (c Config) IsEnabled() bool {
 // LiteLLM's behavior. It also converts chat completion requests to responses
 // for models that only support the responses endpoint.
 type CompatPlugin struct {
-	config        Config
-	logger        schemas.Logger
-	modelCatalog  *modelcatalog.ModelCatalog
-	droppedParams []string
+	config                       Config
+	logger                       schemas.Logger
+	modelCatalog                 *modelcatalog.ModelCatalog
+	customProviderConfigResolver func(provider schemas.ModelProvider) *schemas.CustomProviderConfig
+	droppedParams                []string
 }
 
 // Init creates a new compat plugin instance with model catalog support.
@@ -61,11 +63,17 @@ type CompatPlugin struct {
 // chat completion natively. If the model catalog is nil, the plugin will
 // convert all text completion requests to chat completion and all chat
 // completion requests to responses.
-func Init(config Config, logger schemas.Logger, mc *modelcatalog.ModelCatalog) (*CompatPlugin, error) {
+func Init(
+	config Config,
+	logger schemas.Logger,
+	mc *modelcatalog.ModelCatalog,
+	customProviderConfigResolver func(provider schemas.ModelProvider) *schemas.CustomProviderConfig,
+) (*CompatPlugin, error) {
 	return &CompatPlugin{
-		config:       config,
-		logger:       logger,
-		modelCatalog: mc,
+		config:                       config,
+		logger:                       logger,
+		modelCatalog:                 mc,
+		customProviderConfigResolver: customProviderConfigResolver,
 	}, nil
 }
 
@@ -97,6 +105,7 @@ func (p *CompatPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 
 	convertTextToChatOverride, convertTextToChatOverrideEnabled := ctx.Value(schemas.BifrostContextKeyCompatConvertTextToChat).(bool)
 	convertChatToResponsesOverride, convertChatToResponsesOverrideEnabled := ctx.Value(schemas.BifrostContextKeyCompatConvertChatToResponses).(bool)
+	convertResponsesToChatOverride, convertResponsesToChatOverrideEnabled := ctx.Value(schemas.BifrostContextKeyCompatConvertResponsesToChat).(bool)
 	shouldDropParamsOverride, shouldDropParamsOverrideEnabled := ctx.Value(schemas.BifrostContextKeyCompatShouldDropParams).(bool)
 	shouldConvertParamsOverride, shouldConvertParamsOverrideEnabled := ctx.Value(schemas.BifrostContextKeyCompatShouldConvertParams).(bool)
 
@@ -109,14 +118,21 @@ func (p *CompatPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 	// Text completion → chat conversion
 	if (convertTextToChatOverrideEnabled && convertTextToChatOverride) || p.config.ConvertTextToChat {
 		if (modifiedReq.RequestType == schemas.TextCompletionRequest || modifiedReq.RequestType == schemas.TextCompletionStreamRequest) && modifiedReq.TextCompletionRequest != nil {
-			p.markForConversion(ctx, modifiedReq.TextCompletionRequest.Provider, modifiedReq.TextCompletionRequest.Model, schemas.TextCompletionRequest, schemas.ChatCompletionRequest)
+			p.markForConversion(ctx, modifiedReq.TextCompletionRequest.Provider, modifiedReq.TextCompletionRequest.Model, schemas.TextCompletionRequest, schemas.ChatCompletionRequest, convertTextToChatOverrideEnabled && convertTextToChatOverride)
 		}
 	}
 
 	// Chat completion → responses conversion
 	if (convertChatToResponsesOverrideEnabled && convertChatToResponsesOverride) || p.config.ConvertChatToResponses {
 		if (modifiedReq.RequestType == schemas.ChatCompletionRequest || modifiedReq.RequestType == schemas.ChatCompletionStreamRequest) && modifiedReq.ChatRequest != nil {
-			p.markForConversion(ctx, modifiedReq.ChatRequest.Provider, modifiedReq.ChatRequest.Model, schemas.ChatCompletionRequest, schemas.ResponsesRequest)
+			p.markForConversion(ctx, modifiedReq.ChatRequest.Provider, modifiedReq.ChatRequest.Model, schemas.ChatCompletionRequest, schemas.ResponsesRequest, convertChatToResponsesOverrideEnabled && convertChatToResponsesOverride)
+		}
+	}
+
+	// Responses → chat completion conversion
+	if (convertResponsesToChatOverrideEnabled && convertResponsesToChatOverride) || p.config.ConvertResponsesToChat {
+		if (modifiedReq.RequestType == schemas.ResponsesRequest || modifiedReq.RequestType == schemas.ResponsesStreamRequest) && modifiedReq.ResponsesRequest != nil {
+			p.markForConversion(ctx, modifiedReq.ResponsesRequest.Provider, modifiedReq.ResponsesRequest.Model, schemas.ResponsesRequest, schemas.ChatCompletionRequest, convertResponsesToChatOverrideEnabled && convertResponsesToChatOverride)
 		}
 	}
 
@@ -172,13 +188,30 @@ func (p *CompatPlugin) Cleanup() error {
 	return nil
 }
 
-// markForConversion checks if the model supports the current request type; if not, mark for conversion
-func (p *CompatPlugin) markForConversion(ctx *schemas.BifrostContext, provider schemas.ModelProvider, model string, currentType schemas.RequestType, targetType schemas.RequestType) {
+// markForConversion checks if the model supports the current request type; if not, mark for conversion.
+// When explicitly enabled per-request via x-bf-compat and the model catalog has no
+// capability entry for the model, we still force the fallback conversion.
+func (p *CompatPlugin) markForConversion(ctx *schemas.BifrostContext, provider schemas.ModelProvider, model string, currentType schemas.RequestType, targetType schemas.RequestType, forceIfUnknown bool) {
 	shouldConvert := false
-	if p.modelCatalog != nil {
-		if !p.modelCatalog.IsRequestTypeSupported(model, provider, currentType) && p.modelCatalog.IsRequestTypeSupported(model, provider, targetType) {
+
+	if customConfig := p.getCustomProviderConfig(provider); customConfig != nil {
+		currentSupported := customConfig.IsOperationAllowed(currentType)
+		targetSupported := customConfig.IsOperationAllowed(targetType)
+		if !currentSupported && targetSupported {
+			shouldConvert = true
+		} else if currentSupported || !targetSupported {
+			shouldConvert = false
+		}
+	} else if p.modelCatalog != nil {
+		currentSupported := p.modelCatalog.IsRequestTypeSupported(model, provider, currentType)
+		targetSupported := p.modelCatalog.IsRequestTypeSupported(model, provider, targetType)
+		if !currentSupported && targetSupported {
+			shouldConvert = true
+		} else if forceIfUnknown && !currentSupported && !targetSupported {
 			shouldConvert = true
 		}
+	} else if forceIfUnknown {
+		shouldConvert = true
 	} else {
 		p.logger.Debug("compat: model calalog is nil")
 	}
@@ -186,4 +219,11 @@ func (p *CompatPlugin) markForConversion(ctx *schemas.BifrostContext, provider s
 	if shouldConvert {
 		ctx.SetValue(schemas.BifrostContextKeyChangeRequestType, targetType)
 	}
+}
+
+func (p *CompatPlugin) getCustomProviderConfig(provider schemas.ModelProvider) *schemas.CustomProviderConfig {
+	if p == nil || p.customProviderConfigResolver == nil {
+		return nil
+	}
+	return p.customProviderConfigResolver(provider)
 }

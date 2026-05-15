@@ -40,6 +40,7 @@ type EnvKeyInfo struct {
 type CompatConfig struct {
 	ConvertTextToChat      bool `json:"convert_text_to_chat"`
 	ConvertChatToResponses bool `json:"convert_chat_to_responses"`
+	ConvertResponsesToChat bool `json:"convert_responses_to_chat"`
 	ShouldDropParams       bool `json:"should_drop_params"`
 	ShouldConvertParams    bool `json:"should_convert_params"`
 }
@@ -159,6 +160,9 @@ func (c *ClientConfig) GenerateClientConfigHash() (string, error) {
 	}
 	if c.Compat.ConvertChatToResponses {
 		hash.Write([]byte("compatConvertChatToResponses:true"))
+	}
+	if c.Compat.ConvertResponsesToChat {
+		hash.Write([]byte("compatConvertResponsesToChat:true"))
 	}
 	if c.Compat.ShouldDropParams {
 		hash.Write([]byte("compatShouldDropParams:true"))
