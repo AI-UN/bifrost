@@ -5948,6 +5948,20 @@ func (bifrost *Bifrost) handleProviderRequest(provider schemas.Provider, config 
 		chatCompletionResponse.BackfillParams(req.BifrostRequest.ChatRequest)
 		response.ChatResponse = chatCompletionResponse
 	case schemas.ResponsesRequest:
+		if changeType, ok := req.Context.Value(schemas.BifrostContextKeyChangeRequestType).(schemas.RequestType); ok && changeType == schemas.ChatCompletionRequest {
+			chatRequest := req.BifrostRequest.ResponsesRequest.ToChatRequest()
+			if chatRequest != nil {
+				chatResponse, bifrostError := provider.ChatCompletion(req.Context, key, chatRequest)
+				if bifrostError != nil {
+					return nil, bifrostError
+				}
+				response.ResponsesResponse = chatResponse.ToBifrostResponsesResponse()
+				if response.ResponsesResponse != nil {
+					response.ResponsesResponse.BackfillParams(req.BifrostRequest.ResponsesRequest)
+				}
+				break
+			}
+		}
 		responsesResponse, bifrostError := provider.Responses(req.Context, key, req.BifrostRequest.ResponsesRequest)
 		if bifrostError != nil {
 			return nil, bifrostError
@@ -6255,6 +6269,13 @@ func (bifrost *Bifrost) handleProviderStreamRequest(provider schemas.Provider, r
 		}
 		return provider.ChatCompletionStream(req.Context, postHookRunner, postHookSpanFinalizer, key, req.BifrostRequest.ChatRequest)
 	case schemas.ResponsesStreamRequest:
+		if changeType, ok := req.Context.Value(schemas.BifrostContextKeyChangeRequestType).(schemas.RequestType); ok && changeType == schemas.ChatCompletionRequest {
+			chatRequest := req.BifrostRequest.ResponsesRequest.ToChatRequest()
+			if chatRequest != nil {
+				req.Context.SetValue(schemas.BifrostContextKeyIsResponsesToChatCompletionFallback, true)
+				return provider.ChatCompletionStream(req.Context, postHookRunner, postHookSpanFinalizer, key, chatRequest)
+			}
+		}
 		return provider.ResponsesStream(req.Context, postHookRunner, postHookSpanFinalizer, key, req.BifrostRequest.ResponsesRequest)
 	case schemas.SpeechStreamRequest:
 		return provider.SpeechStream(req.Context, postHookRunner, postHookSpanFinalizer, key, req.BifrostRequest.SpeechRequest)
