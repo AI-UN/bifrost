@@ -1,6 +1,9 @@
 name: Release Pipeline
 
 # Triggers automatically on push to main when any version file changes
+# Fork maintenance workflows can opt out by including --skip-pipeline in the
+# first line of the synthetic commit message they push back to the maintained
+# branch.
 on:
   push:
     branches: ["main"]
@@ -41,7 +44,7 @@ jobs:
           COMMIT_MESSAGE: ${{ github.event.head_commit.message }}
         run: |
           FIRST_LINE=$(echo "$COMMIT_MESSAGE" | head -n 1)
-          if [[ "$FIRST_LINE" == *"--skip-ci"* ]]; then
+          if [[ "$FIRST_LINE" == *"--skip-ci"* || "$FIRST_LINE" == *"--skip-pipeline"* ]]; then
             echo "should-skip=true" >> $GITHUB_OUTPUT
           else
             echo "should-skip=false" >> $GITHUB_OUTPUT
@@ -68,7 +71,7 @@ jobs:
   detect-changes:
     needs: [check-skip]
     runs-on: ubuntu-latest
-    # Skip if first line of commit message contains --skip-ci
+    # Skip if first line of commit message contains --skip-ci or --skip-pipeline
     if: needs.check-skip.outputs.should-skip != 'true'
     outputs:
       core-needs-release: ${{ steps.detect.outputs.core-needs-release }}
@@ -1410,7 +1413,7 @@ jobs:
         run: bash ./.github/workflows/scripts/install-cross-compilers.sh
 
       - name: Build executables
-        run: bash ./.github/workflows/scripts/build-executables.sh "${{ needs.detect-changes.outputs.transport-version }}" "darwin/amd64 darwin/arm64 linux/amd64 windows/amd64"
+        run: bash ./.github/workflows/scripts/build-executables.sh "${{ needs.detect-changes.outputs.transport-version }}" "darwin/amd64 darwin/arm64 linux/amd64 windows/amd64 windows/arm64"
 
       - name: Configure R2
         env:

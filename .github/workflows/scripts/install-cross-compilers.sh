@@ -6,6 +6,11 @@ set -euo pipefail
 
 echo "📦 Installing cross-compilation toolchains for Go + CGO..."
 
+LLVM_MINGW_VERSION="${LLVM_MINGW_VERSION:-20260505}"
+LLVM_MINGW_ARCHIVE="llvm-mingw-${LLVM_MINGW_VERSION}-msvcrt-ubuntu-22.04-x86_64.tar.xz"
+LLVM_MINGW_URL="https://github.com/mstorsjo/llvm-mingw/releases/download/${LLVM_MINGW_VERSION}/${LLVM_MINGW_ARCHIVE}"
+LLVM_MINGW_DIR="/opt/llvm-mingw-${LLVM_MINGW_VERSION}"
+
 # Install all required packages
 sudo apt-get update
 sudo apt-get install -y \
@@ -23,6 +28,20 @@ sudo ln -sf /usr/bin/x86_64-linux-gnu-gcc /usr/local/bin/x86_64-linux-musl-gcc
 sudo ln -sf /usr/bin/x86_64-linux-gnu-g++ /usr/local/bin/x86_64-linux-musl-g++
 sudo ln -sf /usr/bin/aarch64-linux-gnu-gcc /usr/local/bin/aarch64-linux-musl-gcc
 sudo ln -sf /usr/bin/aarch64-linux-gnu-g++ /usr/local/bin/aarch64-linux-musl-g++
+
+echo "🪟 Setting up Windows ARM64 cross-compilation..."
+
+if [ ! -d "$LLVM_MINGW_DIR" ]; then
+  echo "📦 Downloading llvm-mingw ${LLVM_MINGW_VERSION}..."
+  curl -fL "$LLVM_MINGW_URL" -o "/tmp/${LLVM_MINGW_ARCHIVE}"
+  sudo mkdir -p /opt
+  sudo tar -xf "/tmp/${LLVM_MINGW_ARCHIVE}" -C /opt
+  sudo mv "/opt/llvm-mingw-${LLVM_MINGW_VERSION}-msvcrt-ubuntu-22.04-x86_64" "$LLVM_MINGW_DIR"
+  rm -f "/tmp/${LLVM_MINGW_ARCHIVE}"
+fi
+
+sudo ln -sf "$LLVM_MINGW_DIR/bin/aarch64-w64-mingw32-gcc" /usr/local/bin/aarch64-w64-mingw32-gcc
+sudo ln -sf "$LLVM_MINGW_DIR/bin/aarch64-w64-mingw32-g++" /usr/local/bin/aarch64-w64-mingw32-g++
 
 echo "🍎 Setting up Darwin cross-compilation..."
 
