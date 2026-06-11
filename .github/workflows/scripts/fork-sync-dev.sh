@@ -85,13 +85,22 @@ ensure_remotes() {
 
 snapshot_automation_files() {
   AUTOMATION_SNAPSHOT_DIR="$(mktemp -d)"
-  mkdir -p "$AUTOMATION_SNAPSHOT_DIR/.github/workflows"
+  mkdir -p "$AUTOMATION_SNAPSHOT_DIR/.github/workflows/scripts"
 
   cp .fork-upstream-sync.env "$AUTOMATION_SNAPSHOT_DIR/.fork-upstream-sync.env"
   cp .github/workflows/fork-sync-dev.yml "$AUTOMATION_SNAPSHOT_DIR/.github/workflows/fork-sync-dev.yml"
   cp .github/workflows/fork-release-cli.yml "$AUTOMATION_SNAPSHOT_DIR/.github/workflows/fork-release-cli.yml"
   cp .github/workflows/fork-release-docker.yml "$AUTOMATION_SNAPSHOT_DIR/.github/workflows/fork-release-docker.yml"
-  cp -R .github/workflows/scripts "$AUTOMATION_SNAPSHOT_DIR/.github/workflows/scripts"
+  for script in \
+    build-executables.sh \
+    create-docker-manifest.sh \
+    fork-sync-dev.sh \
+    fork-sync-state.sh \
+    fork-workflow-config.sh \
+    package-bifrost-http-release-assets.sh \
+    release-bifrost-http-finalize.sh; do
+    cp ".github/workflows/scripts/${script}" "$AUTOMATION_SNAPSHOT_DIR/.github/workflows/scripts/${script}"
+  done
 }
 
 install_automation_files() {
@@ -105,8 +114,10 @@ install_automation_files() {
   cp "$AUTOMATION_SNAPSHOT_DIR/.github/workflows/fork-sync-dev.yml" .github/workflows/fork-sync-dev.yml
   cp "$AUTOMATION_SNAPSHOT_DIR/.github/workflows/fork-release-cli.yml" .github/workflows/fork-release-cli.yml
   cp "$AUTOMATION_SNAPSHOT_DIR/.github/workflows/fork-release-docker.yml" .github/workflows/fork-release-docker.yml
-  rm -rf .github/workflows/scripts
-  cp -R "$AUTOMATION_SNAPSHOT_DIR/.github/workflows/scripts" .github/workflows/scripts
+  mkdir -p .github/workflows/scripts
+  for script_path in "$AUTOMATION_SNAPSHOT_DIR/.github/workflows/scripts"/*; do
+    cp "$script_path" ".github/workflows/scripts/$(basename "$script_path")"
+  done
 }
 
 write_sync_state_snapshot() {
