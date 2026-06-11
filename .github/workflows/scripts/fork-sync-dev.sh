@@ -252,8 +252,8 @@ sync_release_tag() {
       echo "Dry run: skipping push and release workflow dispatch for ${fork_tag}"
     else
       git push origin "refs/tags/${fork_tag}"
-      gh workflow run fork-release-cli.yml --ref "$GENERATED_BRANCH" -f "tag=${fork_tag}" -f "upstream_tag=${upstream_tag}"
-      gh workflow run fork-release-docker.yml --ref "$GENERATED_BRANCH" -f "tag=${fork_tag}" -f "upstream_tag=${upstream_tag}"
+      gh workflow run fork-release-cli.yml --repo "$GITHUB_REPOSITORY" --ref "$GENERATED_BRANCH" -f "tag=${fork_tag}" -f "upstream_tag=${upstream_tag}"
+      gh workflow run fork-release-docker.yml --repo "$GITHUB_REPOSITORY" --ref "$GENERATED_BRANCH" -f "tag=${fork_tag}" -f "upstream_tag=${upstream_tag}"
     fi
     return 0
   fi
