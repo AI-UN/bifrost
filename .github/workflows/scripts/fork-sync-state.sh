@@ -30,7 +30,7 @@ fork_load_sync_state() {
   source "$state_file"
 
   while IFS= read -r key; do
-    export "$key"
+    export "${key?}"
   done < <(fork_sync_state_keys)
 }
 
