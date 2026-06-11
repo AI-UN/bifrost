@@ -133,10 +133,6 @@ jobs:
             runner: windows-2025
             goos: windows
             goarch: amd64
-          - platform: windows/arm64
-            runner: windows-11-arm
-            goos: windows
-            goarch: arm64
           - platform: darwin/amd64
             runner: macos-15-intel
             goos: darwin
@@ -167,9 +163,15 @@ jobs:
 
       - name: Overlay fork maintenance scripts
         run: |
-          rm -rf .github/workflows/scripts
-          mkdir -p .github/workflows
-          cp -R _workflow/.github/workflows/scripts .github/workflows/scripts
+          mkdir -p .github/workflows/scripts
+          for script in \
+            build-executables.sh \
+            fork-sync-state.sh \
+            fork-workflow-config.sh \
+            package-bifrost-http-release-assets.sh \
+            release-bifrost-http-finalize.sh; do
+            cp "_workflow/.github/workflows/scripts/${script}" ".github/workflows/scripts/${script}"
+          done
 
       - name: Restore built UI
         run: |
@@ -219,9 +221,15 @@ jobs:
 
       - name: Overlay fork maintenance scripts
         run: |
-          rm -rf .github/workflows/scripts
-          mkdir -p .github/workflows
-          cp -R _workflow/.github/workflows/scripts .github/workflows/scripts
+          mkdir -p .github/workflows/scripts
+          for script in \
+            build-executables.sh \
+            fork-sync-state.sh \
+            fork-workflow-config.sh \
+            package-bifrost-http-release-assets.sh \
+            release-bifrost-http-finalize.sh; do
+            cp "_workflow/.github/workflows/scripts/${script}" ".github/workflows/scripts/${script}"
+          done
 
       - name: Download build artifacts
         uses: actions/download-artifact@v4
