@@ -10,6 +10,16 @@ DRY_RUN="${DRY_RUN:-false}"
 UPSTREAM_TAG="${UPSTREAM_TAG:-}"
 SYNC_CONFLICT_TITLE="[fork-sync-conflict] ${PATCH_BRANCH} cannot rebase onto upstream/${UPSTREAM_BRANCH}"
 TAG_CONFLICT_TITLE_PREFIX="[fork-tag-conflict]"
+SYNCED_UPSTREAM_TAG=""
+SYNCED_FORK_TAG=""
+AUTOMATION_SNAPSHOT_DIR=""
+
+cleanup() {
+  if [[ -n "$AUTOMATION_SNAPSHOT_DIR" && -d "$AUTOMATION_SNAPSHOT_DIR" ]]; then
+    rm -rf "$AUTOMATION_SNAPSHOT_DIR"
+  fi
+}
+trap cleanup EXIT
 
 run_url() {
   if [[ -n "${GITHUB_SERVER_URL:-}" && -n "${GITHUB_REPOSITORY:-}" && -n "${GITHUB_RUN_ID:-}" ]]; then
@@ -73,6 +83,52 @@ ensure_remotes() {
   git fetch upstream "$UPSTREAM_BRANCH" --tags --force
 }
 
+snapshot_automation_files() {
+  AUTOMATION_SNAPSHOT_DIR="$(mktemp -d)"
+  mkdir -p "$AUTOMATION_SNAPSHOT_DIR/.github/workflows"
+
+  cp .fork-upstream-sync.env "$AUTOMATION_SNAPSHOT_DIR/.fork-upstream-sync.env"
+  cp .github/workflows/fork-sync-dev.yml "$AUTOMATION_SNAPSHOT_DIR/.github/workflows/fork-sync-dev.yml"
+  cp .github/workflows/fork-release-cli.yml "$AUTOMATION_SNAPSHOT_DIR/.github/workflows/fork-release-cli.yml"
+  cp .github/workflows/fork-release-docker.yml "$AUTOMATION_SNAPSHOT_DIR/.github/workflows/fork-release-docker.yml"
+  cp -R .github/workflows/scripts "$AUTOMATION_SNAPSHOT_DIR/.github/workflows/scripts"
+}
+
+install_automation_files() {
+  if [[ -z "$AUTOMATION_SNAPSHOT_DIR" || ! -d "$AUTOMATION_SNAPSHOT_DIR" ]]; then
+    echo "Automation snapshot is not available" >&2
+    return 1
+  fi
+
+  mkdir -p .github/workflows
+  cp "$AUTOMATION_SNAPSHOT_DIR/.fork-upstream-sync.env" .fork-upstream-sync.env
+  cp "$AUTOMATION_SNAPSHOT_DIR/.github/workflows/fork-sync-dev.yml" .github/workflows/fork-sync-dev.yml
+  cp "$AUTOMATION_SNAPSHOT_DIR/.github/workflows/fork-release-cli.yml" .github/workflows/fork-release-cli.yml
+  cp "$AUTOMATION_SNAPSHOT_DIR/.github/workflows/fork-release-docker.yml" .github/workflows/fork-release-docker.yml
+  rm -rf .github/workflows/scripts
+  cp -R "$AUTOMATION_SNAPSHOT_DIR/.github/workflows/scripts" .github/workflows/scripts
+}
+
+write_sync_state_snapshot() {
+  local upstream_tag="${1:-}"
+  local fork_tag="${2:-}"
+
+  UPSTREAM_COMMIT="$(git rev-parse "upstream/${UPSTREAM_BRANCH}")"
+  UPSTREAM_TRANSPORT_TAG="$upstream_tag"
+  if [[ -n "$upstream_tag" ]]; then
+    LAST_RELEASED_UPSTREAM_TRANSPORT_TAG="$upstream_tag"
+  fi
+  FORK_TRANSPORT_TAG="$fork_tag"
+  export UPSTREAM_COMMIT UPSTREAM_TRANSPORT_TAG LAST_RELEASED_UPSTREAM_TRANSPORT_TAG FORK_TRANSPORT_TAG
+
+  fork_write_sync_state
+  if [[ "$DRY_RUN" == "true" ]]; then
+    echo "Dry run: updated local sync state only."
+  else
+    echo "Updated sync state file: $(fork_sync_state_file)"
+  fi
+}
+
 rebase_patch_source() {
   local target_ref="$1"
   local work_branch="$2"
@@ -90,6 +146,14 @@ sync_generated_branch() {
   echo "Rebasing ${PATCH_BRANCH} onto upstream/${UPSTREAM_BRANCH} for ${GENERATED_BRANCH}"
   if rebase_patch_source "upstream/${UPSTREAM_BRANCH}" "$GENERATED_BRANCH"; then
     close_issue_if_open "$SYNC_CONFLICT_TITLE" "Resolved by successful run: $(run_url)"
+    install_automation_files
+    write_sync_state_snapshot "${SYNCED_UPSTREAM_TAG}" "${SYNCED_FORK_TAG}"
+    git add .fork-upstream-sync.env .github/workflows/fork-sync-dev.yml .github/workflows/fork-release-cli.yml .github/workflows/fork-release-docker.yml .github/workflows/scripts
+    if git diff --cached --quiet; then
+      echo "Generated branch automation files are unchanged."
+    else
+      git commit -m "ci: update fork automation files"
+    fi
     if [[ "$DRY_RUN" == "true" ]]; then
       echo "Dry run: skipping push of ${GENERATED_BRANCH}"
     else
@@ -103,18 +167,18 @@ sync_generated_branch() {
   conflict_body="$(cat <<EOF
 ## patched-dev sync conflict
 
-The fork sync workflow could not rebase \\`${PATCH_BRANCH}\\` onto \\`upstream/${UPSTREAM_BRANCH}\\`.
+The fork sync workflow could not rebase ${PATCH_BRANCH} onto upstream/${UPSTREAM_BRANCH}.
 
-- Patch source: \\`${PATCH_BRANCH}\\`
-- Generated branch: \\`${GENERATED_BRANCH}\\`
-- Upstream target: \\`upstream/${UPSTREAM_BRANCH}\\`
+- Patch source: ${PATCH_BRANCH}
+- Generated branch: ${GENERATED_BRANCH}
+- Upstream target: upstream/${UPSTREAM_BRANCH}
 - Run: ${run:-unavailable}
 
 ### Git status
 
-\\`\\`\\`text
+~~~text
 ${status_output}
-\\`\\`\\`
+~~~
 EOF
 )"
   git rebase --abort || true
@@ -161,6 +225,8 @@ sync_release_tag() {
   if fork_tag_exists "$fork_tag"; then
     echo "Fork tag already exists: ${fork_tag}"
     close_issue_if_open "$title" "Resolved because ${fork_tag} now exists. Run: $(run_url)"
+    SYNCED_UPSTREAM_TAG="$upstream_tag"
+    SYNCED_FORK_TAG="$fork_tag"
     return 0
   fi
 
@@ -169,6 +235,8 @@ sync_release_tag() {
   if rebase_patch_source "$upstream_tag" "$release_branch"; then
     git tag -a "$fork_tag" -m "Fork release ${fork_tag} from ${upstream_tag}"
     close_issue_if_open "$title" "Resolved by successful tag creation: $(run_url)"
+    SYNCED_UPSTREAM_TAG="$upstream_tag"
+    SYNCED_FORK_TAG="$fork_tag"
     if [[ "$DRY_RUN" == "true" ]]; then
       echo "Dry run: skipping push and release workflow dispatch for ${fork_tag}"
     else
@@ -184,18 +252,18 @@ sync_release_tag() {
   body="$(cat <<EOF
 ## Fork release tag conflict
 
-The fork sync workflow could not rebase \\`${PATCH_BRANCH}\\` onto upstream tag \\`${upstream_tag}\\` to create \\`${fork_tag}\\`.
+The fork sync workflow could not rebase ${PATCH_BRANCH} onto upstream tag ${upstream_tag} to create ${fork_tag}.
 
-- Patch source: \\`${PATCH_BRANCH}\\`
-- Upstream tag: \\`${upstream_tag}\\`
-- Fork tag: \\`${fork_tag}\\`
+- Patch source: ${PATCH_BRANCH}
+- Upstream tag: ${upstream_tag}
+- Fork tag: ${fork_tag}
 - Run: ${run:-unavailable}
 
 ### Git status
 
-\\`\\`\\`text
+~~~text
 ${status_output}
-\\`\\`\\`
+~~~
 EOF
 )"
   git rebase --abort || true
@@ -205,9 +273,24 @@ EOF
 
 main() {
   fork_print_workflow_config
+  snapshot_automation_files
   ensure_remotes
   sync_generated_branch
   sync_release_tag "$(resolve_upstream_tag)"
+
+  git checkout "$GENERATED_BRANCH"
+  write_sync_state_snapshot "$SYNCED_UPSTREAM_TAG" "$SYNCED_FORK_TAG"
+  git add "$(fork_sync_state_file)"
+  if git diff --cached --quiet; then
+    echo "Sync state is unchanged."
+  else
+    git commit -m "ci: update fork sync state"
+    if [[ "$DRY_RUN" == "true" ]]; then
+      echo "Dry run: skipping push of sync state update."
+    else
+      git push origin "HEAD:refs/heads/${GENERATED_BRANCH}" --force-with-lease
+    fi
+  fi
 }
 
 main "$@"
