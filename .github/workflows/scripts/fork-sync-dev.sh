@@ -8,6 +8,7 @@ fork_set_workflow_defaults
 
 DRY_RUN="${DRY_RUN:-false}"
 UPSTREAM_TAG="${UPSTREAM_TAG:-}"
+REPO_SLUG="${GITHUB_REPOSITORY:-}"
 SYNC_CONFLICT_TITLE="[fork-sync-conflict] ${PATCH_BRANCH} cannot rebase onto upstream/${UPSTREAM_BRANCH}"
 TAG_CONFLICT_TITLE_PREFIX="[fork-tag-conflict]"
 SYNCED_UPSTREAM_TAG=""
@@ -22,14 +23,31 @@ cleanup() {
 trap cleanup EXIT
 
 run_url() {
-  if [[ -n "${GITHUB_SERVER_URL:-}" && -n "${GITHUB_REPOSITORY:-}" && -n "${GITHUB_RUN_ID:-}" ]]; then
-    printf '%s/%s/actions/runs/%s\n' "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID"
+  if [[ -n "${GITHUB_SERVER_URL:-}" && -n "$REPO_SLUG" && -n "${GITHUB_RUN_ID:-}" ]]; then
+    printf '%s/%s/actions/runs/%s\n' "$GITHUB_SERVER_URL" "$REPO_SLUG" "$GITHUB_RUN_ID"
   fi
+}
+
+gh_repo_args() {
+  if [[ -n "$REPO_SLUG" ]]; then
+    printf '%s\n%s\n' "--repo" "$REPO_SLUG"
+  fi
+}
+
+ensure_issue_labels() {
+  local repo_args=()
+
+  mapfile -t repo_args < <(gh_repo_args)
+  gh label create automated "${repo_args[@]}" --color "5319E7" --description "Created by automation." 2>/dev/null || true
+  gh label create conflict "${repo_args[@]}" --color "D93F0B" --description "Requires conflict resolution." 2>/dev/null || true
 }
 
 issue_number_by_title() {
   local title="$1"
-  gh issue list --state open --json number,title \
+  local repo_args=()
+
+  mapfile -t repo_args < <(gh_repo_args)
+  gh issue list "${repo_args[@]}" --state open --json number,title \
     | python3 -c 'import json, sys; title = sys.argv[1]; print(next((str(issue["number"]) for issue in json.load(sys.stdin) if issue["title"] == title), ""))' "$title"
 }
 
@@ -37,16 +55,20 @@ create_or_update_issue() {
   local title="$1"
   local body="$2"
   local issue_number=""
+  local repo_args=()
+
+  mapfile -t repo_args < <(gh_repo_args)
 
   issue_number="$(issue_number_by_title "$title" 2>/dev/null || true)"
   if [[ -n "$issue_number" ]]; then
-    gh issue comment "$issue_number" --body "$body" >/dev/null || true
+    gh issue comment "$issue_number" "${repo_args[@]}" --body "$body" >/dev/null || true
     echo "Updated existing issue #${issue_number}: ${title}"
     return 0
   fi
 
-  gh issue create --title "$title" --body "$body" --label automated --label conflict >/dev/null \
-    || gh issue create --title "$title" --body "$body" >/dev/null \
+  ensure_issue_labels
+  gh issue create "${repo_args[@]}" --title "$title" --body "$body" --label automated --label conflict >/dev/null \
+    || gh issue create "${repo_args[@]}" --title "$title" --body "$body" >/dev/null \
     || echo "Failed to create issue: ${title}" >&2
 }
 
@@ -57,7 +79,10 @@ close_issue_if_open() {
 
   issue_number="$(issue_number_by_title "$title" 2>/dev/null || true)"
   if [[ -n "$issue_number" ]]; then
-    gh issue close "$issue_number" --comment "$body" >/dev/null || true
+    local repo_args=()
+
+    mapfile -t repo_args < <(gh_repo_args)
+    gh issue close "$issue_number" "${repo_args[@]}" --comment "$body" >/dev/null || true
     echo "Closed resolved issue #${issue_number}: ${title}"
   fi
 }
