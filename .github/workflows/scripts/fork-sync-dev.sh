@@ -144,8 +144,7 @@ rebase_patch_source() {
   local target_ref="$1"
   local work_branch="$2"
 
-  git checkout -B "$PATCH_BRANCH" "origin/${PATCH_BRANCH}"
-  git checkout -B "$work_branch" "$PATCH_BRANCH"
+  git checkout -B "$work_branch" "origin/${PATCH_BRANCH}"
   git rebase --rebase-merges "$target_ref"
 }
 
@@ -153,6 +152,11 @@ sync_generated_branch() {
   local conflict_body=""
   local status_output=""
   local run=""
+
+  if [[ "$GENERATED_BRANCH" == "$PATCH_BRANCH" ]]; then
+    echo "Generated branch must differ from patch source branch: ${GENERATED_BRANCH}" >&2
+    return 1
+  fi
 
   echo "Rebasing ${PATCH_BRANCH} onto upstream/${UPSTREAM_BRANCH} for ${GENERATED_BRANCH}"
   if rebase_patch_source "upstream/${UPSTREAM_BRANCH}" "$GENERATED_BRANCH"; then
