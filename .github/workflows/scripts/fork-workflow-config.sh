@@ -17,13 +17,10 @@ fork_detect_default_branch() {
 }
 
 fork_set_workflow_defaults() {
-  local detected_default_branch=""
-  detected_default_branch="$(fork_detect_default_branch)"
-
   UPSTREAM_REPO="${UPSTREAM_REPO:-maximhq/bifrost}"
   UPSTREAM_BRANCH="${UPSTREAM_BRANCH:-dev}"
   PATCH_BRANCH="${PATCH_BRANCH:-patched}"
-  GENERATED_BRANCH="${GENERATED_BRANCH:-$detected_default_branch}"
+  GENERATED_BRANCH="${GENERATED_BRANCH:-patched-dev}"
   GHCR_REGISTRY="${GHCR_REGISTRY:-ghcr.io}"
 
   local default_ghcr_image="${GITHUB_REPOSITORY:-bifrost}"
