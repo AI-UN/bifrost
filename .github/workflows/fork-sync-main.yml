@@ -1,4 +1,4 @@
-name: Fork Sync Dev
+name: Fork Sync Main
 
 on:
   schedule:
@@ -10,7 +10,7 @@ on:
         required: false
         type: string
       dry_run:
-        description: 'Run without pushing patched-dev, tags, or dispatching release workflows'
+        description: 'Run without pushing patched-main, tags, or dispatching release workflows'
         required: false
         default: false
         type: boolean
@@ -22,7 +22,7 @@ permissions:
   packages: read
 
 concurrency:
-  group: fork-sync-dev
+  group: fork-sync-main
   cancel-in-progress: false
 
 jobs:
@@ -49,8 +49,8 @@ jobs:
 
       - name: Configure Git identity
         run: |
-          git config user.name "fork-sync-dev[bot]"
-          git config user.email "fork-sync-dev[bot]@users.noreply.github.com"
+          git config user.name "fork-sync-main[bot]"
+          git config user.email "fork-sync-main[bot]@users.noreply.github.com"
 
-      - name: Sync patched-dev and release tags
-        run: bash ./.github/workflows/scripts/fork-sync-dev.sh
+      - name: Sync patched-main and release tags
+        run: bash ./.github/workflows/scripts/fork-sync-main.sh

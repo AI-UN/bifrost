@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Fork release tag to publish, for example v1.5.2-oss; leave empty on patched-dev to publish :dev'
+        description: 'Fork release tag to publish, for example v1.5.2-oss; leave empty on patched-main to publish :main'
         required: false
         type: string
       upstream_tag:
@@ -76,8 +76,8 @@ jobs:
           if [[ -z "$REF" ]]; then
             if [[ "${GITHUB_EVENT_NAME:-}" == "workflow_dispatch" && "${GITHUB_REF_NAME:-}" == "$GENERATED_BRANCH" ]]; then
               REF="$GENERATED_BRANCH"
-              FORK_VERSION="dev"
-              IMAGE_TAG="dev"
+              FORK_VERSION="main"
+              IMAGE_TAG="main"
               PUBLISH_LATEST_TAGS="false"
               if [[ -z "$UPSTREAM_TAG" ]]; then
                 UPSTREAM_TAG="$(fork_latest_reachable_upstream_transport_tag "$REF")"
