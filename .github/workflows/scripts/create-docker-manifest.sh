@@ -17,7 +17,7 @@ PUBLISH_LATEST_TAGS="${PUBLISH_LATEST_TAGS:-}"
 IMAGE_TAG="${IMAGE_TAG:-v${VERSION}}"
 
 if [[ -z "$PUBLISH_LATEST_TAGS" ]]; then
-  if [[ "$VERSION" == "dev" || "$IMAGE_TAG" == "dev" ]]; then
+  if [[ "$VERSION" == "main" || "$IMAGE_TAG" == "main" ]]; then
     PUBLISH_LATEST_TAGS="false"
   elif [[ -n "$SOURCE_TAG_FOR_LATEST" ]]; then
     SOURCE_VERSION="${SOURCE_TAG_FOR_LATEST#transports/v}"
