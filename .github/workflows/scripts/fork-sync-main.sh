@@ -113,13 +113,13 @@ snapshot_automation_files() {
   mkdir -p "$AUTOMATION_SNAPSHOT_DIR/.github/workflows/scripts"
 
   cp .fork-upstream-sync.env "$AUTOMATION_SNAPSHOT_DIR/.fork-upstream-sync.env"
-  cp .github/workflows/fork-sync-dev.yml "$AUTOMATION_SNAPSHOT_DIR/.github/workflows/fork-sync-dev.yml"
+  cp .github/workflows/fork-sync-main.yml "$AUTOMATION_SNAPSHOT_DIR/.github/workflows/fork-sync-main.yml"
   cp .github/workflows/fork-release-cli.yml "$AUTOMATION_SNAPSHOT_DIR/.github/workflows/fork-release-cli.yml"
   cp .github/workflows/fork-release-docker.yml "$AUTOMATION_SNAPSHOT_DIR/.github/workflows/fork-release-docker.yml"
   for script in \
     build-executables.sh \
     create-docker-manifest.sh \
-    fork-sync-dev.sh \
+    fork-sync-main.sh \
     fork-sync-state.sh \
     fork-workflow-config.sh \
     package-bifrost-http-release-assets.sh \
@@ -136,7 +136,7 @@ install_automation_files() {
 
   mkdir -p .github/workflows
   cp "$AUTOMATION_SNAPSHOT_DIR/.fork-upstream-sync.env" .fork-upstream-sync.env
-  cp "$AUTOMATION_SNAPSHOT_DIR/.github/workflows/fork-sync-dev.yml" .github/workflows/fork-sync-dev.yml
+  cp "$AUTOMATION_SNAPSHOT_DIR/.github/workflows/fork-sync-main.yml" .github/workflows/fork-sync-main.yml
   cp "$AUTOMATION_SNAPSHOT_DIR/.github/workflows/fork-release-cli.yml" .github/workflows/fork-release-cli.yml
   cp "$AUTOMATION_SNAPSHOT_DIR/.github/workflows/fork-release-docker.yml" .github/workflows/fork-release-docker.yml
   mkdir -p .github/workflows/scripts
@@ -188,7 +188,7 @@ sync_generated_branch() {
     close_issue_if_open "$SYNC_CONFLICT_TITLE" "Resolved by successful run: $(run_url)"
     install_automation_files
     write_sync_state_snapshot "${SYNCED_UPSTREAM_TAG}" "${SYNCED_FORK_TAG}"
-    git add .fork-upstream-sync.env .github/workflows/fork-sync-dev.yml .github/workflows/fork-release-cli.yml .github/workflows/fork-release-docker.yml .github/workflows/scripts
+    git add .fork-upstream-sync.env .github/workflows/fork-sync-main.yml .github/workflows/fork-release-cli.yml .github/workflows/fork-release-docker.yml .github/workflows/scripts
     if git diff --cached --quiet; then
       echo "Generated branch automation files are unchanged."
     else
@@ -205,7 +205,7 @@ sync_generated_branch() {
   status_output="$(git status --short || true)"
   run="$(run_url)"
   conflict_body="$(cat <<EOF
-## patched-dev sync conflict
+## ${GENERATED_BRANCH} sync conflict
 
 The fork sync workflow could not rebase ${PATCH_BRANCH} onto upstream/${UPSTREAM_BRANCH}.
 
