@@ -86,7 +86,7 @@ fork_upstream_tag_from_fork_tag() {
   local fork_tag="$1"
   local version=""
   version="$(fork_transport_version_from_tag "$fork_tag")"
-  if [[ "$version" == "dev" ]]; then
+  if [[ "$version" == "main" ]]; then
     return 1
   fi
   version="${version%-oss}"
