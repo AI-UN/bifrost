@@ -255,3 +255,13 @@ ui/app/routeTree.gen.ts
 bifrost-migration-cli
 
 tests/e2e/clis/reports
+
+# AI Tools
+.agents
+.chorus
+.claude
+.goalkeeper
+.opencode
+.specify
+openspec
+specs
