@@ -46,8 +46,9 @@ else
   echo "📋 Building all platforms: ${platforms[*]}"
 fi
 
-# Detect host architecture for native build detection
+# Detect the host platform for native build detection
 HOST_ARCH=$(uname -m)
+HOST_OS=$(uname -s)
 
 # Resolve Go workspace mode.
 # When LOCAL_WORKSPACE_BUILD=true, build against a freshly generated go.work so
@@ -153,8 +154,14 @@ for platform in "${platforms[@]}"; do
       go build -trimpath -ldflags "-s -w -buildid= -X main.Version=v${VERSION}" \
       -o "$PROJECT_ROOT/dist/$PLATFORM_DIR/$GOARCH/$output_name" .
 
-   else # Darwin (macOS)
-    if [[ "$GOARCH" = "amd64" ]]; then
+  else # Darwin (macOS)
+    if [[ "$HOST_OS" = "Darwin" ]] && \
+       { [[ "$GOARCH" = "amd64" && "$HOST_ARCH" = "x86_64" ]] || \
+         [[ "$GOARCH" = "arm64" && "$HOST_ARCH" = "arm64" ]]; }; then
+      echo "  🏠 Native Darwin build detected — using system compiler"
+      CC_COMPILER="${CC:-clang}"
+      CXX_COMPILER="${CXX:-clang++}"
+    elif [[ "$GOARCH" = "amd64" ]]; then
       CC_COMPILER="o64-clang"
       CXX_COMPILER="o64-clang++"
     elif [[ "$GOARCH" = "arm64" ]]; then
