@@ -37,6 +37,7 @@ Ensure the Bifrost server is running and the chosen provider(s) are configured (
 - **Cohere** – Requires a valid Cohere API key in Bifrost provider config. Key format and auth may differ from other providers; 401 is expected if the key is missing or invalid.
 - **Vertex** – Requires `region` in the key config for embeddings and other operations. Set this in Bifrost provider config (project, region, credentials). Embeddings typically require a supported region such as `us-central1`.
 - **Replicate** – Set `replicate_owner` (e.g. via environment or Postman env) when running Replicate tests; otherwise API calls may fail.
+- **SiliconFlow** – Uses `deepseek-ai/DeepSeek-V3.2` by default. The provider defaults to the international API; for the China region, set the provider's `network_config.base_url` to `https://api.siliconflow.cn` (without `/v1`).
 
 ## Files
 
@@ -58,6 +59,7 @@ All Bifrost providers are included except **sgl** and **ollama** (excluded in `r
 - `bifrost-v1-parasail.postman_environment.json`
 - `bifrost-v1-perplexity.postman_environment.json`
 - `bifrost-v1-replicate.postman_environment.json`
+- `bifrost-v1-siliconflow.postman_environment.json`
 - `bifrost-v1-vertex.postman_environment.json`
 - `bifrost-v1-xai.postman_environment.json`
 
