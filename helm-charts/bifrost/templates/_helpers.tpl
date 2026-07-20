@@ -1757,8 +1757,17 @@ Call this template at the beginning of deployment/stateful templates
 
 {{/* Validate bifrost.sourceOfTruth enum */}}
 {{- if .Values.bifrost.sourceOfTruth }}
-{{- if and (ne .Values.bifrost.sourceOfTruth "split") (ne .Values.bifrost.sourceOfTruth "config.json") }}
-{{- fail (printf "ERROR: bifrost.sourceOfTruth must be 'split' or 'config.json', got: %s" .Values.bifrost.sourceOfTruth) }}
+{{- if and (ne .Values.bifrost.sourceOfTruth "split") (ne .Values.bifrost.sourceOfTruth "config.json") (ne .Values.bifrost.sourceOfTruth "config_store") }}
+{{- fail (printf "ERROR: bifrost.sourceOfTruth must be 'split', 'config.json', or 'config_store', got: %s" .Values.bifrost.sourceOfTruth) }}
+{{- end }}
+{{- if eq .Values.bifrost.sourceOfTruth "config_store" }}
+{{- $configStoreType := .Values.storage.configStore.type | default .Values.storage.mode }}
+{{- if or (not .Values.storage.configStore.enabled) (ne $configStoreType "postgres") }}
+{{- fail "ERROR: bifrost.sourceOfTruth='config_store' requires storage.configStore.enabled=true and a PostgreSQL config store" }}
+{{- end }}
+{{- if and (not .Values.postgresql.enabled) (not .Values.postgresql.external.enabled) }}
+{{- fail "ERROR: bifrost.sourceOfTruth='config_store' requires postgresql.enabled=true or postgresql.external.enabled=true" }}
+{{- end }}
 {{- end }}
 {{- end }}
 
