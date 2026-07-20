@@ -729,6 +729,9 @@
         },
         "github-copilot": {
           "$ref": "#/$defs/provider_with_github_copilot_config"
+        },
+        "siliconflow": {
+          "$ref": "#/$defs/provider"
         }
       },
       "additionalProperties": true
@@ -4480,7 +4483,8 @@
                         "sgl",
                         "huggingface",
                         "databricks",
-                        "cloudflare"
+                        "cloudflare",
+                        "siliconflow"
                       ]
                     },
                     "embedding_model": {
