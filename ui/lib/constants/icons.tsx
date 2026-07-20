@@ -818,6 +818,21 @@ export const ProviderIcons = {
 			</svg>
 		);
 	},
+	siliconflow: ({ size = "md", className = "" }: IconProps) => {
+		const resolvedSize = resolveSize(size);
+
+		return (
+			<img
+				src="/images/siliconflow.png"
+				alt="SiliconFlow"
+				width={resolvedSize}
+				height={resolvedSize}
+				loading="lazy"
+				decoding="async"
+				className={className}
+			/>
+		);
+	},
 } as const;
 
 // Routing Engine Icons
