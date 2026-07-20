@@ -1041,6 +1041,9 @@
         },
         "github-copilot": {
           "$ref": "#/$defs/provider_with_github_copilot_config"
+        },
+        "siliconflow": {
+          "$ref": "#/$defs/provider"
         }
       },
       "additionalProperties": true
@@ -4855,7 +4858,8 @@
                         "cloudflare",
                         "byteplus",
                         "baseten",
-                        "kimchi"
+                        "kimchi",
+                        "siliconflow"
                       ]
                     },
                     "embedding_model": {

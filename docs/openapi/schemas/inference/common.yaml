@@ -44,6 +44,7 @@ ModelProvider:
     - baseten
     - kimchi
     - soniox
+    - siliconflow
 
 Fallback:
   type: object
