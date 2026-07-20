@@ -28,6 +28,7 @@ ModelProvider:
     - xai
     - runway
     - fireworks
+    - siliconflow
 
 Fallback:
   type: object
