@@ -119,9 +119,10 @@ func TestResponseFormatSchemaBytesReachOpenAIVerbatim(t *testing.T) {
 // TestToOpenAIChatRequest_DeepSeekDowngradesJSONSchema).
 func TestResponseFormatSurvivesDelegatingProviders(t *testing.T) {
 	delegating := []schemas.ModelProvider{
-		schemas.Azure, schemas.Cerebras, schemas.Groq,
-		schemas.OpenRouter, schemas.SGL, schemas.VLLM, schemas.XAI,
-		schemas.Wafer, schemas.Ollama, schemas.Fireworks, schemas.Parasail,
+		schemas.Azure, schemas.Cerebras, schemas.DeepSeek, schemas.Groq,
+		schemas.OpenRouter, schemas.SGL, schemas.SiliconFlow, schemas.VLLM,
+		schemas.XAI, schemas.Wafer, schemas.Ollama, schemas.Fireworks,
+		schemas.Parasail,
 	}
 
 	for _, provider := range delegating {
