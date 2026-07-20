@@ -38,14 +38,30 @@ func NewPromptsHandler(store configstore.ConfigStore, reloader PromptCacheReload
 }
 
 // reloadCache triggers a cache refresh if a reloader is configured.
-// Errors are logged but do not fail the originating request.
-func (h *PromptsHandler) reloadCache(ctx context.Context) {
+// In synchronized mode, callers surface refresh failures as committed-but-pending.
+func (h *PromptsHandler) reloadCache(ctx context.Context) error {
 	if h.reloader == nil {
-		return
+		return nil
 	}
-	if err := h.reloader.Reload(ctx); err != nil {
+	return h.reloader.Reload(ctx)
+}
+
+func (h *PromptsHandler) applyPromptMutation(
+	ctx *fasthttp.RequestCtx,
+	prepared preparedConfigMutation,
+	revision int64,
+) bool {
+	if err := h.reloadCache(ctx); err != nil {
 		logger.Error("failed to reload prompt cache: %v", err)
+		if prepared.enabled {
+			sendConfigMutationPending(ctx, revision)
+			return false
+		}
 	}
+	if prepared.enabled {
+		setConfigRevisionHeaders(ctx, revision)
+	}
+	return true
 }
 
 // RegisterRoutes registers the routes for the PromptsHandler
@@ -137,28 +153,28 @@ type CreateVersionRequest struct {
 	ModelParams   tables.ModelParams     `json:"model_params"`
 	Provider      string                 `json:"provider"`
 	Model         string                 `json:"model"`
-	Variables     tables.PromptVariables  `json:"variables,omitempty"`
+	Variables     tables.PromptVariables `json:"variables,omitempty"`
 }
 
 // CreateSessionRequest represents the request body for creating a session
 type CreateSessionRequest struct {
-	Name        string                  `json:"name"`
-	VersionID   *uint                   `json:"version_id,omitempty"`
-	Messages    []tables.PromptMessage  `json:"messages,omitempty"`
-	ModelParams tables.ModelParams      `json:"model_params"`
-	Provider    string                  `json:"provider"`
-	Model       string                  `json:"model"`
-	Variables   tables.PromptVariables  `json:"variables,omitempty"`
+	Name        string                 `json:"name"`
+	VersionID   *uint                  `json:"version_id,omitempty"`
+	Messages    []tables.PromptMessage `json:"messages,omitempty"`
+	ModelParams tables.ModelParams     `json:"model_params"`
+	Provider    string                 `json:"provider"`
+	Model       string                 `json:"model"`
+	Variables   tables.PromptVariables `json:"variables,omitempty"`
 }
 
 // UpdateSessionRequest represents the request body for updating a session
 type UpdateSessionRequest struct {
-	Name        string                  `json:"name"`
-	Messages    []tables.PromptMessage  `json:"messages"`
-	ModelParams tables.ModelParams      `json:"model_params"`
-	Provider    string                  `json:"provider"`
-	Model       string                  `json:"model"`
-	Variables   tables.PromptVariables  `json:"variables,omitempty"`
+	Name        string                 `json:"name"`
+	Messages    []tables.PromptMessage `json:"messages"`
+	ModelParams tables.ModelParams     `json:"model_params"`
+	Provider    string                 `json:"provider"`
+	Model       string                 `json:"model"`
+	Variables   tables.PromptVariables `json:"variables,omitempty"`
 }
 
 // RenameSessionRequest represents the request body for renaming a session
@@ -185,6 +201,7 @@ func (h *PromptsHandler) getFolders(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	setCurrentConfigRevisionHeaders(ctx, h.store)
 	SendJSON(ctx, map[string]any{
 		"folders": folders,
 	})
@@ -214,6 +231,7 @@ func (h *PromptsHandler) getFolderByID(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	setCurrentConfigRevisionHeaders(ctx, h.store)
 	SendJSON(ctx, map[string]any{
 		"folder": folder,
 	})
@@ -226,27 +244,31 @@ func (h *PromptsHandler) createFolder(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusBadRequest, "invalid request body")
 		return
 	}
-
 	if req.Name == "" {
 		SendError(ctx, fasthttp.StatusBadRequest, "name is required")
 		return
 	}
-
-	folder := &tables.TableFolder{
-		ID:          uuid.New().String(),
-		Name:        req.Name,
-		Description: req.Description,
+	prepared, ok := prepareConfigMutation(ctx, h.store)
+	if !ok {
+		return
 	}
 
-	if err := h.store.CreateFolder(ctx, folder); err != nil {
+	folder := &tables.TableFolder{ID: uuid.New().String(), Name: req.Name, Description: req.Description}
+	revision, err := commitConfigMutation(ctx, h.store, prepared, func(mutationCtx context.Context) error {
+		return h.store.CreateFolder(mutationCtx, folder)
+	})
+	if err != nil {
+		if handleConfigMutationError(ctx, err) {
+			return
+		}
 		logger.Error("failed to create folder: %v", err)
 		SendError(ctx, fasthttp.StatusInternalServerError, err.Error())
 		return
 	}
-
-	SendJSON(ctx, map[string]any{
-		"folder": folder,
-	})
+	if !h.applyPromptMutation(ctx, prepared, revision) {
+		return
+	}
+	SendJSON(ctx, map[string]any{"folder": folder})
 }
 
 // updateFolder handles PUT /api/prompt-repo/folders/{id}
@@ -261,10 +283,13 @@ func (h *PromptsHandler) updateFolder(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusBadRequest, "invalid folder ID")
 		return
 	}
-
 	var req UpdateFolderRequest
 	if err := json.Unmarshal(ctx.PostBody(), &req); err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, "invalid request body")
+		return
+	}
+	prepared, ok := prepareConfigMutation(ctx, h.store)
+	if !ok {
 		return
 	}
 
@@ -278,7 +303,6 @@ func (h *PromptsHandler) updateFolder(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusInternalServerError, err.Error())
 		return
 	}
-
 	if req.Name != "" {
 		folder.Name = req.Name
 	}
@@ -286,15 +310,25 @@ func (h *PromptsHandler) updateFolder(ctx *fasthttp.RequestCtx) {
 		folder.Description = req.Description
 	}
 
-	if err := h.store.UpdateFolder(ctx, folder); err != nil {
+	revision, err := commitConfigMutation(ctx, h.store, prepared, func(mutationCtx context.Context) error {
+		return h.store.UpdateFolder(mutationCtx, folder)
+	})
+	if err != nil {
+		if handleConfigMutationError(ctx, err) {
+			return
+		}
+		if errors.Is(err, configstore.ErrNotFound) {
+			SendError(ctx, fasthttp.StatusNotFound, "folder not found")
+			return
+		}
 		logger.Error("failed to update folder: %v", err)
 		SendError(ctx, fasthttp.StatusInternalServerError, err.Error())
 		return
 	}
-
-	SendJSON(ctx, map[string]any{
-		"folder": folder,
-	})
+	if !h.applyPromptMutation(ctx, prepared, revision) {
+		return
+	}
+	SendJSON(ctx, map[string]any{"folder": folder})
 }
 
 // deleteFolder handles DELETE /api/prompt-repo/folders/{id}
@@ -309,8 +343,18 @@ func (h *PromptsHandler) deleteFolder(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusBadRequest, "invalid folder ID")
 		return
 	}
+	prepared, ok := prepareConfigMutation(ctx, h.store)
+	if !ok {
+		return
+	}
 
-	if err := h.store.DeleteFolder(ctx, id); err != nil {
+	revision, err := commitConfigMutation(ctx, h.store, prepared, func(mutationCtx context.Context) error {
+		return h.store.DeleteFolder(mutationCtx, id)
+	})
+	if err != nil {
+		if handleConfigMutationError(ctx, err) {
+			return
+		}
 		if errors.Is(err, configstore.ErrNotFound) {
 			SendError(ctx, fasthttp.StatusNotFound, "folder not found")
 			return
@@ -319,11 +363,10 @@ func (h *PromptsHandler) deleteFolder(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusInternalServerError, err.Error())
 		return
 	}
-
-	h.reloadCache(ctx)
-	SendJSON(ctx, map[string]any{
-		"message": "folder deleted successfully",
-	})
+	if !h.applyPromptMutation(ctx, prepared, revision) {
+		return
+	}
+	SendJSON(ctx, map[string]any{"message": "folder deleted successfully"})
 }
 
 // ============================================================================
@@ -344,6 +387,7 @@ func (h *PromptsHandler) getPrompts(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	setCurrentConfigRevisionHeaders(ctx, h.store)
 	SendJSON(ctx, map[string]any{
 		"prompts": prompts,
 	})
@@ -373,6 +417,7 @@ func (h *PromptsHandler) getPromptByID(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	setCurrentConfigRevisionHeaders(ctx, h.store)
 	SendJSON(ctx, map[string]any{
 		"prompt": prompt,
 	})
@@ -385,16 +430,17 @@ func (h *PromptsHandler) createPrompt(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusBadRequest, "invalid request body")
 		return
 	}
-
 	if req.Name == "" {
 		SendError(ctx, fasthttp.StatusBadRequest, "name is required")
 		return
 	}
-	// Normalize empty folder_id to nil (treat as root)
+	prepared, ok := prepareConfigMutation(ctx, h.store)
+	if !ok {
+		return
+	}
 	if req.FolderID != nil && *req.FolderID == "" {
 		req.FolderID = nil
 	}
-	// Verify folder exists if folder_id is provided
 	if req.FolderID != nil {
 		if _, err := h.store.GetFolderByID(ctx, *req.FolderID); err != nil {
 			if errors.Is(err, configstore.ErrNotFound) {
@@ -406,23 +452,22 @@ func (h *PromptsHandler) createPrompt(ctx *fasthttp.RequestCtx) {
 			return
 		}
 	}
-
-	prompt := &tables.TablePrompt{
-		ID:       uuid.New().String(),
-		Name:     req.Name,
-		FolderID: req.FolderID,
-	}
-
-	if err := h.store.CreatePrompt(ctx, prompt); err != nil {
+	prompt := &tables.TablePrompt{ID: uuid.New().String(), Name: req.Name, FolderID: req.FolderID}
+	revision, err := commitConfigMutation(ctx, h.store, prepared, func(mutationCtx context.Context) error {
+		return h.store.CreatePrompt(mutationCtx, prompt)
+	})
+	if err != nil {
+		if handleConfigMutationError(ctx, err) {
+			return
+		}
 		logger.Error("failed to create prompt: %v", err)
 		SendError(ctx, fasthttp.StatusInternalServerError, err.Error())
 		return
 	}
-
-	h.reloadCache(ctx)
-	SendJSON(ctx, map[string]any{
-		"prompt": prompt,
-	})
+	if !h.applyPromptMutation(ctx, prepared, revision) {
+		return
+	}
+	SendJSON(ctx, map[string]any{"prompt": prompt})
 }
 
 // updatePrompt handles PUT /api/prompt-repo/prompts/{id}
@@ -437,19 +482,18 @@ func (h *PromptsHandler) updatePrompt(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusBadRequest, "invalid prompt ID")
 		return
 	}
-
 	var req UpdatePromptRequest
 	if err := json.Unmarshal(ctx.PostBody(), &req); err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, "invalid request body")
 		return
 	}
-
-	// Detect if folder_id key was present in JSON (even if null)
 	var rawFields map[string]json.RawMessage
 	if err := json.Unmarshal(ctx.PostBody(), &rawFields); err == nil {
-		if _, exists := rawFields["folder_id"]; exists {
-			req.FolderIDExists = true
-		}
+		_, req.FolderIDExists = rawFields["folder_id"]
+	}
+	prepared, ok := prepareConfigMutation(ctx, h.store)
+	if !ok {
+		return
 	}
 
 	prompt, err := h.store.GetPromptByID(ctx, id)
@@ -462,18 +506,13 @@ func (h *PromptsHandler) updatePrompt(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusInternalServerError, err.Error())
 		return
 	}
-
 	if req.Name != "" {
 		prompt.Name = req.Name
 	}
 	if req.FolderIDExists {
-		if req.FolderID == nil {
-			// folder_id: null — move to root
-			prompt.FolderID = nil
-		} else if *req.FolderID == "" {
+		if req.FolderID == nil || *req.FolderID == "" {
 			prompt.FolderID = nil
 		} else {
-			// Verify folder exists
 			if _, err := h.store.GetFolderByID(ctx, *req.FolderID); err != nil {
 				if errors.Is(err, configstore.ErrNotFound) {
 					SendError(ctx, fasthttp.StatusBadRequest, "folder not found")
@@ -486,17 +525,25 @@ func (h *PromptsHandler) updatePrompt(ctx *fasthttp.RequestCtx) {
 			prompt.FolderID = req.FolderID
 		}
 	}
-
-	if err := h.store.UpdatePrompt(ctx, prompt); err != nil {
+	revision, err := commitConfigMutation(ctx, h.store, prepared, func(mutationCtx context.Context) error {
+		return h.store.UpdatePrompt(mutationCtx, prompt)
+	})
+	if err != nil {
+		if handleConfigMutationError(ctx, err) {
+			return
+		}
+		if errors.Is(err, configstore.ErrNotFound) {
+			SendError(ctx, fasthttp.StatusNotFound, "prompt not found")
+			return
+		}
 		logger.Error("failed to update prompt: %v", err)
 		SendError(ctx, fasthttp.StatusInternalServerError, err.Error())
 		return
 	}
-
-	h.reloadCache(ctx)
-	SendJSON(ctx, map[string]any{
-		"prompt": prompt,
-	})
+	if !h.applyPromptMutation(ctx, prepared, revision) {
+		return
+	}
+	SendJSON(ctx, map[string]any{"prompt": prompt})
 }
 
 // deletePrompt handles DELETE /api/prompt-repo/prompts/{id}
@@ -511,8 +558,17 @@ func (h *PromptsHandler) deletePrompt(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusBadRequest, "invalid prompt ID")
 		return
 	}
-
-	if err := h.store.DeletePrompt(ctx, id); err != nil {
+	prepared, ok := prepareConfigMutation(ctx, h.store)
+	if !ok {
+		return
+	}
+	revision, err := commitConfigMutation(ctx, h.store, prepared, func(mutationCtx context.Context) error {
+		return h.store.DeletePrompt(mutationCtx, id)
+	})
+	if err != nil {
+		if handleConfigMutationError(ctx, err) {
+			return
+		}
 		if errors.Is(err, configstore.ErrNotFound) {
 			SendError(ctx, fasthttp.StatusNotFound, "prompt not found")
 			return
@@ -521,11 +577,10 @@ func (h *PromptsHandler) deletePrompt(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusInternalServerError, err.Error())
 		return
 	}
-
-	h.reloadCache(ctx)
-	SendJSON(ctx, map[string]any{
-		"message": "prompt deleted successfully",
-	})
+	if !h.applyPromptMutation(ctx, prepared, revision) {
+		return
+	}
+	SendJSON(ctx, map[string]any{"message": "prompt deleted successfully"})
 }
 
 // ============================================================================
@@ -556,6 +611,7 @@ func (h *PromptsHandler) getPromptVersions(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	setCurrentConfigRevisionHeaders(ctx, h.store)
 	SendJSON(ctx, map[string]any{
 		"versions": versions,
 	})
@@ -590,6 +646,7 @@ func (h *PromptsHandler) getVersionByID(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	setCurrentConfigRevisionHeaders(ctx, h.store)
 	SendJSON(ctx, map[string]any{
 		"version": version,
 	})
@@ -607,14 +664,15 @@ func (h *PromptsHandler) createVersion(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusBadRequest, "invalid prompt ID")
 		return
 	}
-
 	var req CreateVersionRequest
 	if err := json.Unmarshal(ctx.PostBody(), &req); err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, "invalid request body")
 		return
 	}
-
-	// Verify prompt exists
+	prepared, ok := prepareConfigMutation(ctx, h.store)
+	if !ok {
+		return
+	}
 	if _, err := h.store.GetPromptByID(ctx, promptID); err != nil {
 		if errors.Is(err, configstore.ErrNotFound) {
 			SendError(ctx, fasthttp.StatusNotFound, "prompt not found")
@@ -624,17 +682,10 @@ func (h *PromptsHandler) createVersion(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusInternalServerError, err.Error())
 		return
 	}
-
-	// Convert messages
-	var messages []tables.TablePromptVersionMessage
+	messages := make([]tables.TablePromptVersionMessage, 0, len(req.Messages))
 	for _, msg := range req.Messages {
-		messages = append(messages, tables.TablePromptVersionMessage{
-			PromptID: promptID,
-			Message:  msg,
-		})
+		messages = append(messages, tables.TablePromptVersionMessage{PromptID: promptID, Message: msg})
 	}
-
-	// Strip variable values — versions store keys only; values live in sessions
 	var versionVars tables.PromptVariables
 	if len(req.Variables) > 0 {
 		versionVars = make(tables.PromptVariables, len(req.Variables))
@@ -642,27 +693,25 @@ func (h *PromptsHandler) createVersion(ctx *fasthttp.RequestCtx) {
 			versionVars[key] = ""
 		}
 	}
-
 	version := &tables.TablePromptVersion{
-		PromptID:      promptID,
-		CommitMessage: req.CommitMessage,
-		ModelParams:   req.ModelParams,
-		Provider:      req.Provider,
-		Model:         req.Model,
-		Variables:     versionVars,
-		Messages:      messages,
+		PromptID: promptID, CommitMessage: req.CommitMessage, ModelParams: req.ModelParams,
+		Provider: req.Provider, Model: req.Model, Variables: versionVars, Messages: messages,
 	}
-
-	if err := h.store.CreatePromptVersion(ctx, version); err != nil {
+	revision, err := commitConfigMutation(ctx, h.store, prepared, func(mutationCtx context.Context) error {
+		return h.store.CreatePromptVersion(mutationCtx, version)
+	})
+	if err != nil {
+		if handleConfigMutationError(ctx, err) {
+			return
+		}
 		logger.Error("failed to create version: %v", err)
 		SendError(ctx, fasthttp.StatusInternalServerError, err.Error())
 		return
 	}
-
-	h.reloadCache(ctx)
-	SendJSON(ctx, map[string]any{
-		"version": version,
-	})
+	if !h.applyPromptMutation(ctx, prepared, revision) {
+		return
+	}
+	SendJSON(ctx, map[string]any{"version": version})
 }
 
 // deleteVersion handles DELETE /api/prompt-repo/versions/{id}
@@ -682,8 +731,17 @@ func (h *PromptsHandler) deleteVersion(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusBadRequest, "invalid version ID")
 		return
 	}
-
-	if err := h.store.DeletePromptVersion(ctx, uint(id)); err != nil {
+	prepared, ok := prepareConfigMutation(ctx, h.store)
+	if !ok {
+		return
+	}
+	revision, err := commitConfigMutation(ctx, h.store, prepared, func(mutationCtx context.Context) error {
+		return h.store.DeletePromptVersion(mutationCtx, uint(id))
+	})
+	if err != nil {
+		if handleConfigMutationError(ctx, err) {
+			return
+		}
 		if errors.Is(err, configstore.ErrNotFound) {
 			SendError(ctx, fasthttp.StatusNotFound, "version not found")
 			return
@@ -692,11 +750,10 @@ func (h *PromptsHandler) deleteVersion(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusInternalServerError, err.Error())
 		return
 	}
-
-	h.reloadCache(ctx)
-	SendJSON(ctx, map[string]any{
-		"message": "version deleted successfully",
-	})
+	if !h.applyPromptMutation(ctx, prepared, revision) {
+		return
+	}
+	SendJSON(ctx, map[string]any{"message": "version deleted successfully"})
 }
 
 // ============================================================================
@@ -1032,18 +1089,19 @@ func (h *PromptsHandler) commitSession(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusBadRequest, "invalid session ID")
 		return
 	}
-
 	var req CommitSessionRequest
 	if err := json.Unmarshal(ctx.PostBody(), &req); err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, "invalid request body")
 		return
 	}
-
 	if req.CommitMessage == "" {
 		SendError(ctx, fasthttp.StatusBadRequest, "commit_message is required")
 		return
 	}
-
+	prepared, ok := prepareConfigMutation(ctx, h.store)
+	if !ok {
+		return
+	}
 	session, err := h.store.GetPromptSessionByID(ctx, uint(id))
 	if err != nil {
 		if errors.Is(err, configstore.ErrNotFound) {
@@ -1054,14 +1112,11 @@ func (h *PromptsHandler) commitSession(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusInternalServerError, err.Error())
 		return
 	}
-
-	// Convert session messages to version messages
-	var messages []tables.TablePromptVersionMessage
+	messages := make([]tables.TablePromptVersionMessage, 0, len(session.Messages))
 	if req.MessageIndices != nil {
-		// Only include messages at the specified indices, deduplicating
-		seen := make(map[int]struct{})
+		seen := make(map[int]struct{}, len(*req.MessageIndices))
 		for _, idx := range *req.MessageIndices {
-			if _, ok := seen[idx]; ok {
+			if _, exists := seen[idx]; exists {
 				continue
 			}
 			seen[idx] = struct{}{}
@@ -1069,27 +1124,17 @@ func (h *PromptsHandler) commitSession(ctx *fasthttp.RequestCtx) {
 				SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("message index %d out of range (0-%d)", idx, len(session.Messages)-1))
 				return
 			}
-			msg := session.Messages[idx]
-			messages = append(messages, tables.TablePromptVersionMessage{
-				PromptID: session.PromptID,
-				Message:  msg.Message,
-			})
+			messages = append(messages, tables.TablePromptVersionMessage{PromptID: session.PromptID, Message: session.Messages[idx].Message})
 		}
 	} else {
 		for _, msg := range session.Messages {
-			messages = append(messages, tables.TablePromptVersionMessage{
-				PromptID: session.PromptID,
-				Message:  msg.Message,
-			})
+			messages = append(messages, tables.TablePromptVersionMessage{PromptID: session.PromptID, Message: msg.Message})
 		}
 	}
-
 	if len(messages) == 0 {
 		SendError(ctx, fasthttp.StatusBadRequest, "at least one message must be included in the version")
 		return
 	}
-
-	// Copy variable keys from session with empty values for the version
 	var versionVars tables.PromptVariables
 	if len(session.Variables) > 0 {
 		versionVars = make(tables.PromptVariables, len(session.Variables))
@@ -1097,25 +1142,23 @@ func (h *PromptsHandler) commitSession(ctx *fasthttp.RequestCtx) {
 			versionVars[key] = ""
 		}
 	}
-
 	version := &tables.TablePromptVersion{
-		PromptID:      session.PromptID,
-		CommitMessage: req.CommitMessage,
-		ModelParams:   session.ModelParams,
-		Provider:      session.Provider,
-		Model:         session.Model,
-		Variables:     versionVars,
-		Messages:      messages,
+		PromptID: session.PromptID, CommitMessage: req.CommitMessage, ModelParams: session.ModelParams,
+		Provider: session.Provider, Model: session.Model, Variables: versionVars, Messages: messages,
 	}
-
-	if err := h.store.CreatePromptVersion(ctx, version); err != nil {
+	revision, err := commitConfigMutation(ctx, h.store, prepared, func(mutationCtx context.Context) error {
+		return h.store.CreatePromptVersion(mutationCtx, version)
+	})
+	if err != nil {
+		if handleConfigMutationError(ctx, err) {
+			return
+		}
 		logger.Error("failed to create version: %v", err)
 		SendError(ctx, fasthttp.StatusInternalServerError, err.Error())
 		return
 	}
-
-	h.reloadCache(ctx)
-	SendJSON(ctx, map[string]any{
-		"version": version,
-	})
+	if !h.applyPromptMutation(ctx, prepared, revision) {
+		return
+	}
+	SendJSON(ctx, map[string]any{"version": version})
 }

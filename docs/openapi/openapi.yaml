@@ -719,10 +719,14 @@ paths:
   # Health
   /health:
     $ref: "./paths/management/health.yaml#/health"
+  /ready:
+    $ref: "./paths/management/health.yaml#/ready"
 
   # Configuration
   /api/config:
     $ref: "./paths/management/config.yaml#/config"
+  /api/config/revision:
+    $ref: "./paths/management/config.yaml#/config-revision"
   /api/version:
     $ref: "./paths/management/config.yaml#/version"
   /api/proxy-config:
