@@ -1,0 +1,284 @@
+---
+title: "SiliconFlow"
+description: "Configure SiliconFlow's OpenAI-compatible multimodal API for chat, embeddings, rerank, audio, images, video, files, and batch workloads"
+icon: "s"
+---
+
+## Overview
+
+SiliconFlow is a first-party Bifrost provider for SiliconFlow's OpenAI-compatible multimodal API. It supports language, embedding, reranking, audio, image, asynchronous video, file, and batch workflows through Bifrost's unified request and response schemas.
+
+The default API origin is the international service at `https://api.siliconflow.com`. Deployments using the China service can override the provider base URL with `https://api.siliconflow.cn`.
+
+### Supported operations
+
+| Operation | Non-streaming | Streaming | Upstream endpoint |
+|-----------|---------------|-----------|-------------------|
+| List Models | ✅ | - | `/v1/models` |
+| Chat Completions | ✅ | ✅ | `/v1/chat/completions` |
+| Text Completions | ✅ | ✅ | `/v1/completions` |
+| Responses | ✅ | ✅ | Chat fallback through `/v1/chat/completions` |
+| Embeddings | ✅ | ❌ | `/v1/embeddings` |
+| Rerank | ✅ | ❌ | `/v1/rerank` |
+| Speech (TTS) | ✅ | ✅ | `/v1/audio/speech` |
+| Transcription (STT) | ✅ | ❌ | `/v1/audio/transcriptions` |
+| Image Generation | ✅ | ❌ | `/v1/images/generations` |
+| Image Edit | ✅ | ❌ | `/v1/images/generations` |
+| Video Generation | ✅ | ❌ | `/v1/video/submit` |
+| Video Retrieve | ✅ | ❌ | `/v1/video/status` |
+| Video Download | ✅ | ❌ | Signed result URL returned by Video Retrieve |
+| File Upload | ✅ | ❌ | `/v1/files` (`purpose=batch` only) |
+| File List | ✅ | ❌ | `/v1/files` (`purpose=batch` only) |
+| Batch Create | ✅ | ❌ | `/v1/batches` |
+| Batch List | ✅ | ❌ | `/v1/batches` |
+| Batch Retrieve | ✅ | ❌ | `/v1/batches/{batch_id}` |
+| Batch Cancel | ✅ | ❌ | `/v1/batches/{batch_id}/cancel` |
+
+<Note>
+SiliconFlow does not provide a native Responses endpoint. Bifrost translates Responses requests to Chat Completions and converts the result back to the Responses schema. Stored-response semantics, `previous_response_id`, and retrieve, delete, cancel, or input-items lifecycle operations are not available.
+</Note>
+
+## Setup and configuration
+
+<Tabs>
+<Tab title="Web UI">
+
+1. Navigate to **Models** > **Model Providers**.
+2. Click **Add New Provider** and select **SiliconFlow**.
+3. Click **Add Key**, enter a key name, and paste your SiliconFlow API key or use `env.SILICONFLOW_API_KEY`.
+4. Set **Allowed Models** to **All Models** or add the models the key may serve.
+5. Enable **Use for Batch API** on at least one key if you plan to create inline or file-backed batch jobs.
+6. Save the provider configuration.
+
+</Tab>
+<Tab title="config.json">
+
+```json
+{
+  "providers": {
+    "siliconflow": {
+      "keys": [
+        {
+          "name": "siliconflow-key-1",
+          "value": "env.SILICONFLOW_API_KEY",
+          "models": ["*"],
+          "weight": 1.0,
+          "use_for_batch_api": true
+        }
+      ]
+    }
+  }
+}
+```
+
+The `keys` array is required. `use_for_batch_api` is only needed on keys that should serve Batch and batch-file workflows.
+
+</Tab>
+<Tab title="API">
+
+Use the [Provider Keys Management API](https://docs.getbifrost.ai/api-reference/providers/create-a-key-for-a-provider) to configure a SiliconFlow key with provider name `siliconflow`.
+
+After configuration, send requests through the unified gateway with the `siliconflow/` model prefix:
+
+```bash
+curl -X POST http://localhost:8080/v1/chat/completions \
+  -H "Authorization: Bearer $BIFROST_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "siliconflow/deepseek-ai/DeepSeek-V3.2",
+    "messages": [
+      {"role": "user", "content": "Explain semantic caching in one sentence."}
+    ]
+  }'
+```
+
+</Tab>
+<Tab title="Go SDK">
+
+Return SiliconFlow keys from your Bifrost key provider:
+
+```go
+case schemas.SiliconFlow:
+    return []schemas.Key{{
+        Name:           "siliconflow-key-1",
+        Value:          *schemas.NewSecretVar("env.SILICONFLOW_API_KEY"),
+        Models:         []string{"*"},
+        Weight:         1.0,
+        UseForBatchAPI: schemas.Ptr(true),
+    }}, nil
+```
+
+Requests use `schemas.SiliconFlow` and the upstream model name without the gateway prefix:
+
+```go
+response, err := client.ChatCompletionRequest(
+    schemas.NewBifrostContext(ctx, schemas.NoDeadline),
+    &schemas.BifrostChatRequest{
+        Provider: schemas.SiliconFlow,
+        Model:    "deepseek-ai/DeepSeek-V3.2",
+        Input: []schemas.ChatMessage{{
+            Role: schemas.ChatMessageRoleUser,
+            Content: &schemas.ChatMessageContent{
+                ContentStr: schemas.Ptr("Hello from SiliconFlow"),
+            },
+        }},
+    },
+)
+```
+
+</Tab>
+</Tabs>
+
+---
+
+## Regions and base URLs
+
+Bifrost defaults to SiliconFlow's international API origin:
+
+```text
+https://api.siliconflow.com
+```
+
+No `network_config.base_url` is required for the international service. To use the China service, configure the origin explicitly:
+
+```json
+{
+  "providers": {
+    "siliconflow": {
+      "keys": [
+        {
+          "name": "siliconflow-cn-key",
+          "value": "env.SILICONFLOW_API_KEY",
+          "models": ["*"],
+          "weight": 1.0
+        }
+      ],
+      "network_config": {
+        "base_url": "https://api.siliconflow.cn"
+      }
+    }
+  }
+}
+```
+
+<Warning>
+Set `base_url` to the API origin only. Do not append `/v1`; the provider adds the versioned endpoint path for each operation.
+</Warning>
+
+---
+
+## Extra parameters
+
+SiliconFlow-specific fields can be sent through `extra_params`. Bifrost preserves supported provider extensions while protecting reserved request fields such as `model`, `messages`, `documents`, and `input` from being overwritten.
+
+| Workload | Common extra parameters | Notes |
+|----------|-------------------------|-------|
+| Chat and Text | `top_k`, `min_p`, `repetition_penalty`, `stop` | Forwarded to the OpenAI-compatible completion request |
+| Reasoning Chat | `enable_thinking`, `thinking_budget` | Typed Bifrost reasoning settings are also mapped to these fields |
+| List Models | `type`, `sub_type` | Added as query parameters; other extra fields are ignored for model listing |
+| Rerank | `max_chunks_per_doc`, `overlap_tokens` | Documents are sent upstream as strings |
+| Images | `negative_prompt`, `seed`, `num_inference_steps`, `aspect_ratio` | Model support varies |
+| Speech | `sample_rate`, `gain`, `references` | `references` is supported for compatible CosyVoice models |
+| Video | `negative_prompt`, `seed`, `num_inference_steps`, `guidance_scale` | Used by compatible asynchronous video models |
+
+Example reasoning request:
+
+```json
+{
+  "model": "siliconflow/deepseek-ai/DeepSeek-V3.2",
+  "messages": [{"role": "user", "content": "Solve 17 × 23."}],
+  "extra_params": {
+    "enable_thinking": true,
+    "thinking_budget": 2048,
+    "top_k": 40,
+    "min_p": 0.05
+  }
+}
+```
+
+For `deepseek-ai/DeepSeek-V3.1` tool-calling requests, Bifrost forces `enable_thinking` to `false` for upstream compatibility.
+
+---
+
+## Speech and transcription
+
+Speech responses and speech streams use raw binary audio. Streaming does not use OpenAI-style SSE framing; Bifrost emits binary audio deltas and a final done event through its unified streaming interface.
+
+| Model family | Voice and reference rules |
+|--------------|---------------------------|
+| `fishaudio/fish-speech-*` | Requires a non-empty string `voice`; `references` is rejected |
+| `FunAudioLLM/CosyVoice*` | Requires exactly one of a non-empty string `voice` or non-empty `references` |
+
+Transcription sends only the required `file` and `model` fields because SiliconFlow does not document OpenAI transcription options such as prompt, language, or response-format controls for this endpoint.
+
+---
+
+## Image editing
+
+Image Edit accepts exactly one non-empty input image. Bifrost base64-encodes the image and chooses the upstream field from the model family:
+
+| Model | Upstream image field |
+|-------|----------------------|
+| `Qwen/Qwen-Image-Edit*` | `image` |
+| `black-forest-labs/FLUX.1-Kontext-dev` | `image` |
+| `black-forest-labs/FLUX.1-Kontext-pro` | `input_image` |
+| `black-forest-labs/FLUX.1-Kontext-max` | `input_image` |
+| `black-forest-labs/FLUX-1.1-pro` | `image_prompt` |
+| `black-forest-labs/FLUX-1.1-pro-Ultra` | `image_prompt` |
+
+Unknown edit models, empty images, and requests containing multiple images return an operation error instead of guessing an upstream field.
+
+---
+
+## Files and batch
+
+SiliconFlow's file integration is intentionally limited to batch inputs:
+
+- File Upload and File List accept only `purpose=batch`; an omitted purpose defaults to `batch`.
+- File Retrieve, File Delete, and File Content are unsupported.
+- Batch Create accepts either an uploaded `input_file_id` or inline requests, but not both.
+- Inline requests are converted to JSONL and uploaded through the same File Upload operation.
+- Batch jobs target `/v1/chat/completions`; a requested model is sent through `replace.model`.
+- Batch List, Retrieve, and Cancel are supported.
+- Batch Delete and Batch Results are unsupported.
+
+Configure at least one key with `use_for_batch_api: true` before using these operations.
+
+---
+
+## Video lifecycle
+
+Video generation is asynchronous:
+
+1. Video Generation submits a job to `/v1/video/submit` and returns a provider-suffixed video ID.
+2. Video Retrieve checks `/v1/video/status` and maps SiliconFlow queue, progress, success, and failure states to Bifrost video statuses.
+3. Video Download first verifies that the job is completed, then downloads the signed result URL without forwarding the SiliconFlow Authorization header.
+
+Video List, Video Delete, and Video Remix are unsupported.
+
+---
+
+## Unsupported operations
+
+The SiliconFlow provider returns an unsupported-operation error for:
+
+- Count Tokens
+- Transcription streaming
+- Image Generation streaming, Image Edit streaming, Image Variation, and Image Variation streaming
+- Batch Delete and Batch Results
+- File Retrieve, File Delete, and File Content
+- Video List, Video Delete, and Video Remix
+- Cached Contents
+- Containers and Container Files
+- OCR and OCR streaming
+- Compaction
+- Passthrough and Passthrough streaming
+- Realtime and WebSocket operations
+- Stored Responses lifecycle operations
+
+---
+
+## Official documentation
+
+- [SiliconFlow international documentation](https://docs.siliconflow.com)
+- [SiliconFlow China documentation](https://docs.siliconflow.cn)
