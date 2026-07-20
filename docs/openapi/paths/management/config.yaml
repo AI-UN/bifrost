@@ -54,6 +54,39 @@ config:
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
 
+config-revision:
+  get:
+    operationId: getConfigRevision
+    summary: Get the global configuration revision
+    description: Returns the PostgreSQL-backed revision used by this fork's multinode configuration CAS writes. This endpoint is not part of upstream Bifrost OSS.
+    tags:
+      - Configuration
+    security:
+      - ManagementBearerAuth: []
+    responses:
+      '200':
+        description: Current configuration revision
+        headers:
+          ETag:
+            description: Quoted configuration revision for use with If-Match.
+            schema:
+              type: string
+          X-Bifrost-Config-Revision:
+            description: Numeric configuration revision.
+            schema:
+              type: integer
+              format: int64
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [revision]
+              properties:
+                revision:
+                  type: integer
+                  format: int64
+                  minimum: 0
+
 version:
   get:
     operationId: getVersion

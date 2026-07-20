@@ -2504,6 +2504,195 @@ func TestConfigSchemaSourceOfTruthValidation(t *testing.T) {
 	require.Error(t, ValidateConfigSchema(invalid))
 }
 
+func TestValidateSourceOfTruthConfigStoreRequiresEnabledPostgres(t *testing.T) {
+	tests := []struct {
+		name        string
+		storeConfig *configstore.Config
+		wantErr     bool
+	}{
+		{
+			name:    "missing config store",
+			wantErr: true,
+		},
+		{
+			name: "disabled postgres config store",
+			storeConfig: &configstore.Config{
+				Enabled: false,
+				Type:    configstore.ConfigStoreTypePostgres,
+			},
+			wantErr: true,
+		},
+		{
+			name: "enabled sqlite config store",
+			storeConfig: &configstore.Config{
+				Enabled: true,
+				Type:    configstore.ConfigStoreTypeSQLite,
+			},
+			wantErr: true,
+		},
+		{
+			name: "enabled postgres config store",
+			storeConfig: &configstore.Config{
+				Enabled: true,
+				Type:    configstore.ConfigStoreTypePostgres,
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			configData := &ConfigData{
+				SourceOfTruth:     SourceOfTruthConfigStore,
+				ConfigStoreConfig: tt.storeConfig,
+			}
+
+			err := configData.validateSourceOfTruth()
+			if tt.wantErr {
+				require.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+		})
+	}
+}
+
+func TestConfigStoreSourceOfTruthDiscardsOnlyFileRuntimeSections(t *testing.T) {
+	configJSON := []byte(`{
+		"version": 2,
+		"env_label": "store-node",
+		"server": {"read_buffer_size": 8192},
+		"source_of_truth": "config_store",
+		"encryption_key": "bootstrap-secret",
+		"client": {"initial_pool_size": 7},
+		"auth_config": {},
+		"providers": {"openai": {"keys": []}},
+		"framework": {},
+		"mcp": {},
+		"governance": {},
+		"vector_store": {"enabled": false, "type": "redis", "config": {}},
+		"config_store": {"enabled": true, "type": "postgres", "config": {}},
+		"logs_store": {"enabled": false},
+		"plugins": [{}],
+		"websocket": {"max_connections_per_user": 17},
+		"feature_flags": {"flags": {"batch_api": {"enabled": true}}},
+		"skills_registry": {"enabled": true, "skills": []}
+	}`)
+
+	var configData ConfigData
+	require.NoError(t, json.Unmarshal(configJSON, &configData))
+	require.NotNil(t, configData.Client)
+	require.NotNil(t, configData.Providers)
+	require.NotNil(t, configData.MCP)
+	require.NotNil(t, configData.Governance)
+	require.NotNil(t, configData.AuthConfig)
+	require.NotNil(t, configData.Plugins)
+	require.NotNil(t, configData.FrameworkConfig)
+	require.NotNil(t, configData.FeatureFlags)
+	require.NotNil(t, configData.SkillsRegistry)
+
+	configData.discardFileRuntimeConfig()
+
+	require.Nil(t, configData.Client)
+	require.Nil(t, configData.Providers)
+	require.Nil(t, configData.MCP)
+	require.Nil(t, configData.Governance)
+	require.Nil(t, configData.AuthConfig)
+	require.Nil(t, configData.Plugins)
+	require.Nil(t, configData.FrameworkConfig)
+	require.Nil(t, configData.FeatureFlags)
+	require.Nil(t, configData.SkillsRegistry)
+
+	require.Equal(t, 2, configData.Version)
+	require.Equal(t, "store-node", configData.EnvLabel)
+	require.Equal(t, SourceOfTruthConfigStore, configData.SourceOfTruth)
+	require.Equal(t, 8192, configData.Server.ReadBufferSize)
+	require.NotNil(t, configData.EncryptionKey)
+	require.NotNil(t, configData.VectorStoreConfig)
+	require.NotNil(t, configData.ConfigStoreConfig)
+	require.True(t, configData.ConfigStoreConfig.Enabled)
+	require.Equal(t, configstore.ConfigStoreTypePostgres, configData.ConfigStoreConfig.Type)
+	require.NotNil(t, configData.LogsStoreConfig)
+	require.NotNil(t, configData.WebSocket)
+	require.Equal(t, 17, configData.WebSocket.MaxConnections)
+}
+
+func TestLoadProvidersConfigStoreSourceOfTruthDisablesEnvironmentAutodetect(t *testing.T) {
+	initTestLogger()
+	for _, envVar := range []string{
+		"OPENAI_API_KEY",
+		"OPENAI_KEY",
+		"ANTHROPIC_API_KEY",
+		"ANTHROPIC_KEY",
+		"MISTRAL_API_KEY",
+		"MISTRAL_KEY",
+	} {
+		t.Setenv(envVar, "")
+	}
+	t.Setenv("OPENAI_API_KEY", "sk-must-not-be-loaded")
+
+	mockStore := NewMockConfigStore()
+	config := &Config{
+		ConfigStore: mockStore,
+		Providers:   make(map[schemas.ModelProvider]configstore.ProviderConfig),
+	}
+	configData := &ConfigData{SourceOfTruth: SourceOfTruthConfigStore}
+
+	require.NoError(t, loadProviders(context.Background(), config, configData))
+	require.NotContains(t, config.Providers, schemas.OpenAI)
+	require.Empty(t, config.Providers)
+	require.Empty(t, mockStore.providers)
+}
+
+func TestLegacySourceOfTruthModesKeepFileRuntimeSections(t *testing.T) {
+	tests := []struct {
+		name           string
+		sourceOfTruth  string
+		wantNormalized string
+		wantConfigJSON bool
+	}{
+		{
+			name:           "split remains the default",
+			wantNormalized: SourceOfTruthSplit,
+		},
+		{
+			name:           "explicit split is normalized",
+			sourceOfTruth:  " SPLIT ",
+			wantNormalized: SourceOfTruthSplit,
+		},
+		{
+			name:           "config json remains authoritative",
+			sourceOfTruth:  " CONFIG.JSON ",
+			wantNormalized: SourceOfTruthConfigJSON,
+			wantConfigJSON: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			input, err := json.Marshal(map[string]any{
+				"source_of_truth": tt.sourceOfTruth,
+				"client":          map[string]any{"initial_pool_size": 5},
+				"providers":       map[string]any{"openai": map[string]any{"keys": []any{}}},
+			})
+			require.NoError(t, err)
+
+			var configData ConfigData
+			require.NoError(t, json.Unmarshal(input, &configData))
+			require.Equal(t, tt.wantNormalized, configData.SourceOfTruth)
+			require.Equal(t, tt.wantConfigJSON, configData.isConfigJSONSourceOfTruth())
+			require.False(t, configData.isConfigStoreSourceOfTruth())
+
+			if configData.isConfigStoreSourceOfTruth() {
+				configData.discardFileRuntimeConfig()
+			}
+			require.NotNil(t, configData.Client)
+			require.Contains(t, configData.Providers, "openai")
+			require.True(t, configData.sectionPresent("client"))
+			require.True(t, configData.sectionPresent("providers"))
+		})
+	}
+}
+
 // Test fixtures
 
 func makeClientConfig(initialPoolSize int, enableLogging bool) *configstore.ClientConfig {

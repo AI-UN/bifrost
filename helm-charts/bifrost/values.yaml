@@ -141,7 +141,7 @@ livenessProbe:
 
 readinessProbe:
   httpGet:
-    path: /health
+    path: /ready
     port: http
   initialDelaySeconds: 10
   periodSeconds: 10
@@ -233,9 +233,10 @@ bifrost:
 
   # Controls how config.json is reconciled with the database on startup.
   # "split" (default): existing merge behavior — file and DB rows coexist.
-  # "config.json": sections explicitly present in the file are authoritative;
-  #   database-only rows for those sections are pruned on startup.
-  # sourceOfTruth: "config.json"
+  # "config.json": sections explicitly present in the file are authoritative.
+  # "config_store": This fork makes PostgreSQL authoritative for runtime
+  #   configuration and config.json bootstrap-only. Not available upstream.
+  # sourceOfTruth: "config_store"
 
   # Encryption key for sensitive data
   # Can be set as a secret or environment variable
