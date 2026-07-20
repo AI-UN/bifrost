@@ -44,6 +44,7 @@ export const KnownProvidersNames = [
 	"github-copilot",
 	"typesafe",
 	"soniox",
+	"siliconflow",
 ] as const;
 
 // Local Provider type derived from KNOWN_PROVIDERS constant
@@ -76,6 +77,7 @@ export const EmbeddingSupportedProviders: readonly ProviderName[] = [
 	"openrouter",
 	"parasail",
 	"sgl",
+	"siliconflow",
 	"vertex",
 	"vllm",
 	"databricks",
@@ -209,6 +211,7 @@ export const ProviderLabels: Record<ProviderName, string> = {
 	"github-copilot": "GitHub Copilot",
 	typesafe: "TypeSafe",
 	soniox: "Soniox",
+	siliconflow: "SiliconFlow",
 } as const;
 
 // Helper function to get provider label, supporting custom providers
