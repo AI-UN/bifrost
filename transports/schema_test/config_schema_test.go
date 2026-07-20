@@ -135,6 +135,77 @@ func TestSchemaLogsStorePortType(t *testing.T) {
 	})
 }
 
+func TestSchemaSourceOfTruthValidation(t *testing.T) {
+	compiled := compileSchema(t)
+
+	tests := []struct {
+		name      string
+		config    string
+		wantError bool
+	}{
+		{
+			name:   "split is valid",
+			config: `{"source_of_truth":"split"}`,
+		},
+		{
+			name:   "config.json is valid",
+			config: `{"source_of_truth":"config.json"}`,
+		},
+		{
+			name: "config_store with enabled postgres store is valid",
+			config: `{
+				"source_of_truth": "config_store",
+				"config_store": {
+					"enabled": true,
+					"type": "postgres",
+					"config": {
+						"host": "db.example.com",
+						"port": "5432",
+						"user": "bifrost",
+						"password": "secret",
+						"db_name": "bifrost",
+						"ssl_mode": "require"
+					}
+				}
+			}`,
+		},
+		{
+			name:      "config_store authority requires store",
+			config:    `{"source_of_truth":"config_store"}`,
+			wantError: true,
+		},
+		{
+			name:      "config_store authority rejects disabled store",
+			config:    `{"source_of_truth":"config_store","config_store":{"enabled":false,"type":"postgres"}}`,
+			wantError: true,
+		},
+		{
+			name:      "config_store authority rejects sqlite",
+			config:    `{"source_of_truth":"config_store","config_store":{"enabled":true,"type":"sqlite","config":{"path":"config.db"}}}`,
+			wantError: true,
+		},
+
+		{
+			name:   "omitted source of truth is valid",
+			config: `{}`,
+		},
+		{
+			name:      "unknown value is invalid",
+			config:    `{"source_of_truth":"database"}`,
+			wantError: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateConfig(t, compiled, tt.config)
+			if (err != nil) != tt.wantError {
+				t.Fatalf("validateConfig() error = %v, wantError %t", err, tt.wantError)
+			}
+		})
+	}
+}
+
 func TestSchemaPostgresPasswordCommand(t *testing.T) {
 	compiled := compileSchema(t)
 

@@ -163,6 +163,7 @@ func (h *PluginsHandler) buildPluginResponseWithStatuses(plugin *configstoreTabl
 
 // getBuiltinPlugins returns the canonical list of built-in plugin names.
 func (h *PluginsHandler) getBuiltinPlugins(ctx *fasthttp.RequestCtx) {
+	setCurrentConfigRevisionHeaders(ctx, h.configStore)
 	SendJSON(ctx, map[string]any{
 		"plugins": lib.GetBuiltinPluginNames(),
 	})
@@ -171,6 +172,7 @@ func (h *PluginsHandler) getBuiltinPlugins(ctx *fasthttp.RequestCtx) {
 // getLoadedPlugins returns the names of all plugins currently loaded at runtime, whose
 // spans an observability connector can filter.
 func (h *PluginsHandler) getLoadedPlugins(ctx *fasthttp.RequestCtx) {
+	setCurrentConfigRevisionHeaders(ctx, h.configStore)
 	SendJSON(ctx, map[string]any{
 		"plugins": h.pluginsLoader.GetLoadedPluginNames(),
 	})
@@ -210,6 +212,7 @@ func (h *PluginsHandler) getPlugins(ctx *fasthttp.RequestCtx) {
 		finalPlugins = append(finalPlugins, h.buildPluginResponseWithStatuses(plugin, pluginStatuses))
 	}
 	// Creating ephemeral struct
+	setCurrentConfigRevisionHeaders(ctx, h.configStore)
 	SendJSON(ctx, map[string]any{
 		"plugins": finalPlugins,
 		"count":   len(finalPlugins),
@@ -272,6 +275,7 @@ func (h *PluginsHandler) getPlugin(ctx *fasthttp.RequestCtx) {
 	// Return the same shape as list/create/update — with runtime status
 	// merged in — so the UI doesn't see an empty status when refetching a
 	// single plugin via useGetPluginQuery.
+	setCurrentConfigRevisionHeaders(ctx, h.configStore)
 	SendJSON(ctx, h.buildPluginResponse(ctx, plugin))
 }
 
@@ -281,6 +285,11 @@ func (h *PluginsHandler) createPlugin(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, 400, "Plugins creation is  not supported when configstore is disabled")
 		return
 	}
+	prepared, ok := prepareConfigMutation(ctx, h.configStore)
+	if !ok {
+		return
+	}
+
 	var request CreatePluginRequest
 	if err := json.Unmarshal(ctx.PostBody(), &request); err != nil {
 		logger.Error("failed to unmarshal create plugin request: %v", err)
@@ -324,8 +333,7 @@ func (h *PluginsHandler) createPlugin(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid plugin configuration: %v", err))
 		return
 	}
-	// Create DB entry first to avoid orphaned in-memory state if DB write fails
-	if err := h.configStore.CreatePlugin(ctx, &configstoreTables.TablePlugin{
+	pluginRecord := &configstoreTables.TablePlugin{
 		Name:      request.Name,
 		Enabled:   request.Enabled,
 		Config:    normalizedConfig,
@@ -333,16 +341,32 @@ func (h *PluginsHandler) createPlugin(ctx *fasthttp.RequestCtx) {
 		IsCustom:  !isBuiltin,
 		Placement: request.Placement,
 		Order:     request.Order,
-	}); err != nil {
+	}
+	revision, err := commitConfigMutation(
+		ctx,
+		h.configStore,
+		prepared,
+		func(mutationCtx context.Context) error {
+			return h.configStore.CreatePlugin(mutationCtx, pluginRecord)
+		},
+	)
+	if err != nil {
+		if handleConfigMutationError(ctx, err) {
+			return
+		}
 		logger.Error("failed to create plugin: %v", err)
 		SendError(ctx, 500, "Failed to create plugin")
 		return
 	}
 
-	// Reload the plugin into memory if it's enabled
+	// Apply only after the database mutation and revision increment have committed.
 	if request.Enabled {
 		if err := h.pluginsLoader.ReloadPlugin(ctx, request.Name, request.Path, normalizedConfig, request.Placement, request.Order); err != nil {
 			logger.Error("failed to load plugin: %v", err)
+			if prepared.enabled {
+				sendConfigMutationPending(ctx, revision)
+				return
+			}
 			if rbErr := h.configStore.DeletePlugin(ctx, request.Name); rbErr != nil {
 				logger.Error("failed to rollback plugin creation: %v", rbErr)
 			}
@@ -358,6 +382,9 @@ func (h *PluginsHandler) createPlugin(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	if prepared.enabled {
+		setConfigRevisionHeaders(ctx, revision)
+	}
 	ctx.SetStatusCode(fasthttp.StatusCreated)
 	SendJSON(ctx, map[string]any{
 		"message": "Plugin created successfully",
@@ -371,6 +398,11 @@ func (h *PluginsHandler) updatePlugin(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, 400, "Plugins update is not supported when configstore is disabled")
 		return
 	}
+	prepared, ok := prepareConfigMutation(ctx, h.configStore)
+	if !ok {
+		return
+	}
+
 	// Safely validate the "name" parameter
 	nameValue := ctx.UserValue("name")
 	if nameValue == nil {
@@ -391,31 +423,16 @@ func (h *PluginsHandler) updatePlugin(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, 400, "Empty 'name' parameter not allowed")
 		return
 	}
-	var plugin *configstoreTables.TablePlugin
-	var err error
+
 	// Fetch the existing plugin to enable config merging below.
-	var existingPlugin *configstoreTables.TablePlugin
-	existingPlugin, err = h.configStore.GetPlugin(ctx, name)
-	if err != nil {
-		// If doesn't exist, create it
-		if errors.Is(err, configstore.ErrNotFound) {
-			plugin = &configstoreTables.TablePlugin{
-				Name:     name,
-				Enabled:  false,
-				Config:   map[string]any{},
-				Path:     nil,
-				IsCustom: false,
-			}
-			if err := h.configStore.CreatePlugin(ctx, plugin); err != nil {
-				logger.Error("failed to create plugin: %v", err)
-				SendError(ctx, 500, "Failed to create plugin")
-				return
-			}
-		} else {
-			logger.Error("failed to get plugin: %v", err)
-			SendError(ctx, 500, "Failed to update plugin")
-			return
-		}
+	existingPlugin, err := h.configStore.GetPlugin(ctx, name)
+	if err != nil && !errors.Is(err, configstore.ErrNotFound) {
+		logger.Error("failed to get plugin: %v", err)
+		SendError(ctx, 500, "Failed to update plugin")
+		return
+	}
+	if errors.Is(err, configstore.ErrNotFound) {
+		existingPlugin = nil
 	}
 
 	// Unmarshalling the request body
@@ -465,8 +482,7 @@ func (h *PluginsHandler) updatePlugin(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid plugin configuration: %v", err))
 		return
 	}
-	// Updating the plugin
-	if err := h.configStore.UpdatePlugin(ctx, &configstoreTables.TablePlugin{
+	pluginRecord := &configstoreTables.TablePlugin{
 		Name:      name,
 		Enabled:   request.Enabled,
 		Config:    mergedConfig,
@@ -474,12 +490,51 @@ func (h *PluginsHandler) updatePlugin(ctx *fasthttp.RequestCtx) {
 		IsCustom:  !isBuiltin,
 		Placement: request.Placement,
 		Order:     request.Order,
-	}); err != nil {
+	}
+	revision, err := commitConfigMutation(
+		ctx,
+		h.configStore,
+		prepared,
+		func(mutationCtx context.Context) error {
+			if existingPlugin == nil {
+				return h.configStore.CreatePlugin(mutationCtx, pluginRecord)
+			}
+			return h.configStore.UpdatePlugin(mutationCtx, pluginRecord)
+		},
+	)
+	if err != nil {
+		if handleConfigMutationError(ctx, err) {
+			return
+		}
 		logger.Error("failed to update plugin: %v", err)
 		SendError(ctx, 500, "Failed to update plugin")
 		return
 	}
-	plugin, err = h.configStore.GetPlugin(ctx, name)
+
+	// Apply only after the database mutation and revision increment have committed.
+	if request.Enabled {
+		if err := h.pluginsLoader.ReloadPlugin(ctx, name, request.Path, mergedConfig, request.Placement, request.Order); err != nil {
+			logger.Error("failed to load plugin: %v", err)
+			if prepared.enabled {
+				sendConfigMutationPending(ctx, revision)
+				return
+			}
+			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Plugin updated in database but failed to load: %v", err))
+			return
+		}
+	} else {
+		ctx.SetUserValue(PluginDisabledKey, true)
+		if err := h.pluginsLoader.RemovePlugin(ctx, name); err != nil && !errors.Is(err, plugins.ErrPluginNotFound) {
+			if prepared.enabled {
+				sendConfigMutationPending(ctx, revision)
+				return
+			}
+			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Plugin updated in database but failed to stop: %v", err))
+			return
+		}
+	}
+
+	plugin, err := h.configStore.GetPlugin(ctx, name)
 	if err != nil {
 		if errors.Is(err, configstore.ErrNotFound) {
 			SendError(ctx, fasthttp.StatusNotFound, "Plugin not found")
@@ -489,25 +544,10 @@ func (h *PluginsHandler) updatePlugin(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, 500, "Failed to retrieve plugin")
 		return
 	}
-	// We reload the plugin if its enabled, otherwise we stop it
-	if request.Enabled {
-		if err := h.pluginsLoader.ReloadPlugin(ctx, name, request.Path, mergedConfig, request.Placement, request.Order); err != nil {
-			logger.Error("failed to load plugin: %v", err)
-			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Plugin updated in database but failed to load: %v", err))
-			return
-		}
-	} else {
-		ctx.SetUserValue(PluginDisabledKey, true)
-		if err := h.pluginsLoader.RemovePlugin(ctx, name); err != nil {
-			if !errors.Is(err, plugins.ErrPluginNotFound) {
-				SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Plugin updated in database but failed to stop: %v", err))
-				return
-			}
-			// If not found then we don't need to do anything
-		}
+	if prepared.enabled {
+		setConfigRevisionHeaders(ctx, revision)
 	}
-
-	SendJSON(ctx, map[string]interface{}{
+	SendJSON(ctx, map[string]any{
 		"message": "Plugin updated successfully",
 		"plugin":  h.buildPluginResponse(ctx, plugin),
 	})
@@ -519,6 +559,11 @@ func (h *PluginsHandler) deletePlugin(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, 400, "Plugins deletion is not supported when configstore is disabled")
 		return
 	}
+	prepared, ok := prepareConfigMutation(ctx, h.configStore)
+	if !ok {
+		return
+	}
+
 	// Safely validate the "name" parameter
 	nameValue := ctx.UserValue("name")
 	if nameValue == nil {
@@ -540,7 +585,18 @@ func (h *PluginsHandler) deletePlugin(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	if err := h.configStore.DeletePlugin(ctx, name); err != nil {
+	revision, err := commitConfigMutation(
+		ctx,
+		h.configStore,
+		prepared,
+		func(mutationCtx context.Context) error {
+			return h.configStore.DeletePlugin(mutationCtx, name)
+		},
+	)
+	if err != nil {
+		if handleConfigMutationError(ctx, err) {
+			return
+		}
 		if errors.Is(err, configstore.ErrNotFound) {
 			SendError(ctx, fasthttp.StatusNotFound, "Plugin not found")
 			return
@@ -550,13 +606,18 @@ func (h *PluginsHandler) deletePlugin(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	if err := h.pluginsLoader.RemovePlugin(ctx, name); err != nil {
-		if !errors.Is(err, plugins.ErrPluginNotFound) {
-			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Plugin deleted in database but failed to stop: %v", err))
+	if err := h.pluginsLoader.RemovePlugin(ctx, name); err != nil && !errors.Is(err, plugins.ErrPluginNotFound) {
+		if prepared.enabled {
+			sendConfigMutationPending(ctx, revision)
 			return
 		}
+		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Plugin deleted in database but failed to stop: %v", err))
+		return
 	}
-	SendJSON(ctx, map[string]interface{}{
+	if prepared.enabled {
+		setConfigRevisionHeaders(ctx, revision)
+	}
+	SendJSON(ctx, map[string]any{
 		"message": "Plugin deleted successfully",
 	})
 }

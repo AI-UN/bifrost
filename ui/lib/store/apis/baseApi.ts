@@ -3,8 +3,9 @@ import { BifrostErrorResponse } from "@/lib/types/config";
 import { getApiBaseUrl } from "@/lib/utils/port";
 import { createBaseQueryWithRefresh } from "@enterprise/lib/store/utils/baseQueryWithRefresh";
 import { clearOAuthStorage } from "@enterprise/lib/store/utils/tokenManager";
-import { createApi, fetchBaseQuery } from "@reduxjs/toolkit/query/react";
+import { createApi, fetchBaseQuery, type BaseQueryFn } from "@reduxjs/toolkit/query/react";
 import { getActiveTempToken, getSuppressGlobal401 } from "./tempToken";
+import { createConfigRevisionBaseQuery, type ConfigRevisionBaseQuery } from "./configRevision";
 
 // Auth tokens are now stored in HTTP-only cookies (set by server)
 // No client-side token needed — handled by credentials: "include"
@@ -64,16 +65,17 @@ const baseQuery = fetchBaseQuery({
 });
 
 // Wrap base query with enterprise refresh logic (or passthrough for non-enterprise)
-const baseQueryWithRefresh = createBaseQueryWithRefresh(baseQuery);
+const baseQueryWithRefresh = createBaseQueryWithRefresh(baseQuery) as ConfigRevisionBaseQuery;
+const baseQueryWithConfigRevision = createConfigRevisionBaseQuery(baseQueryWithRefresh);
 
 // Enhanced base query with error handling
-const baseQueryWithErrorHandling: typeof baseQueryWithRefresh = async (args: any, api: any, extraOptions: any) => {
-	// First apply refresh logic (enterprise-specific, handles 401)
-	const result = await baseQueryWithRefresh(args, api, extraOptions);
+const baseQueryWithErrorHandling: BaseQueryFn = async (args, api, extraOptions) => {
+	// First apply enterprise token refresh and configuration revision CAS handling.
+	const result = await baseQueryWithConfigRevision(args, api, extraOptions);
 
 	// Then handle other error types
 	if (result.error) {
-		const error = result.error as any;
+		const error = result.error;
 
 		// Handle 401 for non-enterprise (no refresh available)
 		if (error?.status === 401 && !IS_ENTERPRISE) {
@@ -107,8 +109,12 @@ const baseQueryWithErrorHandling: typeof baseQueryWithRefresh = async (args: any
 			};
 		}
 
-		// Handle other errors with proper BifrostErrorResponse format
-		if (error?.data) {
+		// Preserve backend errors that already carry a user-facing message.
+		if (error?.data && typeof error.data === "object" && "error" in error.data) {
+			const backendError = error.data.error;
+			if (typeof backendError === "string") {
+				return result;
+			}
 			const errorData = error.data as BifrostErrorResponse;
 			if (errorData.error?.message) {
 				return result;
@@ -211,19 +217,18 @@ export const getErrorMessage = (error: unknown): string => {
 	if (error instanceof Error) {
 		return error.message;
 	}
-	if (
-		typeof error === "object" &&
-		error &&
-		"data" in error &&
-		error.data &&
-		typeof error.data === "object" &&
-		"error" in error.data &&
-		error.data.error &&
-		typeof error.data.error === "object" &&
-		"message" in error.data.error &&
-		typeof error.data.error.message === "string"
-	) {
-		return error.data.error.message.charAt(0).toUpperCase() + error.data.error.message.slice(1);
+	if (typeof error === "object" && error && "data" in error && error.data && typeof error.data === "object" && "error" in error.data) {
+		if (typeof error.data.error === "string") {
+			return error.data.error.charAt(0).toUpperCase() + error.data.error.slice(1);
+		}
+		if (
+			error.data.error &&
+			typeof error.data.error === "object" &&
+			"message" in error.data.error &&
+			typeof error.data.error.message === "string"
+		) {
+			return error.data.error.message.charAt(0).toUpperCase() + error.data.error.message.slice(1);
+		}
 	}
 	if (typeof error === "object" && error && "message" in error && typeof error.message === "string") {
 		return error.message;
