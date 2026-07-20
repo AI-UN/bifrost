@@ -275,6 +275,7 @@ func (h *RoutingHandler) getComplexityAnalyzerConfig(ctx *fasthttp.RequestCtx) {
 		logger.Warn("serving default complexity analyzer config: %v", err)
 		cfg = nil
 	}
+	setCurrentConfigRevisionHeaders(ctx, h.configStore)
 	if cfg == nil {
 		defaults := complexity.DefaultAnalyzerConfig()
 		SendJSON(ctx, defaults)
@@ -306,14 +307,27 @@ func (h *RoutingHandler) updateComplexityAnalyzerConfig(ctx *fasthttp.RequestCtx
 		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
 		return
 	}
-
-	if err := h.configStore.UpdateComplexityAnalyzerConfig(ctx, normalized); err != nil {
+	prepared, ok := prepareConfigMutation(ctx, h.configStore)
+	if !ok {
+		return
+	}
+	revision, err := commitConfigMutation(ctx, h.configStore, prepared, func(mutationCtx context.Context) error {
+		return h.configStore.UpdateComplexityAnalyzerConfig(mutationCtx, normalized)
+	})
+	if err != nil {
+		if handleConfigMutationError(ctx, err) {
+			return
+		}
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to update complexity analyzer config: %v", err))
 		return
 	}
 	if err := h.reloadComplexityAnalyzerConfig(ctx, normalized); err != nil {
-		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to reload complexity analyzer config in memory: %v, please restart bifrost to sync with the database", err))
+		logger.Error("failed to reload complexity analyzer config in memory: %v", err)
+		sendConfigMutationPending(ctx, revision)
 		return
+	}
+	if prepared.enabled {
+		setConfigRevisionHeaders(ctx, revision)
 	}
 
 	SendJSON(ctx, normalized)
@@ -326,13 +340,27 @@ func (h *RoutingHandler) resetComplexityAnalyzerConfig(ctx *fasthttp.RequestCtx)
 	}
 
 	defaults := complexity.DefaultAnalyzerConfig()
-	if err := h.configStore.UpdateComplexityAnalyzerConfig(ctx, &defaults); err != nil {
+	prepared, ok := prepareConfigMutation(ctx, h.configStore)
+	if !ok {
+		return
+	}
+	revision, err := commitConfigMutation(ctx, h.configStore, prepared, func(mutationCtx context.Context) error {
+		return h.configStore.UpdateComplexityAnalyzerConfig(mutationCtx, &defaults)
+	})
+	if err != nil {
+		if handleConfigMutationError(ctx, err) {
+			return
+		}
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to reset complexity analyzer config: %v", err))
 		return
 	}
 	if err := h.reloadComplexityAnalyzerConfig(ctx, &defaults); err != nil {
-		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to reload complexity analyzer config in memory: %v, please restart bifrost to sync with the database", err))
+		logger.Error("failed to reload complexity analyzer config in memory: %v", err)
+		sendConfigMutationPending(ctx, revision)
 		return
+	}
+	if prepared.enabled {
+		setConfigRevisionHeaders(ctx, revision)
 	}
 
 	SendJSON(ctx, defaults)
@@ -344,6 +372,7 @@ func (h *RoutingHandler) reloadComplexityAnalyzerConfig(ctx context.Context, con
 
 // getRoutingRules retrieves all routing rules with optional filtering from database
 func (h *RoutingHandler) getRoutingRules(ctx *fasthttp.RequestCtx) {
+	setCurrentConfigRevisionHeaders(ctx, h.configStore)
 	// Get query parameters for filtering
 	scope := string(ctx.QueryArgs().Peek("scope"))
 	scopeID := string(ctx.QueryArgs().Peek("scope_id"))
@@ -441,6 +470,7 @@ func (h *RoutingHandler) getRoutingRules(ctx *fasthttp.RequestCtx) {
 func (h *RoutingHandler) getRoutingRule(ctx *fasthttp.RequestCtx) {
 	ruleID := ctx.UserValue("rule_id").(string)
 
+	setCurrentConfigRevisionHeaders(ctx, h.configStore)
 	rule, err := h.configStore.GetRoutingRule(ctx, ruleID)
 	if err != nil {
 		if errors.Is(err, configstore.ErrNotFound) {
@@ -514,6 +544,11 @@ func (h *RoutingHandler) createRoutingRule(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	prepared, ok := prepareConfigMutation(ctx, h.configStore)
+	if !ok {
+		return
+	}
+
 	// Build targets
 	ruleID := uuid.NewString()
 	targets := make([]configstoreTables.TableRoutingTarget, 0, len(req.Targets))
@@ -551,16 +586,25 @@ func (h *RoutingHandler) createRoutingRule(ctx *fasthttp.RequestCtx) {
 		ParsedQuery:     req.Query,
 	}
 
-	// Create in database
-	if err := h.configStore.CreateRoutingRule(ctx, rule); err != nil {
+	revision, err := commitConfigMutation(ctx, h.configStore, prepared, func(mutationCtx context.Context) error {
+		return h.configStore.CreateRoutingRule(mutationCtx, rule)
+	})
+	if err != nil {
+		if handleConfigMutationError(ctx, err) {
+			return
+		}
 		SendError(ctx, 500, fmt.Sprintf("Failed to create routing rule: %v", err))
 		return
 	}
 
 	// Update in-memory store via manager callback
 	if err := h.routingManager.ReloadRoutingRule(ctx, rule.ID); err != nil {
-		SendError(ctx, 500, fmt.Sprintf("Failed to reload routing rule in memory: %v, please restart bifrost to sync with the database", err))
+		logger.Error("failed to reload routing rule in memory: %v", err)
+		sendConfigMutationPending(ctx, revision)
 		return
+	}
+	if prepared.enabled {
+		setConfigRevisionHeaders(ctx, revision)
 	}
 
 	SendJSON(ctx, map[string]interface{}{
@@ -580,6 +624,10 @@ func (h *RoutingHandler) updateRoutingRule(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	prepared, ok := prepareConfigMutation(ctx, h.configStore)
+	if !ok {
+		return
+	}
 	rule, err := h.configStore.GetRoutingRule(ctx, ruleID)
 	if err != nil {
 		if errors.Is(err, configstore.ErrNotFound) {
@@ -673,16 +721,25 @@ func (h *RoutingHandler) updateRoutingRule(ctx *fasthttp.RequestCtx) {
 		}
 	}
 
-	// Update in database
-	if err := h.configStore.UpdateRoutingRule(ctx, rule); err != nil {
+	revision, err := commitConfigMutation(ctx, h.configStore, prepared, func(mutationCtx context.Context) error {
+		return h.configStore.UpdateRoutingRule(mutationCtx, rule)
+	})
+	if err != nil {
+		if handleConfigMutationError(ctx, err) {
+			return
+		}
 		SendError(ctx, 500, fmt.Sprintf("Failed to update routing rule in database: %v", err))
 		return
 	}
 
 	// Update in-memory store via manager callback
 	if err := h.routingManager.ReloadRoutingRule(ctx, rule.ID); err != nil {
-		SendError(ctx, 500, fmt.Sprintf("Failed to reload routing rule in memory: %v, please restart bifrost to sync with the database", err))
+		logger.Error("failed to reload routing rule in memory: %v", err)
+		sendConfigMutationPending(ctx, revision)
 		return
+	}
+	if prepared.enabled {
+		setConfigRevisionHeaders(ctx, revision)
 	}
 
 	SendJSON(ctx, map[string]interface{}{
@@ -695,8 +752,17 @@ func (h *RoutingHandler) updateRoutingRule(ctx *fasthttp.RequestCtx) {
 func (h *RoutingHandler) deleteRoutingRule(ctx *fasthttp.RequestCtx) {
 	ruleID := ctx.UserValue("rule_id").(string)
 
-	// Delete from database
-	if err := h.configStore.DeleteRoutingRule(ctx, ruleID); err != nil {
+	prepared, ok := prepareConfigMutation(ctx, h.configStore)
+	if !ok {
+		return
+	}
+	revision, err := commitConfigMutation(ctx, h.configStore, prepared, func(mutationCtx context.Context) error {
+		return h.configStore.DeleteRoutingRule(mutationCtx, ruleID)
+	})
+	if err != nil {
+		if handleConfigMutationError(ctx, err) {
+			return
+		}
 		if errors.Is(err, configstore.ErrNotFound) {
 			SendError(ctx, 404, "Routing rule not found")
 			return
@@ -705,9 +771,16 @@ func (h *RoutingHandler) deleteRoutingRule(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	// Remove from in-memory store via manager callback (non-fatal: DB already updated)
+	// Remove from in-memory store via manager callback. The revision is already
+	// committed, so a failure here is reported as committed_pending_apply rather
+	// than rolled back.
 	if err := h.routingManager.RemoveRoutingRule(ctx, ruleID); err != nil {
 		logger.Error("failed to remove routing rule from memory: %v", err)
+		sendConfigMutationPending(ctx, revision)
+		return
+	}
+	if prepared.enabled {
+		setConfigRevisionHeaders(ctx, revision)
 	}
 
 	SendJSON(ctx, map[string]interface{}{

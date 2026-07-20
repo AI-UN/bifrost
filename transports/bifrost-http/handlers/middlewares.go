@@ -27,7 +27,7 @@ import (
 	"github.com/valyala/fasthttp"
 )
 
-var loggingSkipPaths = []string{"/health", "/_next", "/api/dev/"}
+var loggingSkipPaths = []string{"/health", "/ready", "/_next", "/api/dev/"}
 var realtimeTransportPaths = buildRealtimeTransportPathSet()
 
 // SecurityHeadersMiddleware sets security-related HTTP headers on every response.
@@ -174,7 +174,7 @@ func (c *CorsMiddleware) Middleware() schemas.BifrostHTTPMiddleware {
 				isLocalhostOrigin(origin) ||
 				slices.Contains(cfg.allowedOrigins, origin)
 
-			allowedHeaders := []string{"Content-Type", "Authorization", "X-Requested-With", "X-Stainless-Timeout", "X-Api-Key", "X-OpenAI-Agents-SDK", "X-Operation-ID"}
+			allowedHeaders := []string{"Content-Type", "Authorization", "X-Requested-With", "X-Stainless-Timeout", "X-Api-Key", "X-OpenAI-Agents-SDK", "X-Operation-ID", "If-Match"}
 			if slices.Contains(cfg.allowedHeaders, "*") {
 				if credentialed {
 					// Per the Fetch spec, Access-Control-Allow-Headers: * is NOT treated as a
@@ -201,6 +201,7 @@ func (c *CorsMiddleware) Middleware() schemas.BifrostHTTPMiddleware {
 				ctx.Response.Header.Set("Access-Control-Allow-Origin", origin)
 				ctx.Response.Header.Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, PATCH, OPTIONS, HEAD")
 				ctx.Response.Header.Set("Access-Control-Allow-Headers", strings.Join(allowedHeaders, ", "))
+				ctx.Response.Header.Set("Access-Control-Expose-Headers", "ETag, X-Bifrost-Config-Revision")
 				if credentialed {
 					ctx.Response.Header.Set("Access-Control-Allow-Credentials", "true")
 				}
@@ -1096,6 +1097,7 @@ func (m *AuthMiddleware) APIMiddleware() schemas.BifrostHTTPMiddleware {
 		"/api/session/login",
 		"/api/oauth/callback",
 		"/health",
+		"/ready",
 		"/login",
 		"/favicon.ico",
 		"/assets/*",
