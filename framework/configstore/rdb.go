@@ -37,10 +37,11 @@ import (
 // can swap it out without tearing callers down. migrateOnFreshFn and refreshPoolFn
 // are backend-specific hooks installed by the constructor (postgres vs sqlite).
 type RDBConfigStore struct {
-	db               atomic.Pointer[gorm.DB]
-	logger           schemas.Logger
-	migrateOnFreshFn func(ctx context.Context, fn func(context.Context, *gorm.DB) error) error
-	refreshPoolFn    func(ctx context.Context) error
+	db                atomic.Pointer[gorm.DB]
+	logger            schemas.Logger
+	migrateOnFreshFn  func(ctx context.Context, fn func(context.Context, *gorm.DB) error) error
+	refreshPoolFn     func(ctx context.Context) error
+	configSyncEnabled atomic.Bool
 }
 
 // getWeight safely dereferences a *float64 weight pointer, returning 1.0 as default if nil.
@@ -311,7 +312,7 @@ func (s *RDBConfigStore) UpdateClientConfig(ctx context.Context, config *ClientC
 	// blob that is NOT part of the API-facing ClientConfig (so config.json sync
 	// can never set it). Reading it inside the transaction before DELETE keeps
 	// callers from clobbering UI prefs on every config write.
-	return s.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	return s.dbForContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var existing tables.TableClientConfig
 		if err := dbForUpdate(tx.Select("metadata_json")).First(&existing).Error; err == nil {
 			dbConfig.MetadataJSON = existing.MetadataJSON
@@ -341,7 +342,7 @@ func (s *RDBConfigStore) UpdateClientConfig(ctx context.Context, config *ClientC
 
 // Ping checks if the database is reachable.
 func (s *RDBConfigStore) Ping(ctx context.Context) error {
-	return s.DB().WithContext(ctx).Exec("SELECT 1").Error
+	return s.dbForContext(ctx).Exec("SELECT 1").Error
 }
 
 // DB returns the current runtime database connection. The returned pointer is
@@ -358,7 +359,7 @@ func (s *RDBConfigStore) DB() *gorm.DB {
 // driven row visibility. Use DB().WithContext(ctx) for writes and for
 // internal lookups (e.g. inference VK auth) that must bypass scoping.
 func (s *RDBConfigStore) ScopedDB(ctx context.Context) *gorm.DB {
-	db := s.DB().WithContext(ctx)
+	db := s.dbForContext(ctx)
 	if scope := queryscope.FromContext(ctx); scope != nil {
 		db = scope(db)
 	}
@@ -495,7 +496,7 @@ func (s *RDBConfigStore) parseGormError(err error) error {
 // UpdateFrameworkConfig updates the framework configuration in the database.
 func (s *RDBConfigStore) UpdateFrameworkConfig(ctx context.Context, config *tables.TableFrameworkConfig) error {
 	// Update the framework configuration
-	return s.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	return s.dbForContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if err := tx.Session(&gorm.Session{AllowGlobalUpdate: true}).Delete(&tables.TableFrameworkConfig{}).Error; err != nil {
 			return err
 		}
@@ -506,7 +507,7 @@ func (s *RDBConfigStore) UpdateFrameworkConfig(ctx context.Context, config *tabl
 // GetFrameworkConfig retrieves the framework configuration from the database.
 func (s *RDBConfigStore) GetFrameworkConfig(ctx context.Context) (*tables.TableFrameworkConfig, error) {
 	var dbConfig tables.TableFrameworkConfig
-	if err := s.DB().WithContext(ctx).First(&dbConfig).Error; err != nil {
+	if err := s.dbForContext(ctx).First(&dbConfig).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, nil
 		}
@@ -519,7 +520,7 @@ func (s *RDBConfigStore) GetFrameworkConfig(ctx context.Context) (*tables.TableF
 // their code default are absent from this table by design.
 func (s *RDBConfigStore) ListFeatureFlags(ctx context.Context) ([]tables.TableFeatureFlag, error) {
 	var rows []tables.TableFeatureFlag
-	if err := s.DB().WithContext(ctx).Find(&rows).Error; err != nil {
+	if err := s.dbForContext(ctx).Find(&rows).Error; err != nil {
 		return nil, err
 	}
 	return rows, nil
@@ -530,7 +531,7 @@ func (s *RDBConfigStore) ListFeatureFlags(ctx context.Context) ([]tables.TableFe
 // the caller-supplied logical timestamp used by gossip for last-write-wins.
 func (s *RDBConfigStore) UpsertFeatureFlag(ctx context.Context, id string, enabled bool, updatedAt int64) error {
 	row := tables.TableFeatureFlag{ID: id, Enabled: enabled, UpdatedAt: updatedAt}
-	return s.DB().WithContext(ctx).Clauses(clause.OnConflict{
+	return s.dbForContext(ctx).Clauses(clause.OnConflict{
 		Columns:   []clause.Column{{Name: "id"}},
 		DoUpdates: clause.AssignmentColumns([]string{"enabled", "updated_at"}),
 	}).Create(&row).Error
@@ -539,7 +540,7 @@ func (s *RDBConfigStore) UpsertFeatureFlag(ctx context.Context, id string, enabl
 // GetClientConfig retrieves the client configuration from the database.
 func (s *RDBConfigStore) GetClientConfig(ctx context.Context) (*ClientConfig, error) {
 	var dbConfig tables.TableClientConfig
-	if err := s.DB().WithContext(ctx).First(&dbConfig).Error; err != nil {
+	if err := s.dbForContext(ctx).First(&dbConfig).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, nil
 		}
@@ -600,7 +601,7 @@ func (s *RDBConfigStore) GetClientConfig(ctx context.Context) (*ClientConfig, er
 // callers can read keys without nil-checking.
 func (s *RDBConfigStore) GetClientMetadata(ctx context.Context) (map[string]any, error) {
 	var dbConfig tables.TableClientConfig
-	if err := s.DB().WithContext(ctx).First(&dbConfig).Error; err != nil {
+	if err := s.dbForContext(ctx).First(&dbConfig).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return map[string]any{}, nil
 		}
@@ -639,7 +640,7 @@ func mergeMetadataPatch(dst, patch map[string]any) {
 // with a nil value in patch are removed from the blob (callers can pass
 // {"key": nil} to clear, including nested keys).
 func (s *RDBConfigStore) UpdateClientMetadata(ctx context.Context, patch map[string]any) error {
-	return s.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	return s.dbForContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var existing tables.TableClientConfig
 		if err := dbForUpdate(tx).First(&existing).Error; err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -673,7 +674,7 @@ func (s *RDBConfigStore) UpdateProvidersConfig(ctx context.Context, providers ma
 	if len(tx) > 0 {
 		txDB = tx[0]
 	} else {
-		txDB = s.DB()
+		txDB = s.dbForContext(ctx)
 	}
 	// Pre-fetch governance FK references for all existing providers in one query.
 	// ProviderConfig carries no governance fields, so without this the upsert
@@ -918,7 +919,7 @@ func (s *RDBConfigStore) cleanupVirtualKeyProviderConfigsForDeletedProvider(ctx 
 // UpdateProvider updates a single provider configuration in the database without deleting/recreating.
 func (s *RDBConfigStore) UpdateProvider(ctx context.Context, provider schemas.ModelProvider, config ProviderConfig, tx ...*gorm.DB) error {
 	if len(tx) == 0 {
-		return s.DB().WithContext(ctx).Transaction(func(transaction *gorm.DB) error {
+		return s.dbForContext(ctx).Transaction(func(transaction *gorm.DB) error {
 			return s.UpdateProvider(ctx, provider, config, transaction)
 		})
 	}
@@ -1116,7 +1117,7 @@ func (s *RDBConfigStore) AddProvider(ctx context.Context, provider schemas.Model
 	if len(tx) > 0 {
 		txDB = tx[0]
 	} else {
-		txDB = s.DB()
+		txDB = s.dbForContext(ctx)
 	}
 	// Create a deep copy of the config to avoid modifying the original
 	configCopy, err := deepCopy(config)
@@ -1229,7 +1230,7 @@ func (s *RDBConfigStore) AddProvider(ctx context.Context, provider schemas.Model
 // DeleteProvider deletes a single provider and all its associated keys from the database.
 func (s *RDBConfigStore) DeleteProvider(ctx context.Context, provider schemas.ModelProvider, tx ...*gorm.DB) error {
 	if len(tx) == 0 {
-		return s.DB().WithContext(ctx).Transaction(func(transaction *gorm.DB) error {
+		return s.dbForContext(ctx).Transaction(func(transaction *gorm.DB) error {
 			return s.DeleteProvider(ctx, provider, transaction)
 		})
 	}
@@ -1285,7 +1286,7 @@ func (s *RDBConfigStore) DeleteProvider(ctx context.Context, provider schemas.Mo
 // GetProvidersConfig retrieves the provider configuration from the database.
 func (s *RDBConfigStore) GetProvidersConfig(ctx context.Context) (map[schemas.ModelProvider]ProviderConfig, error) {
 	var dbProviders []tables.TableProvider
-	if err := s.DB().WithContext(ctx).Preload("Keys").Find(&dbProviders).Error; err != nil {
+	if err := s.dbForContext(ctx).Preload("Keys").Find(&dbProviders).Error; err != nil {
 		return nil, err
 	}
 	if len(dbProviders) == 0 {
@@ -1323,7 +1324,7 @@ func (s *RDBConfigStore) GetProvidersConfig(ctx context.Context) (map[schemas.Mo
 // GetProviderConfig retrieves the provider configuration from the database.
 func (s *RDBConfigStore) GetProviderConfig(ctx context.Context, provider schemas.ModelProvider) (*ProviderConfig, error) {
 	var dbProvider tables.TableProvider
-	if err := s.DB().WithContext(ctx).Preload("Keys").Where("name = ?", string(provider)).First(&dbProvider).Error; err != nil {
+	if err := s.dbForContext(ctx).Preload("Keys").Where("name = ?", string(provider)).First(&dbProvider).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, ErrNotFound
 		}
@@ -1354,7 +1355,7 @@ func (s *RDBConfigStore) GetProviderConfig(ctx context.Context, provider schemas
 // GetProviderKeys retrieves all keys for a provider ordered by creation time.
 func (s *RDBConfigStore) GetProviderKeys(ctx context.Context, provider schemas.ModelProvider) ([]schemas.Key, error) {
 	var dbKeys []tables.TableKey
-	result := s.DB().WithContext(ctx).
+	result := s.dbForContext(ctx).
 		Table("config_providers").
 		Select("config_keys.*").
 		Joins("LEFT JOIN config_keys ON config_keys.provider_id = config_providers.id").
@@ -1403,7 +1404,7 @@ func (s *RDBConfigStore) getProviderKeyByName(ctx context.Context, txDB *gorm.DB
 
 // GetProviderKey retrieves a single key for a provider.
 func (s *RDBConfigStore) GetProviderKey(ctx context.Context, provider schemas.ModelProvider, keyID string) (*schemas.Key, error) {
-	dbKey, err := s.getProviderKeyByName(ctx, s.DB(), provider, keyID)
+	dbKey, err := s.getProviderKeyByName(ctx, s.dbForContext(ctx), provider, keyID)
 	if err != nil {
 		return nil, err
 	}
@@ -1415,7 +1416,7 @@ func (s *RDBConfigStore) GetProviderKey(ctx context.Context, provider schemas.Mo
 // CreateProviderKey creates a new key for an existing provider.
 func (s *RDBConfigStore) CreateProviderKey(ctx context.Context, provider schemas.ModelProvider, key schemas.Key, tx ...*gorm.DB) error {
 	if len(tx) == 0 {
-		return s.DB().WithContext(ctx).Transaction(func(transaction *gorm.DB) error {
+		return s.dbForContext(ctx).Transaction(func(transaction *gorm.DB) error {
 			return s.CreateProviderKey(ctx, provider, key, transaction)
 		})
 	}
@@ -1442,7 +1443,7 @@ func (s *RDBConfigStore) CreateProviderKey(ctx context.Context, provider schemas
 // UpdateProviderKey updates a single key for an existing provider.
 func (s *RDBConfigStore) UpdateProviderKey(ctx context.Context, provider schemas.ModelProvider, keyID string, key schemas.Key, tx ...*gorm.DB) error {
 	if len(tx) == 0 {
-		return s.DB().WithContext(ctx).Transaction(func(transaction *gorm.DB) error {
+		return s.dbForContext(ctx).Transaction(func(transaction *gorm.DB) error {
 			return s.UpdateProviderKey(ctx, provider, keyID, key, transaction)
 		})
 	}
@@ -1480,7 +1481,7 @@ func (s *RDBConfigStore) UpdateProviderKey(ctx context.Context, provider schemas
 // DeleteProviderKey deletes a single key for an existing provider.
 func (s *RDBConfigStore) DeleteProviderKey(ctx context.Context, provider schemas.ModelProvider, keyID string, tx ...*gorm.DB) error {
 	if len(tx) == 0 {
-		return s.DB().WithContext(ctx).Transaction(func(transaction *gorm.DB) error {
+		return s.dbForContext(ctx).Transaction(func(transaction *gorm.DB) error {
 			return s.DeleteProviderKey(ctx, provider, keyID, transaction)
 		})
 	}
@@ -1525,7 +1526,7 @@ func (s *RDBConfigStore) DeleteProviderKey(ctx context.Context, provider schemas
 // GetProviders retrieves all providers from the database with their governance relationships.
 func (s *RDBConfigStore) GetProviders(ctx context.Context) ([]tables.TableProvider, error) {
 	var providers []tables.TableProvider
-	if err := s.DB().WithContext(ctx).Preload("Budget").Preload("RateLimit").Find(&providers).Error; err != nil {
+	if err := s.dbForContext(ctx).Preload("Budget").Preload("RateLimit").Find(&providers).Error; err != nil {
 		return nil, err
 	}
 	return providers, nil
@@ -1534,7 +1535,7 @@ func (s *RDBConfigStore) GetProviders(ctx context.Context) ([]tables.TableProvid
 // GetProvider retrieves a provider by name from the database with governance relationships.
 func (s *RDBConfigStore) GetProvider(ctx context.Context, provider schemas.ModelProvider) (*tables.TableProvider, error) {
 	var providerInfo tables.TableProvider
-	if err := s.DB().WithContext(ctx).Preload("Budget").Preload("RateLimit").Where("name = ?", string(provider)).First(&providerInfo).Error; err != nil {
+	if err := s.dbForContext(ctx).Preload("Budget").Preload("RateLimit").Where("name = ?", string(provider)).First(&providerInfo).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, ErrNotFound
 		}
@@ -1546,7 +1547,7 @@ func (s *RDBConfigStore) GetProvider(ctx context.Context, provider schemas.Model
 // GetProviderByName retrieves a provider by name from the database with governance relationships.
 func (s *RDBConfigStore) GetProviderByName(ctx context.Context, name string) (*tables.TableProvider, error) {
 	var provider tables.TableProvider
-	if err := s.DB().WithContext(ctx).Preload("Budget").Preload("RateLimit").Where("name = ?", name).First(&provider).Error; err != nil {
+	if err := s.dbForContext(ctx).Preload("Budget").Preload("RateLimit").Where("name = ?", name).First(&provider).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, ErrNotFound
 		}
@@ -1561,7 +1562,7 @@ func (s *RDBConfigStore) GetProviderByName(ctx context.Context, name string) (*t
 func (s *RDBConfigStore) UpdateStatus(ctx context.Context, provider schemas.ModelProvider, keyID string, status, description string) error {
 	// Update key-level status (for keyed providers)
 	if keyID != "" {
-		result := s.DB().WithContext(ctx).
+		result := s.dbForContext(ctx).
 			Model(&tables.TableKey{}).
 			Where("key_id = ?", keyID).
 			Updates(map[string]interface{}{
@@ -1579,7 +1580,7 @@ func (s *RDBConfigStore) UpdateStatus(ctx context.Context, provider schemas.Mode
 
 	// Update provider-level status (for keyless providers)
 	if provider != "" {
-		result := s.DB().WithContext(ctx).
+		result := s.dbForContext(ctx).
 			Model(&tables.TableProvider{}).
 			Where("name = ?", string(provider)).
 			Updates(map[string]interface{}{
@@ -1602,11 +1603,11 @@ func (s *RDBConfigStore) UpdateStatus(ctx context.Context, provider schemas.Mode
 func (s *RDBConfigStore) GetMCPConfig(ctx context.Context) (*schemas.MCPConfig, error) {
 	var dbMCPClients []tables.TableMCPClient
 	// Get all MCP clients
-	if err := s.DB().WithContext(ctx).Find(&dbMCPClients).Error; err != nil {
+	if err := s.dbForContext(ctx).Find(&dbMCPClients).Error; err != nil {
 		return nil, err
 	}
 	var clientConfig tables.TableClientConfig
-	if err := s.DB().WithContext(ctx).First(&clientConfig).Error; err != nil {
+	if err := s.dbForContext(ctx).First(&clientConfig).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			// Return MCP config with default ToolManagerConfig if no client config exists
 			// This will never happen, but just in case.
@@ -1711,7 +1712,7 @@ func (s *RDBConfigStore) GetMCPConfig(ctx context.Context) (*schemas.MCPConfig, 
 
 // GetMCPClientsPaginated retrieves MCP clients with pagination and optional search.
 func (s *RDBConfigStore) GetMCPClientsPaginated(ctx context.Context, params MCPClientsQueryParams) ([]tables.TableMCPClient, int64, error) {
-	baseQuery := s.DB().WithContext(ctx).Model(&tables.TableMCPClient{})
+	baseQuery := s.dbForContext(ctx).Model(&tables.TableMCPClient{})
 
 	if params.Search != "" {
 		search := "%" + strings.ToLower(params.Search) + "%"
@@ -1749,7 +1750,7 @@ func (s *RDBConfigStore) GetMCPClientsPaginated(ctx context.Context, params MCPC
 	if params.OnlyAllowedByDefault || len(params.VirtualKeyIDs) > 0 {
 		var assignedSub *gorm.DB
 		if len(params.VirtualKeyIDs) > 0 {
-			assignedSub = s.DB().WithContext(ctx).
+			assignedSub = s.dbForContext(ctx).
 				Model(&tables.TableVirtualKeyMCPConfig{}).
 				Select("mcp_client_id").
 				Where("virtual_key_id IN ?", params.VirtualKeyIDs)
@@ -1757,7 +1758,7 @@ func (s *RDBConfigStore) GetMCPClientsPaginated(ctx context.Context, params MCPC
 		switch {
 		case params.OnlyAllowedByDefault && assignedSub != nil:
 			baseQuery = baseQuery.Where(
-				s.DB().Where("allow_on_all_virtual_keys = ?", true).Or("id IN (?)", assignedSub),
+				s.dbForContext(ctx).Where("allow_on_all_virtual_keys = ?", true).Or("id IN (?)", assignedSub),
 			)
 		case params.OnlyAllowedByDefault:
 			baseQuery = baseQuery.Where("allow_on_all_virtual_keys = ?", true)
@@ -1810,7 +1811,7 @@ var mcpLibrarySortColumns = map[string]string{
 // search, filtering, sorting, and pagination. Returns the page of rows and the
 // total count matching the filters (before pagination).
 func (s *RDBConfigStore) GetMCPLibraryPaginated(ctx context.Context, params MCPLibraryQueryParams) ([]tables.TableMCPLibrary, int64, error) {
-	baseQuery := s.DB().WithContext(ctx).Model(&tables.TableMCPLibrary{}).Where("deleted_at IS NULL")
+	baseQuery := s.dbForContext(ctx).Model(&tables.TableMCPLibrary{}).Where("deleted_at IS NULL")
 
 	if params.Search != "" {
 		search := "%" + strings.ToLower(params.Search) + "%"
@@ -1886,7 +1887,7 @@ func (s *RDBConfigStore) GetMCPLibraryPaginated(ctx context.Context, params MCPL
 // values are skipped. Tags are stored as JSON arrays, so they are decoded and
 // unioned in Go rather than via a DB-specific JSON operator.
 func (s *RDBConfigStore) GetMCPLibraryFilterData(ctx context.Context) (*MCPLibraryFilterData, error) {
-	db := s.DB().WithContext(ctx)
+	db := s.dbForContext(ctx)
 	result := &MCPLibraryFilterData{
 		Categories:      []string{},
 		ConnectionTypes: []string{},
@@ -1976,7 +1977,7 @@ func (s *RDBConfigStore) UpsertMCPLibraryEntry(ctx context.Context, entry *table
 	if len(tx) > 0 {
 		txDB = tx[0]
 	} else {
-		txDB = s.DB()
+		txDB = s.dbForContext(ctx)
 	}
 	db := txDB.WithContext(ctx)
 
@@ -2001,7 +2002,7 @@ func (s *RDBConfigStore) UpsertMCPLibraryEntry(ctx context.Context, entry *table
 // slug index prevents duplicates; parseGormError maps that to ErrAlreadyExists.
 func (s *RDBConfigStore) CreateCustomMCPLibraryEntry(ctx context.Context, entry *tables.TableMCPLibrary) error {
 	entry.Source = "custom"
-	if err := s.DB().WithContext(ctx).Create(entry).Error; err != nil {
+	if err := s.dbForContext(ctx).Create(entry).Error; err != nil {
 		return s.parseGormError(err)
 	}
 	return nil
@@ -2011,7 +2012,7 @@ func (s *RDBConfigStore) CreateCustomMCPLibraryEntry(ctx context.Context, entry 
 // now) so it no longer appears in listings and the remote sync respects the
 // tombstone. Works on both "remote" and "custom" rows.
 func (s *RDBConfigStore) SoftDeleteMCPLibraryEntry(ctx context.Context, id uint) error {
-	result := s.DB().WithContext(ctx).
+	result := s.dbForContext(ctx).
 		Model(&tables.TableMCPLibrary{}).
 		Where("id = ? AND deleted_at IS NULL", id).
 		Update("deleted_at", time.Now())
@@ -2031,7 +2032,7 @@ func (s *RDBConfigStore) SoftDeleteMCPLibraryEntry(ctx context.Context, id uint)
 //   - "remote" (synced) rows are tombstoned via SoftDeleteMCPLibraryEntry so the
 //     remote sync respects the user's removal instead of recreating the row.
 func (s *RDBConfigStore) DeleteMCPLibraryEntry(ctx context.Context, id uint) error {
-	return s.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	return s.dbForContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var entry tables.TableMCPLibrary
 		if err := tx.
 			Clauses(clause.Locking{Strength: "UPDATE"}).
@@ -2075,7 +2076,7 @@ func (s *RDBConfigStore) DeleteMCPLibraryEntry(ctx context.Context, id uint) err
 // custom rows (any source != "remote") and soft-deleted rows (deleted_at set).
 func (s *RDBConfigStore) GetProtectedMCPLibrarySlugs(ctx context.Context) ([]string, error) {
 	var slugs []string
-	if err := s.DB().WithContext(ctx).
+	if err := s.dbForContext(ctx).
 		Model(&tables.TableMCPLibrary{}).
 		Where("source != 'remote' OR deleted_at IS NOT NULL").
 		Pluck("slug", &slugs).Error; err != nil {
@@ -2086,7 +2087,7 @@ func (s *RDBConfigStore) GetProtectedMCPLibrarySlugs(ctx context.Context) ([]str
 
 func (s *RDBConfigStore) GetMCPClientByID(ctx context.Context, id string) (*tables.TableMCPClient, error) {
 	var mcpClient tables.TableMCPClient
-	if err := s.DB().WithContext(ctx).Where("client_id = ?", id).First(&mcpClient).Error; err != nil {
+	if err := s.dbForContext(ctx).Where("client_id = ?", id).First(&mcpClient).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, ErrNotFound
 		}
@@ -2135,7 +2136,7 @@ func (s *RDBConfigStore) GetMCPClientConfigByID(ctx context.Context, id string) 
 // GetMCPClientByName retrieves an MCP client by name from the database.
 func (s *RDBConfigStore) GetMCPClientByName(ctx context.Context, name string) (*tables.TableMCPClient, error) {
 	var mcpClient tables.TableMCPClient
-	if err := s.DB().WithContext(ctx).Where("name = ?", name).First(&mcpClient).Error; err != nil {
+	if err := s.dbForContext(ctx).Where("name = ?", name).First(&mcpClient).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, ErrNotFound
 		}
@@ -2150,7 +2151,7 @@ func (s *RDBConfigStore) GetMCPClientByName(ctx context.Context, name string) (*
 // because the MCP client row is persisted upfront in pending_verification state.
 func (s *RDBConfigStore) GetMCPClientByOauthConfigID(ctx context.Context, oauthConfigID string) (*tables.TableMCPClient, error) {
 	var mcpClient tables.TableMCPClient
-	if err := s.DB().WithContext(ctx).Where("oauth_config_id = ?", oauthConfigID).First(&mcpClient).Error; err != nil {
+	if err := s.dbForContext(ctx).Where("oauth_config_id = ?", oauthConfigID).First(&mcpClient).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, ErrNotFound
 		}
@@ -2164,7 +2165,7 @@ func (s *RDBConfigStore) GetMCPClientByOauthConfigID(ctx context.Context, oauthC
 // endpoint to link a freshly-initiated oauth_configs row to the persisted
 // pending_verification MCP client without touching any other fields.
 func (s *RDBConfigStore) UpdateMCPClientOAuthConfigID(ctx context.Context, clientID string, oauthConfigID *string) error {
-	res := s.DB().WithContext(ctx).
+	res := s.dbForContext(ctx).
 		Model(&tables.TableMCPClient{}).
 		Where("client_id = ?", clientID).
 		Updates(map[string]interface{}{
@@ -2195,7 +2196,7 @@ func (s *RDBConfigStore) UpdateMCPClientTools(ctx context.Context, clientID stri
 	if err != nil {
 		return fmt.Errorf("failed to marshal tool_name_mapping: %w", err)
 	}
-	res := s.DB().WithContext(ctx).
+	res := s.dbForContext(ctx).
 		Model(&tables.TableMCPClient{}).
 		Where("client_id = ?", clientID).
 		Updates(map[string]interface{}{
@@ -2217,7 +2218,7 @@ func (s *RDBConfigStore) UpdateMCPClientTools(ctx context.Context, clientID stri
 // longer sees the bootstrap stash and the next reconnect runs the normal
 // connect path instead of parking the client in pending_verification.
 func (s *RDBConfigStore) ClearMCPClientPendingOAuthConfig(ctx context.Context, clientID string) error {
-	res := s.DB().WithContext(ctx).
+	res := s.dbForContext(ctx).
 		Model(&tables.TableMCPClient{}).
 		Where("client_id = ?", clientID).
 		Updates(map[string]interface{}{
@@ -2235,7 +2236,7 @@ func (s *RDBConfigStore) ClearMCPClientPendingOAuthConfig(ctx context.Context, c
 
 // CreateMCPClientConfig creates a new MCP client configuration in the database.
 func (s *RDBConfigStore) CreateMCPClientConfig(ctx context.Context, clientConfig *schemas.MCPClientConfig) error {
-	// Derive the slug (caller's, else name) and reject a cross-entity collision. Immutable after create.
+// Derive the slug (caller's, else name) and reject a cross-entity collision. Immutable after create.
 	// Checked before the transaction so the read isn't on the write connection (matters for SQLite tests).
 	base := clientConfig.EndpointSlug
 	if base == "" {
@@ -2252,7 +2253,7 @@ func (s *RDBConfigStore) CreateMCPClientConfig(ctx context.Context, clientConfig
 	}
 	// Write the slug back so the in-memory registration serves /mcp/<slug> without a restart.
 	clientConfig.EndpointSlug = endpointSlug
-	return s.DB().Transaction(func(tx *gorm.DB) error {
+	return s.dbForContext(ctx).Transaction(func(tx *gorm.DB) error {
 		// Check if a client with the same name already exists
 		if _, err := s.GetMCPClientByName(ctx, clientConfig.Name); err == nil {
 			return fmt.Errorf("MCP client with name %q %w", clientConfig.Name, ErrAlreadyExists)
@@ -2338,7 +2339,7 @@ func marshalTokenExchangeJSON(cfg *schemas.MCPTokenExchangeConfig) (*string, err
 
 // UpdateMCPClientConfig updates an existing MCP client configuration in the database.
 func (s *RDBConfigStore) UpdateMCPClientConfig(ctx context.Context, id string, clientConfig *tables.TableMCPClient) error {
-	return s.DB().Transaction(func(tx *gorm.DB) error {
+	return s.dbForContext(ctx).Transaction(func(tx *gorm.DB) error {
 		// Find existing client
 		var existingClient tables.TableMCPClient
 		if err := dbForUpdate(tx.WithContext(ctx)).Where("client_id = ?", id).First(&existingClient).Error; err != nil {
@@ -2578,7 +2579,7 @@ func (s *RDBConfigStore) UpdateMCPClientConfig(ctx context.Context, id string, c
 
 // DeleteMCPClientConfig deletes an MCP client configuration from the database.
 func (s *RDBConfigStore) DeleteMCPClientConfig(ctx context.Context, id string) error {
-	return s.DB().Transaction(func(tx *gorm.DB) error {
+	return s.dbForContext(ctx).Transaction(func(tx *gorm.DB) error {
 		// Find existing client
 		var existingClient tables.TableMCPClient
 		if err := dbForUpdate(tx.WithContext(ctx)).Where("client_id = ?", id).First(&existingClient).Error; err != nil {
@@ -2661,7 +2662,7 @@ func (s *RDBConfigStore) DeleteMCPClientConfig(ctx context.Context, id string) e
 // GetVectorStoreConfig retrieves the vector store configuration from the database.
 func (s *RDBConfigStore) GetVectorStoreConfig(ctx context.Context) (*vectorstore.Config, error) {
 	var vectorStoreTableConfig tables.TableVectorStoreConfig
-	if err := s.DB().WithContext(ctx).First(&vectorStoreTableConfig).Error; err != nil {
+	if err := s.dbForContext(ctx).First(&vectorStoreTableConfig).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			// Return default cache configuration
 			return nil, nil
@@ -2677,7 +2678,7 @@ func (s *RDBConfigStore) GetVectorStoreConfig(ctx context.Context) (*vectorstore
 
 // UpdateVectorStoreConfig updates the vector store configuration in the database.
 func (s *RDBConfigStore) UpdateVectorStoreConfig(ctx context.Context, config *vectorstore.Config) error {
-	return s.DB().Transaction(func(tx *gorm.DB) error {
+	return s.dbForContext(ctx).Transaction(func(tx *gorm.DB) error {
 		// Delete existing cache config
 		if err := tx.WithContext(ctx).Session(&gorm.Session{AllowGlobalUpdate: true}).Delete(&tables.TableVectorStoreConfig{}).Error; err != nil {
 			return err
@@ -2699,7 +2700,7 @@ func (s *RDBConfigStore) UpdateVectorStoreConfig(ctx context.Context, config *ve
 // GetLogsStoreConfig retrieves the logs store configuration from the database.
 func (s *RDBConfigStore) GetLogsStoreConfig(ctx context.Context) (*logstore.Config, error) {
 	var dbConfig tables.TableLogStoreConfig
-	if err := s.DB().WithContext(ctx).First(&dbConfig).Error; err != nil {
+	if err := s.dbForContext(ctx).First(&dbConfig).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, nil
 		}
@@ -2717,7 +2718,7 @@ func (s *RDBConfigStore) GetLogsStoreConfig(ctx context.Context) (*logstore.Conf
 
 // UpdateLogsStoreConfig updates the logs store configuration in the database.
 func (s *RDBConfigStore) UpdateLogsStoreConfig(ctx context.Context, config *logstore.Config) error {
-	return s.DB().Transaction(func(tx *gorm.DB) error {
+	return s.dbForContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if err := tx.WithContext(ctx).Session(&gorm.Session{AllowGlobalUpdate: true}).Delete(&tables.TableLogStoreConfig{}).Error; err != nil {
 			return err
 		}
@@ -2737,7 +2738,7 @@ func (s *RDBConfigStore) UpdateLogsStoreConfig(ctx context.Context, config *logs
 // GetConfig retrieves a specific config from the database.
 func (s *RDBConfigStore) GetConfig(ctx context.Context, key string) (*tables.TableGovernanceConfig, error) {
 	var config tables.TableGovernanceConfig
-	if err := s.DB().WithContext(ctx).First(&config, "key = ?", key).Error; err != nil {
+	if err := s.dbForContext(ctx).First(&config, "key = ?", key).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, ErrNotFound
 		}
@@ -2752,7 +2753,7 @@ func (s *RDBConfigStore) UpdateConfig(ctx context.Context, config *tables.TableG
 	if len(tx) > 0 {
 		txDB = tx[0]
 	} else {
-		txDB = s.DB()
+		txDB = s.dbForContext(ctx)
 	}
 	return txDB.WithContext(ctx).Save(config).Error
 }
@@ -2760,7 +2761,7 @@ func (s *RDBConfigStore) UpdateConfig(ctx context.Context, config *tables.TableG
 // GetModelPrices retrieves all model pricing records from the database.
 func (s *RDBConfigStore) GetModelPrices(ctx context.Context) ([]tables.TableModelPricing, error) {
 	var modelPrices []tables.TableModelPricing
-	if err := s.DB().WithContext(ctx).Find(&modelPrices).Error; err != nil {
+	if err := s.dbForContext(ctx).Find(&modelPrices).Error; err != nil {
 		return nil, err
 	}
 	return modelPrices, nil
@@ -2912,7 +2913,7 @@ func (s *RDBConfigStore) UpsertModelPrices(ctx context.Context, pricing *tables.
 	if len(tx) > 0 {
 		txDB = tx[0]
 	} else {
-		txDB = s.DB()
+		txDB = s.dbForContext(ctx)
 	}
 	db := txDB.WithContext(ctx)
 
@@ -2953,7 +2954,7 @@ func (s *RDBConfigStore) UpsertModelPricesBatch(ctx context.Context, pricing []t
 	if len(tx) > 0 {
 		txDB = tx[0]
 	} else {
-		txDB = s.DB()
+		txDB = s.dbForContext(ctx)
 	}
 	db := txDB.WithContext(ctx)
 
@@ -2987,7 +2988,7 @@ func (s *RDBConfigStore) UpsertModelPricingAttributes(ctx context.Context, model
 	if len(tx) > 0 {
 		txDB = tx[0]
 	} else {
-		txDB = s.DB()
+		txDB = s.dbForContext(ctx)
 	}
 	db := txDB.WithContext(ctx)
 
@@ -3017,14 +3018,14 @@ func (s *RDBConfigStore) DeleteModelPrices(ctx context.Context, tx ...*gorm.DB) 
 	if len(tx) > 0 {
 		txDB = tx[0]
 	} else {
-		txDB = s.DB()
+		txDB = s.dbForContext(ctx)
 	}
 	return txDB.WithContext(ctx).Session(&gorm.Session{AllowGlobalUpdate: true}).Delete(&tables.TableModelPricing{}).Error
 }
 
 func (s *RDBConfigStore) GetPricingOverrides(ctx context.Context, filters PricingOverrideFilters) ([]tables.TablePricingOverride, error) {
 	var overrides []tables.TablePricingOverride
-	q := s.DB().WithContext(ctx).Model(&tables.TablePricingOverride{})
+	q := s.dbForContext(ctx).Model(&tables.TablePricingOverride{})
 	if filters.ScopeKind != nil {
 		q = q.Where("scope_kind = ?", *filters.ScopeKind)
 	}
@@ -3047,7 +3048,7 @@ func (s *RDBConfigStore) GetPricingOverrides(ctx context.Context, filters Pricin
 }
 
 func (s *RDBConfigStore) GetPricingOverridesPaginated(ctx context.Context, params PricingOverridesQueryParams) ([]tables.TablePricingOverride, int64, error) {
-	baseQuery := s.DB().WithContext(ctx).Model(&tables.TablePricingOverride{})
+	baseQuery := s.dbForContext(ctx).Model(&tables.TablePricingOverride{})
 
 	if params.Search != "" {
 		search := "%" + strings.ToLower(params.Search) + "%"
@@ -3100,7 +3101,7 @@ func (s *RDBConfigStore) GetPricingOverridesPaginated(ctx context.Context, param
 
 func (s *RDBConfigStore) GetPricingOverrideByID(ctx context.Context, id string) (*tables.TablePricingOverride, error) {
 	var override tables.TablePricingOverride
-	if err := s.DB().WithContext(ctx).First(&override, "id = ?", id).Error; err != nil {
+	if err := s.dbForContext(ctx).First(&override, "id = ?", id).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, ErrNotFound
 		}
@@ -3114,7 +3115,7 @@ func (s *RDBConfigStore) CreatePricingOverride(ctx context.Context, override *ta
 	if len(tx) > 0 {
 		txDB = tx[0]
 	} else {
-		txDB = s.DB()
+		txDB = s.dbForContext(ctx)
 	}
 	if err := txDB.WithContext(ctx).Create(override).Error; err != nil {
 		return s.parseGormError(err)
@@ -3127,7 +3128,7 @@ func (s *RDBConfigStore) UpdatePricingOverride(ctx context.Context, override *ta
 	if len(tx) > 0 {
 		txDB = tx[0]
 	} else {
-		txDB = s.DB()
+		txDB = s.dbForContext(ctx)
 	}
 	// created_at is immutable: Save writes every column, so a caller passing a row it
 	// didn't read from the DB (e.g. a config.json reload) would otherwise zero it out.
@@ -3152,7 +3153,7 @@ func (s *RDBConfigStore) DeletePricingOverride(ctx context.Context, id string, t
 	if len(tx) > 0 {
 		txDB = tx[0]
 	} else {
-		txDB = s.DB()
+		txDB = s.dbForContext(ctx)
 	}
 	res := txDB.WithContext(ctx).Delete(&tables.TablePricingOverride{}, "id = ?", id)
 	if res.Error != nil {
@@ -3169,7 +3170,7 @@ func (s *RDBConfigStore) DeletePricingOverride(ctx context.Context, id string, t
 // GetModelParameters returns all stored model parameter rows.
 func (s *RDBConfigStore) GetModelParameters(ctx context.Context) ([]tables.TableModelParameters, error) {
 	var rows []tables.TableModelParameters
-	if err := s.DB().WithContext(ctx).Find(&rows).Error; err != nil {
+	if err := s.dbForContext(ctx).Find(&rows).Error; err != nil {
 		return nil, err
 	}
 	return rows, nil
@@ -3178,7 +3179,7 @@ func (s *RDBConfigStore) GetModelParameters(ctx context.Context) ([]tables.Table
 // GetModelParametersByModel retrieves model parameters for a specific model.
 func (s *RDBConfigStore) GetModelParametersByModel(ctx context.Context, model string) (*tables.TableModelParameters, error) {
 	var params tables.TableModelParameters
-	if err := s.DB().WithContext(ctx).Where("model = ?", model).First(&params).Error; err != nil {
+	if err := s.dbForContext(ctx).Where("model = ?", model).First(&params).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, ErrNotFound
 		}
@@ -3195,7 +3196,7 @@ func (s *RDBConfigStore) UpsertModelParameters(ctx context.Context, params *tabl
 	if len(tx) > 0 {
 		txDB = tx[0]
 	} else {
-		txDB = s.DB()
+		txDB = s.dbForContext(ctx)
 	}
 	db := txDB.WithContext(ctx)
 
@@ -3230,7 +3231,7 @@ func (s *RDBConfigStore) UpsertModelParametersBatch(ctx context.Context, params 
 	if len(tx) > 0 {
 		txDB = tx[0]
 	} else {
-		txDB = s.DB()
+		txDB = s.dbForContext(ctx)
 	}
 	db := txDB.WithContext(ctx)
 
@@ -3257,7 +3258,7 @@ func (s *RDBConfigStore) UpsertModelParametersBatch(ctx context.Context, params 
 
 func (s *RDBConfigStore) GetPlugins(ctx context.Context) ([]*tables.TablePlugin, error) {
 	var plugins []*tables.TablePlugin
-	if err := s.DB().WithContext(ctx).Find(&plugins).Error; err != nil {
+	if err := s.dbForContext(ctx).Find(&plugins).Error; err != nil {
 		return nil, err
 	}
 	return plugins, nil
@@ -3265,7 +3266,7 @@ func (s *RDBConfigStore) GetPlugins(ctx context.Context) ([]*tables.TablePlugin,
 
 func (s *RDBConfigStore) GetPlugin(ctx context.Context, name string) (*tables.TablePlugin, error) {
 	var plugin tables.TablePlugin
-	if err := s.DB().WithContext(ctx).First(&plugin, "name = ?", name).Error; err != nil {
+	if err := s.dbForContext(ctx).First(&plugin, "name = ?", name).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, ErrNotFound
 		}
@@ -3280,7 +3281,7 @@ func (s *RDBConfigStore) CreatePlugin(ctx context.Context, plugin *tables.TableP
 	if len(tx) > 0 {
 		txDB = tx[0]
 	} else {
-		txDB = s.DB()
+		txDB = s.dbForContext(ctx)
 	}
 	// Mark plugin as custom if path is not empty
 	if plugin.Path != nil && strings.TrimSpace(*plugin.Path) != "" {
@@ -3300,7 +3301,7 @@ func (s *RDBConfigStore) UpsertPlugin(ctx context.Context, plugin *tables.TableP
 	if len(tx) > 0 {
 		txDB = tx[0]
 	} else {
-		txDB = s.DB()
+		txDB = s.dbForContext(ctx)
 	}
 	// Mark plugin as custom if path is not empty
 	if plugin.Path != nil && strings.TrimSpace(*plugin.Path) != "" {
@@ -3328,8 +3329,11 @@ func (s *RDBConfigStore) UpdatePlugin(ctx context.Context, plugin *tables.TableP
 	if len(tx) > 0 {
 		txDB = tx[0]
 		localTx = false
+	} else if contextTx, ok := transactionFromContext(ctx); ok {
+		txDB = contextTx
+		localTx = false
 	} else {
-		txDB = s.DB().Begin()
+		txDB = s.dbForContext(ctx).Begin()
 		localTx = true
 	}
 	// Mark plugin as custom if path is not empty
@@ -3395,7 +3399,7 @@ func (s *RDBConfigStore) DeletePlugin(ctx context.Context, name string, tx ...*g
 	if len(tx) > 0 {
 		txDB = tx[0]
 	} else {
-		txDB = s.DB()
+		txDB = s.dbForContext(ctx)
 	}
 	var plugin tables.TablePlugin
 	if err := txDB.WithContext(ctx).Where("name = ?", name).First(&plugin).Error; err != nil {
@@ -3414,12 +3418,12 @@ func (s *RDBConfigStore) GetRedactedVirtualKeys(ctx context.Context, ids []strin
 	var virtualKeys []tables.TableVirtualKey
 
 	if len(ids) > 0 {
-		err := s.DB().WithContext(ctx).Select("id, name, description, is_active").Where("id IN ?", ids).Find(&virtualKeys).Error
+		err := s.dbForContext(ctx).Select("id, name, description, is_active").Where("id IN ?", ids).Find(&virtualKeys).Error
 		if err != nil {
 			return nil, err
 		}
 	} else {
-		err := s.DB().WithContext(ctx).Select("id, name, description, is_active").Find(&virtualKeys).Error
+		err := s.dbForContext(ctx).Select("id, name, description, is_active").Find(&virtualKeys).Error
 		if err != nil {
 			return nil, err
 		}
@@ -3473,7 +3477,7 @@ func (s *RDBConfigStore) attachCustomerVirtualKeyCounts(ctx context.Context, cus
 		CustomerID string
 		Count      int
 	}
-	if err := s.DB().WithContext(ctx).
+	if err := s.dbForContext(ctx).
 		Model(&tables.TableVirtualKey{}).
 		Select("customer_id, COUNT(*) AS count").
 		Where("customer_id IN ?", ids).
@@ -3597,7 +3601,7 @@ func (s *RDBConfigStore) getGovernanceConfigVirtualKeys(ctx context.Context) ([]
 
 	for {
 		var page []tables.TableVirtualKey
-		query := s.DB().WithContext(ctx).
+		query := s.dbForContext(ctx).
 			Preload("ProviderConfigs").
 			Preload("ProviderConfigs.Keys", func(db *gorm.DB) *gorm.DB {
 				return db.Select("id, name, key_id, models_json, provider")
@@ -3801,13 +3805,13 @@ func (s *RDBConfigStore) findVirtualKeyByValue(baseQuery *gorm.DB, value string)
 
 // GetVirtualKeyByValue retrieves a virtual key by its value using hash-based lookup.
 func (s *RDBConfigStore) GetVirtualKeyByValue(ctx context.Context, value string) (*tables.TableVirtualKey, error) {
-	return s.findVirtualKeyByValue(preloadVirtualKeyBaseRelations(s.DB().WithContext(ctx)), value)
+	return s.findVirtualKeyByValue(preloadVirtualKeyBaseRelations(s.dbForContext(ctx)), value)
 }
 
 // GetVirtualKeyQuotaByValue retrieves budget, rate limit, and provider-level limit data for a virtual key.
 // This is a lean query that avoids loading Team, Customer, MCPConfigs, and provider Keys.
 func (s *RDBConfigStore) GetVirtualKeyQuotaByValue(ctx context.Context, value string) (*tables.TableVirtualKey, error) {
-	baseQuery := s.DB().WithContext(ctx).
+	baseQuery := s.dbForContext(ctx).
 		Preload("Budgets").
 		Preload("RateLimit").
 		Preload("ProviderConfigs").
@@ -3822,7 +3826,7 @@ func (s *RDBConfigStore) CreateVirtualKey(ctx context.Context, virtualKey *table
 	if len(tx) > 0 {
 		txDB = tx[0]
 	} else {
-		txDB = s.DB()
+		txDB = s.dbForContext(ctx)
 	}
 	if err := txDB.WithContext(ctx).Create(virtualKey).Error; err != nil {
 		return s.parseGormError(err)
@@ -3833,7 +3837,7 @@ func (s *RDBConfigStore) CreateVirtualKey(ctx context.Context, virtualKey *table
 // UpdateVirtualKey updates an existing virtual key in the database.
 func (s *RDBConfigStore) UpdateVirtualKey(ctx context.Context, virtualKey *tables.TableVirtualKey, tx ...*gorm.DB) error {
 	if len(tx) == 0 {
-		return s.DB().WithContext(ctx).Transaction(func(transaction *gorm.DB) error {
+		return s.dbForContext(ctx).Transaction(func(transaction *gorm.DB) error {
 			return s.UpdateVirtualKey(ctx, virtualKey, transaction)
 		})
 	}
@@ -3881,7 +3885,7 @@ func (s *RDBConfigStore) GetKeysByIDs(ctx context.Context, ids []string) ([]tabl
 		return []tables.TableKey{}, nil
 	}
 	var keys []tables.TableKey
-	if err := s.DB().WithContext(ctx).Where("key_id IN ?", ids).Find(&keys).Error; err != nil {
+	if err := s.dbForContext(ctx).Where("key_id IN ?", ids).Find(&keys).Error; err != nil {
 		return nil, err
 	}
 	return keys, nil
@@ -3890,7 +3894,7 @@ func (s *RDBConfigStore) GetKeysByIDs(ctx context.Context, ids []string) ([]tabl
 // GetKeysByProvider retrieves all keys for a specific provider
 func (s *RDBConfigStore) GetKeysByProvider(ctx context.Context, provider string) ([]tables.TableKey, error) {
 	var keys []tables.TableKey
-	if err := s.DB().WithContext(ctx).Where("provider = ?", provider).Find(&keys).Error; err != nil {
+	if err := s.dbForContext(ctx).Where("provider = ?", provider).Find(&keys).Error; err != nil {
 		return nil, err
 	}
 	return keys, nil
@@ -3900,12 +3904,12 @@ func (s *RDBConfigStore) GetKeysByProvider(ctx context.Context, provider string)
 func (s *RDBConfigStore) GetAllRedactedKeys(ctx context.Context, ids []string) ([]schemas.Key, error) {
 	var keys []tables.TableKey
 	if len(ids) > 0 {
-		err := s.DB().WithContext(ctx).Select("id, key_id, name, models_json, blacklisted_models_json, weight").Where("key_id IN ?", ids).Find(&keys).Error
+		err := s.dbForContext(ctx).Select("id, key_id, name, models_json, blacklisted_models_json, weight").Where("key_id IN ?", ids).Find(&keys).Error
 		if err != nil {
 			return nil, err
 		}
 	} else {
-		err := s.DB().WithContext(ctx).Select("id, key_id, name, models_json, blacklisted_models_json, weight").Find(&keys).Error
+		err := s.dbForContext(ctx).Select("id, key_id, name, models_json, blacklisted_models_json, weight").Find(&keys).Error
 		if err != nil {
 			return nil, err
 		}
@@ -3937,7 +3941,7 @@ func (s *RDBConfigStore) DeleteVirtualKey(ctx context.Context, id string, tx ...
 	if len(tx) > 0 {
 		txDB = tx[0]
 	} else {
-		txDB = s.DB()
+		txDB = s.dbForContext(ctx)
 	}
 	if err := txDB.WithContext(ctx).Transaction(func(txDB *gorm.DB) error {
 		var virtualKey tables.TableVirtualKey
@@ -4051,7 +4055,7 @@ func (s *RDBConfigStore) DeleteVirtualKey(ctx context.Context, id string, tx ...
 // GetVirtualKeyProviderConfigs retrieves all virtual key provider configs from the database.
 func (s *RDBConfigStore) GetVirtualKeyProviderConfigs(ctx context.Context, virtualKeyID string) ([]tables.TableVirtualKeyProviderConfig, error) {
 	var virtualKey tables.TableVirtualKey
-	if err := s.DB().WithContext(ctx).First(&virtualKey, "id = ?", virtualKeyID).Error; err != nil {
+	if err := s.dbForContext(ctx).First(&virtualKey, "id = ?", virtualKeyID).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return []tables.TableVirtualKeyProviderConfig{}, nil
 		}
@@ -4061,7 +4065,7 @@ func (s *RDBConfigStore) GetVirtualKeyProviderConfigs(ctx context.Context, virtu
 		return nil, nil
 	}
 	var providerConfigs []tables.TableVirtualKeyProviderConfig
-	if err := s.DB().WithContext(ctx).Where("virtual_key_id = ?", virtualKey.ID).Find(&providerConfigs).Error; err != nil {
+	if err := s.dbForContext(ctx).Where("virtual_key_id = ?", virtualKey.ID).Find(&providerConfigs).Error; err != nil {
 		return nil, err
 	}
 	return providerConfigs, nil
@@ -4073,7 +4077,7 @@ func (s *RDBConfigStore) CreateVirtualKeyProviderConfig(ctx context.Context, vir
 	if len(tx) > 0 {
 		txDB = tx[0]
 	} else {
-		txDB = s.DB()
+		txDB = s.dbForContext(ctx)
 	}
 	// Store keys before create
 	keysToAssociate := virtualKeyProviderConfig.Keys
@@ -4354,7 +4358,7 @@ func (s *RDBConfigStore) ReplaceVirtualKeyProviderConfigs(ctx context.Context, v
 // UpdateVirtualKeyProviderConfig updates a virtual key provider config in the database.
 func (s *RDBConfigStore) UpdateVirtualKeyProviderConfig(ctx context.Context, virtualKeyProviderConfig *tables.TableVirtualKeyProviderConfig, tx ...*gorm.DB) error {
 	if len(tx) == 0 {
-		return s.DB().WithContext(ctx).Transaction(func(transaction *gorm.DB) error {
+		return s.dbForContext(ctx).Transaction(func(transaction *gorm.DB) error {
 			return s.UpdateVirtualKeyProviderConfig(ctx, virtualKeyProviderConfig, transaction)
 		})
 	}
@@ -4441,7 +4445,7 @@ func (s *RDBConfigStore) UpdateVirtualKeyProviderConfig(ctx context.Context, vir
 // DeleteVirtualKeyProviderConfig deletes a virtual key provider config from the database.
 func (s *RDBConfigStore) DeleteVirtualKeyProviderConfig(ctx context.Context, id uint, tx ...*gorm.DB) error {
 	if len(tx) == 0 {
-		return s.DB().WithContext(ctx).Transaction(func(transaction *gorm.DB) error {
+		return s.dbForContext(ctx).Transaction(func(transaction *gorm.DB) error {
 			return s.DeleteVirtualKeyProviderConfig(ctx, id, transaction)
 		})
 	}
@@ -4481,7 +4485,7 @@ func (s *RDBConfigStore) DeleteVirtualKeyProviderConfig(ctx context.Context, id 
 // GetVirtualKeyMCPConfigs retrieves all virtual key MCP configs from the database.
 func (s *RDBConfigStore) GetVirtualKeyMCPConfigs(ctx context.Context, virtualKeyID string) ([]tables.TableVirtualKeyMCPConfig, error) {
 	var virtualKey tables.TableVirtualKey
-	if err := s.DB().WithContext(ctx).First(&virtualKey, "id = ?", virtualKeyID).Error; err != nil {
+	if err := s.dbForContext(ctx).First(&virtualKey, "id = ?", virtualKeyID).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return []tables.TableVirtualKeyMCPConfig{}, nil
 		}
@@ -4491,7 +4495,7 @@ func (s *RDBConfigStore) GetVirtualKeyMCPConfigs(ctx context.Context, virtualKey
 		return nil, nil
 	}
 	var mcpConfigs []tables.TableVirtualKeyMCPConfig
-	if err := s.DB().WithContext(ctx).Preload("MCPClient").Where("virtual_key_id = ?", virtualKey.ID).Find(&mcpConfigs).Error; err != nil {
+	if err := s.dbForContext(ctx).Preload("MCPClient").Where("virtual_key_id = ?", virtualKey.ID).Find(&mcpConfigs).Error; err != nil {
 		return nil, err
 	}
 	return mcpConfigs, nil
@@ -4500,7 +4504,7 @@ func (s *RDBConfigStore) GetVirtualKeyMCPConfigs(ctx context.Context, virtualKey
 // GetVirtualKeyMCPConfigsByMCPClientID retrieves all VK MCP configs for a given MCP client.
 func (s *RDBConfigStore) GetVirtualKeyMCPConfigsByMCPClientID(ctx context.Context, mcpClientID uint) ([]tables.TableVirtualKeyMCPConfig, error) {
 	var configs []tables.TableVirtualKeyMCPConfig
-	if err := s.DB().WithContext(ctx).Where("mcp_client_id = ?", mcpClientID).Find(&configs).Error; err != nil {
+	if err := s.dbForContext(ctx).Where("mcp_client_id = ?", mcpClientID).Find(&configs).Error; err != nil {
 		return nil, err
 	}
 	return configs, nil
@@ -4510,7 +4514,7 @@ func (s *RDBConfigStore) GetVirtualKeyMCPConfigsByMCPClientID(ctx context.Contex
 // ParsedTools.
 func (s *RDBConfigStore) GetVirtualMCPs(ctx context.Context) ([]tables.TableVirtualMCP, error) {
 	var defs []tables.TableVirtualMCP
-	if err := s.DB().WithContext(ctx).Find(&defs).Error; err != nil {
+	if err := s.dbForContext(ctx).Find(&defs).Error; err != nil {
 		return nil, err
 	}
 	return defs, nil
@@ -4519,7 +4523,7 @@ func (s *RDBConfigStore) GetVirtualMCPs(ctx context.Context) ([]tables.TableVirt
 // GetVirtualMCPAssignments returns each VK's assigned Virtual MCP IDs, keyed by VK row ID.
 func (s *RDBConfigStore) GetVirtualMCPAssignments(ctx context.Context) (map[string][]uint, error) {
 	var assignments []tables.TableVirtualKeyVirtualMCP
-	if err := s.DB().WithContext(ctx).Find(&assignments).Error; err != nil {
+	if err := s.dbForContext(ctx).Find(&assignments).Error; err != nil {
 		return nil, err
 	}
 	out := make(map[string][]uint, len(assignments))
@@ -4533,7 +4537,7 @@ func (s *RDBConfigStore) GetVirtualMCPAssignments(ctx context.Context) (map[stri
 // else derived from the name; a slug collision is reported as ErrMCPEndpointSlugExists rather than
 // auto-suffixed. Name uniqueness is left to the table's own unique index.
 func (s *RDBConfigStore) CreateVirtualMCP(ctx context.Context, def *tables.TableVirtualMCP) error {
-	db := s.DB().WithContext(ctx)
+	db := s.dbForContext(ctx)
 	base := def.EndpointSlug
 	if base == "" {
 		base = def.Name
@@ -4571,7 +4575,7 @@ func (s *RDBConfigStore) CreateVirtualMCP(ctx context.Context, def *tables.Table
 // MCPEndpointSlugTaken reports whether a Virtual MCP or MCP client already uses the slug, across both
 // tables (the /mcp/<slug> namespace is shared). Create-time check: no self-exclusion.
 func (s *RDBConfigStore) MCPEndpointSlugTaken(ctx context.Context, slug string) (bool, error) {
-	db := s.DB().WithContext(ctx)
+	db := s.dbForContext(ctx)
 	var count int64
 	if err := db.Model(&tables.TableVirtualMCP{}).Where("endpoint_slug = ?", slug).Count(&count).Error; err != nil {
 		return false, err
@@ -4621,13 +4625,13 @@ func (s *RDBConfigStore) GetVirtualMCPsPaginated(ctx context.Context, params Vir
 // UpdateVirtualMCP persists a Virtual MCP, keeping endpoint_slug and created_at immutable. Name
 // uniqueness is enforced by the table's own unique index.
 func (s *RDBConfigStore) UpdateVirtualMCP(ctx context.Context, def *tables.TableVirtualMCP) error {
-	return s.DB().WithContext(ctx).Omit("endpoint_slug", "created_at").Save(def).Error
+	return s.dbForContext(ctx).Omit("endpoint_slug", "created_at").Save(def).Error
 }
 
 // DeleteVirtualMCP removes a Virtual MCP and its VK assignments (explicit, so it holds on any DB
 // regardless of FK cascade support).
 func (s *RDBConfigStore) DeleteVirtualMCP(ctx context.Context, id uint) error {
-	return s.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	return s.dbForContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if err := tx.Where("tool_group_id = ?", id).Delete(&tables.TableVirtualKeyVirtualMCP{}).Error; err != nil {
 			return err
 		}
@@ -4638,18 +4642,18 @@ func (s *RDBConfigStore) DeleteVirtualMCP(ctx context.Context, id uint) error {
 // AttachVirtualMCPToVirtualKey links a Virtual MCP to a VK, idempotently.
 func (s *RDBConfigStore) AttachVirtualMCPToVirtualKey(ctx context.Context, vmcpID uint, virtualKeyID string) error {
 	assoc := tables.TableVirtualKeyVirtualMCP{VirtualMCPID: vmcpID, VirtualKeyID: virtualKeyID}
-	return s.DB().WithContext(ctx).Where(assoc).FirstOrCreate(&assoc).Error
+	return s.dbForContext(ctx).Where(assoc).FirstOrCreate(&assoc).Error
 }
 
 func (s *RDBConfigStore) DetachVirtualMCPFromVirtualKey(ctx context.Context, vmcpID uint, virtualKeyID string) error {
-	return s.DB().WithContext(ctx).
+	return s.dbForContext(ctx).
 		Where("tool_group_id = ? AND virtual_key_id = ?", vmcpID, virtualKeyID).
 		Delete(&tables.TableVirtualKeyVirtualMCP{}).Error
 }
 
 func (s *RDBConfigStore) GetVirtualKeyIDsForVirtualMCP(ctx context.Context, vmcpID uint) ([]string, error) {
 	var ids []string
-	err := s.DB().WithContext(ctx).Model(&tables.TableVirtualKeyVirtualMCP{}).
+	err := s.dbForContext(ctx).Model(&tables.TableVirtualKeyVirtualMCP{}).
 		Where("tool_group_id = ?", vmcpID).
 		Pluck("virtual_key_id", &ids).Error
 	return ids, err
@@ -4657,7 +4661,7 @@ func (s *RDBConfigStore) GetVirtualKeyIDsForVirtualMCP(ctx context.Context, vmcp
 
 func (s *RDBConfigStore) GetVirtualMCPIDsForVirtualKey(ctx context.Context, virtualKeyID string) ([]uint, error) {
 	var ids []uint
-	err := s.DB().WithContext(ctx).Model(&tables.TableVirtualKeyVirtualMCP{}).
+	err := s.dbForContext(ctx).Model(&tables.TableVirtualKeyVirtualMCP{}).
 		Where("virtual_key_id = ?", virtualKeyID).
 		Pluck("tool_group_id", &ids).Error
 	return ids, err
@@ -4671,7 +4675,7 @@ func (s *RDBConfigStore) GetVirtualKeyIDsForVirtualMCPs(ctx context.Context, vmc
 		return result, nil
 	}
 	var rows []tables.TableVirtualKeyVirtualMCP
-	if err := s.DB().WithContext(ctx).
+	if err := s.dbForContext(ctx).
 		Where("tool_group_id IN ?", vmcpIDs).
 		Find(&rows).Error; err != nil {
 		return nil, err
@@ -4688,7 +4692,7 @@ func (s *RDBConfigStore) GetVirtualKeyMCPConfigsByMCPClientIDs(ctx context.Conte
 		return nil, nil
 	}
 	var configs []tables.TableVirtualKeyMCPConfig
-	if err := s.DB().WithContext(ctx).Where("mcp_client_id IN ?", mcpClientIDs).Find(&configs).Error; err != nil {
+	if err := s.dbForContext(ctx).Where("mcp_client_id IN ?", mcpClientIDs).Find(&configs).Error; err != nil {
 		return nil, err
 	}
 	return configs, nil
@@ -4701,7 +4705,7 @@ func (s *RDBConfigStore) GetVirtualKeyMCPConfigsByMCPClientStringIDs(ctx context
 		return nil, nil
 	}
 	var configs []tables.TableVirtualKeyMCPConfig
-	err := s.DB().WithContext(ctx).
+	err := s.dbForContext(ctx).
 		Preload("MCPClient").
 		Joins("JOIN config_mcp_clients ON config_mcp_clients.id = governance_virtual_key_mcp_configs.mcp_client_id").
 		Where("config_mcp_clients.client_id IN ?", clientIDs).
@@ -4718,7 +4722,7 @@ func (s *RDBConfigStore) CreateVirtualKeyMCPConfig(ctx context.Context, virtualK
 	if len(tx) > 0 {
 		txDB = tx[0]
 	} else {
-		txDB = s.DB()
+		txDB = s.dbForContext(ctx)
 	}
 	if err := txDB.WithContext(ctx).Create(virtualKeyMCPConfig).Error; err != nil {
 		return s.parseGormError(err)
@@ -4729,7 +4733,7 @@ func (s *RDBConfigStore) CreateVirtualKeyMCPConfig(ctx context.Context, virtualK
 // UpdateVirtualKeyMCPConfig updates a virtual key provider config in the database.
 func (s *RDBConfigStore) UpdateVirtualKeyMCPConfig(ctx context.Context, virtualKeyMCPConfig *tables.TableVirtualKeyMCPConfig, tx ...*gorm.DB) error {
 	if len(tx) == 0 {
-		return s.DB().WithContext(ctx).Transaction(func(transaction *gorm.DB) error {
+		return s.dbForContext(ctx).Transaction(func(transaction *gorm.DB) error {
 			return s.UpdateVirtualKeyMCPConfig(ctx, virtualKeyMCPConfig, transaction)
 		})
 	}
@@ -4753,7 +4757,7 @@ func (s *RDBConfigStore) UpdateVirtualKeyMCPConfig(ctx context.Context, virtualK
 // DeleteVirtualKeyMCPConfig deletes a virtual key provider config from the database.
 func (s *RDBConfigStore) DeleteVirtualKeyMCPConfig(ctx context.Context, id uint, tx ...*gorm.DB) error {
 	if len(tx) == 0 {
-		return s.DB().WithContext(ctx).Transaction(func(transaction *gorm.DB) error {
+		return s.dbForContext(ctx).Transaction(func(transaction *gorm.DB) error {
 			return s.DeleteVirtualKeyMCPConfig(ctx, id, transaction)
 		})
 	}
@@ -4856,7 +4860,7 @@ func (s *RDBConfigStore) GetTeam(ctx context.Context, id string) (*tables.TableT
 // GetTeamByName retrieves a team by name. When customerID is non-empty the lookup is scoped to that customer
 func (s *RDBConfigStore) GetTeamByName(ctx context.Context, name string, customerID string) (*tables.TableTeam, error) {
 	var team tables.TableTeam
-	q := s.DB().WithContext(ctx).
+	q := s.dbForContext(ctx).
 		Select(teamSelectWithVKCount).
 		Preload("Customer").Preload("Budgets").Preload("RateLimit").
 		Where("name = ?", name)
@@ -4880,7 +4884,7 @@ func (s *RDBConfigStore) GetTeamBySourceID(ctx context.Context, sourceID string)
 		return nil, ErrNotFound
 	}
 	var team tables.TableTeam
-	if err := s.DB().WithContext(ctx).
+	if err := s.dbForContext(ctx).
 		Select(teamSelectWithVKCount).
 		Preload("Customer").Preload("Budgets").Preload("RateLimit").
 		Where("source_id = ?", sourceID).
@@ -4899,7 +4903,7 @@ func (s *RDBConfigStore) CreateTeam(ctx context.Context, team *tables.TableTeam,
 	if len(tx) > 0 {
 		txDB = tx[0]
 	} else {
-		txDB = s.DB()
+		txDB = s.dbForContext(ctx)
 	}
 	if err := txDB.WithContext(ctx).Create(team).Error; err != nil {
 		return s.parseGormError(err)
@@ -4913,7 +4917,7 @@ func (s *RDBConfigStore) UpdateTeam(ctx context.Context, team *tables.TableTeam,
 	if len(tx) > 0 {
 		txDB = tx[0]
 	} else {
-		txDB = s.DB()
+		txDB = s.dbForContext(ctx)
 	}
 	// created_at is immutable: Save writes every column, so a caller passing a row it
 	// didn't read from the DB (e.g. a config.json reload) would otherwise zero it out.
@@ -4938,7 +4942,7 @@ func (s *RDBConfigStore) UpdateTeam(ctx context.Context, team *tables.TableTeam,
 // Rate limit is a sibling row (team holds a FK to it) — deleted explicitly.
 func (s *RDBConfigStore) DeleteTeam(ctx context.Context, id string, tx ...*gorm.DB) error {
 	if len(tx) == 0 || tx[0] == nil {
-		return s.DB().WithContext(ctx).Transaction(func(transaction *gorm.DB) error {
+		return s.dbForContext(ctx).Transaction(func(transaction *gorm.DB) error {
 			return s.DeleteTeam(ctx, id, transaction)
 		})
 	}
@@ -5052,7 +5056,7 @@ func (s *RDBConfigStore) CreateCustomer(ctx context.Context, customer *tables.Ta
 	if len(tx) > 0 {
 		txDB = tx[0]
 	} else {
-		txDB = s.DB()
+		txDB = s.dbForContext(ctx)
 	}
 	if err := txDB.WithContext(ctx).Create(customer).Error; err != nil {
 		return s.parseGormError(err)
@@ -5066,7 +5070,7 @@ func (s *RDBConfigStore) UpdateCustomer(ctx context.Context, customer *tables.Ta
 	if len(tx) > 0 {
 		txDB = tx[0]
 	} else {
-		txDB = s.DB()
+		txDB = s.dbForContext(ctx)
 	}
 	// created_at is immutable: Save writes every column, so a caller passing a row it
 	// didn't read from the DB (e.g. a config.json reload) would otherwise zero it out.
@@ -5089,7 +5093,7 @@ func (s *RDBConfigStore) UpdateCustomer(ctx context.Context, customer *tables.Ta
 // DeleteCustomer deletes a customer from the database.
 func (s *RDBConfigStore) DeleteCustomer(ctx context.Context, id string, tx ...*gorm.DB) error {
 	if len(tx) == 0 || tx[0] == nil {
-		return s.DB().WithContext(ctx).Transaction(func(transaction *gorm.DB) error {
+		return s.dbForContext(ctx).Transaction(func(transaction *gorm.DB) error {
 			return s.DeleteCustomer(ctx, id, transaction)
 		})
 	}
@@ -5133,7 +5137,7 @@ func (s *RDBConfigStore) DeleteCustomer(ctx context.Context, id string, tx ...*g
 // GetRateLimits retrieves all rate limits from the database.
 func (s *RDBConfigStore) GetRateLimits(ctx context.Context) ([]tables.TableRateLimit, error) {
 	var rateLimits []tables.TableRateLimit
-	if err := s.DB().WithContext(ctx).Order("created_at ASC").Find(&rateLimits).Error; err != nil {
+	if err := s.dbForContext(ctx).Order("created_at ASC").Find(&rateLimits).Error; err != nil {
 		return nil, err
 	}
 	return rateLimits, nil
@@ -5145,7 +5149,7 @@ func (s *RDBConfigStore) GetRateLimit(ctx context.Context, id string, tx ...*gor
 	if len(tx) > 0 {
 		txDB = tx[0]
 	} else {
-		txDB = s.DB()
+		txDB = s.dbForContext(ctx)
 	}
 	var rateLimit tables.TableRateLimit
 	if err := txDB.WithContext(ctx).First(&rateLimit, "id = ?", id).Error; err != nil {
@@ -5163,7 +5167,7 @@ func (s *RDBConfigStore) CreateRateLimit(ctx context.Context, rateLimit *tables.
 	if len(tx) > 0 {
 		txDB = tx[0]
 	} else {
-		txDB = s.DB()
+		txDB = s.dbForContext(ctx)
 	}
 	if err := txDB.WithContext(ctx).Create(rateLimit).Error; err != nil {
 		return s.parseGormError(err)
@@ -5174,7 +5178,7 @@ func (s *RDBConfigStore) CreateRateLimit(ctx context.Context, rateLimit *tables.
 // UpdateRateLimit updates a rate limit in the database.
 func (s *RDBConfigStore) UpdateRateLimit(ctx context.Context, rateLimit *tables.TableRateLimit, tx ...*gorm.DB) error {
 	if len(tx) == 0 {
-		return s.DB().WithContext(ctx).Transaction(func(transaction *gorm.DB) error {
+		return s.dbForContext(ctx).Transaction(func(transaction *gorm.DB) error {
 			return s.UpdateRateLimit(ctx, rateLimit, transaction)
 		})
 	}
@@ -5210,7 +5214,7 @@ func (s *RDBConfigStore) UpdateRateLimit(ctx context.Context, rateLimit *tables.
 // UpdateRateLimits updates multiple rate limits in the database.
 func (s *RDBConfigStore) UpdateRateLimits(ctx context.Context, rateLimits []*tables.TableRateLimit, tx ...*gorm.DB) error {
 	if len(tx) == 0 {
-		return s.DB().WithContext(ctx).Transaction(func(transaction *gorm.DB) error {
+		return s.dbForContext(ctx).Transaction(func(transaction *gorm.DB) error {
 			return s.UpdateRateLimits(ctx, rateLimits, transaction)
 		})
 	}
@@ -5229,7 +5233,7 @@ func (s *RDBConfigStore) UpdateRateLimits(ctx context.Context, rateLimits []*tab
 // DeleteRateLimit deletes a rate limit from the database.
 func (s *RDBConfigStore) DeleteRateLimit(ctx context.Context, id string, tx ...*gorm.DB) error {
 	if len(tx) == 0 {
-		return s.DB().WithContext(ctx).Transaction(func(transaction *gorm.DB) error {
+		return s.dbForContext(ctx).Transaction(func(transaction *gorm.DB) error {
 			return s.DeleteRateLimit(ctx, id, transaction)
 		})
 	}
@@ -5251,7 +5255,7 @@ func (s *RDBConfigStore) DeleteRateLimit(ctx context.Context, id string, tx ...*
 // GetBudgets retrieves all budgets from the database.
 func (s *RDBConfigStore) GetBudgets(ctx context.Context) ([]tables.TableBudget, error) {
 	var budgets []tables.TableBudget
-	if err := s.DB().WithContext(ctx).Order("created_at ASC").Find(&budgets).Error; err != nil {
+	if err := s.dbForContext(ctx).Order("created_at ASC").Find(&budgets).Error; err != nil {
 		return nil, err
 	}
 	return budgets, nil
@@ -5263,7 +5267,7 @@ func (s *RDBConfigStore) GetBudget(ctx context.Context, id string, tx ...*gorm.D
 	if len(tx) > 0 {
 		txDB = tx[0]
 	} else {
-		txDB = s.DB()
+		txDB = s.dbForContext(ctx)
 	}
 	var budget tables.TableBudget
 	if err := txDB.WithContext(ctx).First(&budget, "id = ?", id).Error; err != nil {
@@ -5281,7 +5285,7 @@ func (s *RDBConfigStore) CreateBudget(ctx context.Context, budget *tables.TableB
 	if len(tx) > 0 {
 		txDB = tx[0]
 	} else {
-		txDB = s.DB()
+		txDB = s.dbForContext(ctx)
 	}
 	if err := txDB.WithContext(ctx).Create(budget).Error; err != nil {
 		return s.parseGormError(err)
@@ -5292,7 +5296,7 @@ func (s *RDBConfigStore) CreateBudget(ctx context.Context, budget *tables.TableB
 // UpdateBudgets updates multiple budgets in the database.
 func (s *RDBConfigStore) UpdateBudgets(ctx context.Context, budgets []*tables.TableBudget, tx ...*gorm.DB) error {
 	if len(tx) == 0 {
-		return s.DB().WithContext(ctx).Transaction(func(transaction *gorm.DB) error {
+		return s.dbForContext(ctx).Transaction(func(transaction *gorm.DB) error {
 			return s.UpdateBudgets(ctx, budgets, transaction)
 		})
 	}
@@ -5311,7 +5315,7 @@ func (s *RDBConfigStore) UpdateBudgets(ctx context.Context, budgets []*tables.Ta
 // UpdateBudget updates a budget in the database.
 func (s *RDBConfigStore) UpdateBudget(ctx context.Context, budget *tables.TableBudget, tx ...*gorm.DB) error {
 	if len(tx) == 0 {
-		return s.DB().WithContext(ctx).Transaction(func(transaction *gorm.DB) error {
+		return s.dbForContext(ctx).Transaction(func(transaction *gorm.DB) error {
 			return s.UpdateBudget(ctx, budget, transaction)
 		})
 	}
@@ -5385,7 +5389,7 @@ func (s *RDBConfigStore) UpdateBudget(ctx context.Context, budget *tables.TableB
 func (s *RDBConfigStore) UpdateBudgetOverride(ctx context.Context, id string, amount float64, mode tables.BudgetOverrideMode, cyclesTotal int, calendarAligned bool, tx ...*gorm.DB) (*tables.TableBudget, error) {
 	if len(tx) == 0 {
 		var updated *tables.TableBudget
-		err := s.DB().WithContext(ctx).Transaction(func(transaction *gorm.DB) error {
+		err := s.dbForContext(ctx).Transaction(func(transaction *gorm.DB) error {
 			var err error
 			updated, err = s.UpdateBudgetOverride(ctx, id, amount, mode, cyclesTotal, calendarAligned, transaction)
 			return err
@@ -5428,7 +5432,7 @@ func (s *RDBConfigStore) UpdateBudgetOverride(ctx context.Context, id string, am
 // DeleteBudget deletes a budget from the database.
 func (s *RDBConfigStore) DeleteBudget(ctx context.Context, id string, tx ...*gorm.DB) error {
 	if len(tx) == 0 {
-		return s.DB().WithContext(ctx).Transaction(func(transaction *gorm.DB) error {
+		return s.dbForContext(ctx).Transaction(func(transaction *gorm.DB) error {
 			return s.DeleteBudget(ctx, id, transaction)
 		})
 	}
@@ -5459,7 +5463,7 @@ func (s *RDBConfigStore) DeleteBudget(ctx context.Context, id string, tx ...*gor
 // UpdateBudgetUsage updates only the current_usage field of a budget.
 // Uses SkipHooks to avoid triggering BeforeSave validation since we're only updating usage.
 func (s *RDBConfigStore) UpdateBudgetUsage(ctx context.Context, id string, currentUsage float64, tx ...*gorm.DB) error {
-	db := s.DB()
+	db := s.dbForContext(ctx)
 	if len(tx) > 0 && tx[0] != nil {
 		db = tx[0]
 	}
@@ -5480,7 +5484,7 @@ func (s *RDBConfigStore) UpdateBudgetUsage(ctx context.Context, id string, curre
 // UpdateRateLimitUsage updates only the usage fields of a rate limit.
 // Uses SkipHooks to avoid triggering BeforeSave validation since we're only updating usage.
 func (s *RDBConfigStore) UpdateRateLimitUsage(ctx context.Context, id string, tokenCurrentUsage int64, requestCurrentUsage int64, tx ...*gorm.DB) error {
-	db := s.DB()
+	db := s.dbForContext(ctx)
 	if len(tx) > 0 && tx[0] != nil {
 		db = tx[0]
 	}
@@ -5618,12 +5622,12 @@ func (s *RDBConfigStore) GetRedactedRoutingRules(ctx context.Context, ids []stri
 	var routingRules []tables.TableRoutingRule
 
 	if len(ids) > 0 {
-		err := s.DB().WithContext(ctx).Select("id, name, description, enabled").Where("id IN ?", ids).Find(&routingRules).Error
+		err := s.dbForContext(ctx).Select("id, name, description, enabled").Where("id IN ?", ids).Find(&routingRules).Error
 		if err != nil {
 			return nil, err
 		}
 	} else {
-		err := s.DB().WithContext(ctx).Select("id, name, description, enabled").Find(&routingRules).Error
+		err := s.dbForContext(ctx).Select("id, name, description, enabled").Find(&routingRules).Error
 		if err != nil {
 			return nil, err
 		}
@@ -5633,7 +5637,7 @@ func (s *RDBConfigStore) GetRedactedRoutingRules(ctx context.Context, ids []stri
 
 // CreateRoutingRule creates a new routing rule in the database.
 func (s *RDBConfigStore) CreateRoutingRule(ctx context.Context, rule *tables.TableRoutingRule, tx ...*gorm.DB) error {
-	database := s.DB()
+	database := s.dbForContext(ctx)
 	if len(tx) > 0 && tx[0] != nil {
 		database = tx[0]
 	}
@@ -5682,7 +5686,7 @@ func (s *RDBConfigStore) CreateRoutingRule(ctx context.Context, rule *tables.Tab
 // UpdateRoutingRule updates an existing routing rule in the database.
 // It enforces the same unique-priority-per-scope invariant as CreateRoutingRule.
 func (s *RDBConfigStore) UpdateRoutingRule(ctx context.Context, rule *tables.TableRoutingRule, tx ...*gorm.DB) error {
-	database := s.DB()
+	database := s.dbForContext(ctx)
 	if len(tx) > 0 && tx[0] != nil {
 		database = tx[0]
 	}
@@ -5747,7 +5751,7 @@ func (s *RDBConfigStore) UpdateRoutingRule(ctx context.Context, rule *tables.Tab
 // swapping two rules' priorities) succeed despite a transient intermediate collision, while a
 // genuine end-state duplicate still errors. Used by config-file reloads that apply many rules at once.
 func (s *RDBConfigStore) SyncRoutingRules(ctx context.Context, toAdd []tables.TableRoutingRule, toUpdate []tables.TableRoutingRule, tx ...*gorm.DB) error {
-	database := s.DB()
+	database := s.dbForContext(ctx)
 	if len(tx) > 0 && tx[0] != nil {
 		database = tx[0]
 	}
@@ -5859,7 +5863,7 @@ func (s *RDBConfigStore) SyncRoutingRules(ctx context.Context, toAdd []tables.Ta
 
 // DeleteRoutingRule deletes a routing rule and its targets from the database.
 func (s *RDBConfigStore) DeleteRoutingRule(ctx context.Context, id string, tx ...*gorm.DB) error {
-	database := s.DB()
+	database := s.dbForContext(ctx)
 	if len(tx) > 0 && tx[0] != nil {
 		database = tx[0]
 	}
@@ -5894,7 +5898,7 @@ func (s *RDBConfigStore) GetModelConfigs(ctx context.Context) ([]tables.TableMod
 
 	for {
 		var page []tables.TableModelConfig
-		query := s.DB().WithContext(ctx).Preload("Budgets").Preload("Budget").Preload("RateLimit")
+		query := s.dbForContext(ctx).Preload("Budgets").Preload("Budget").Preload("RateLimit")
 		if hasCursor {
 			query = query.Where("governance_model_configs.id > ?", lastID)
 		}
@@ -5922,7 +5926,7 @@ func (s *RDBConfigStore) GetModelConfigsByScopeAndScopeIDs(ctx context.Context, 
 		return nil, nil
 	}
 	var modelConfigs []tables.TableModelConfig
-	if err := s.DB().WithContext(ctx).Preload("Budgets").Preload("Budget").Preload("RateLimit").
+	if err := s.dbForContext(ctx).Preload("Budgets").Preload("Budget").Preload("RateLimit").
 		Where("scope = ? AND scope_id IN ?", scope, scopeIDs).
 		Find(&modelConfigs).Error; err != nil {
 		return nil, err
@@ -5933,7 +5937,7 @@ func (s *RDBConfigStore) GetModelConfigsByScopeAndScopeIDs(ctx context.Context, 
 // GetProviderGovernanceModelConfigs retrieves the wildcard "all models on a provider" configs
 func (s *RDBConfigStore) GetProviderGovernanceModelConfigs(ctx context.Context) ([]tables.TableModelConfig, error) {
 	var modelConfigs []tables.TableModelConfig
-	if err := s.DB().WithContext(ctx).
+	if err := s.dbForContext(ctx).
 		Preload("Budgets").Preload("Budget").Preload("RateLimit").
 		Where("scope = ? AND model_name = ? AND provider IS NOT NULL", tables.ModelConfigScopeGlobal, tables.ModelConfigAllModels).
 		Find(&modelConfigs).Error; err != nil {
@@ -5944,7 +5948,7 @@ func (s *RDBConfigStore) GetProviderGovernanceModelConfigs(ctx context.Context) 
 
 // GetModelConfigsPaginated retrieves model configs with pagination, filtering, and search support.
 func (s *RDBConfigStore) GetModelConfigsPaginated(ctx context.Context, params ModelConfigsQueryParams) ([]tables.TableModelConfig, int64, error) {
-	baseQuery := s.DB().WithContext(ctx).Model(&tables.TableModelConfig{})
+	baseQuery := s.dbForContext(ctx).Model(&tables.TableModelConfig{})
 
 	if params.Search != "" {
 		search := "%" + strings.ToLower(params.Search) + "%"
@@ -6000,7 +6004,7 @@ func (s *RDBConfigStore) GetModelConfigsPaginated(ctx context.Context, params Mo
 // scope, optional scope ID, model name, and optional provider.
 func (s *RDBConfigStore) GetModelConfig(ctx context.Context, scope string, scopeID *string, modelName string, provider *string) (*tables.TableModelConfig, error) {
 	var modelConfig tables.TableModelConfig
-	query := s.DB().WithContext(ctx).Where("model_name = ?", modelName).Where("scope = ?", scope)
+	query := s.dbForContext(ctx).Where("model_name = ?", modelName).Where("scope = ?", scope)
 	if scopeID != nil {
 		query = query.Where("scope_id = ?", *scopeID)
 	} else {
@@ -6023,7 +6027,7 @@ func (s *RDBConfigStore) GetModelConfig(ctx context.Context, scope string, scope
 // GetModelConfigByID retrieves a specific model config from the database by ID.
 func (s *RDBConfigStore) GetModelConfigByID(ctx context.Context, id string) (*tables.TableModelConfig, error) {
 	var modelConfig tables.TableModelConfig
-	if err := s.DB().WithContext(ctx).Preload("Budgets").Preload("Budget").Preload("RateLimit").First(&modelConfig, "id = ?", id).Error; err != nil {
+	if err := s.dbForContext(ctx).Preload("Budgets").Preload("Budget").Preload("RateLimit").First(&modelConfig, "id = ?", id).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, ErrNotFound
 		}
@@ -6126,7 +6130,7 @@ func (s *RDBConfigStore) CreateModelConfig(ctx context.Context, modelConfig *tab
 	// Locking the scope owner and inserting the config must be atomic, so wrap in a
 	// transaction when the caller didn't supply one.
 	if len(tx) == 0 || tx[0] == nil {
-		return s.DB().WithContext(ctx).Transaction(func(transaction *gorm.DB) error {
+		return s.dbForContext(ctx).Transaction(func(transaction *gorm.DB) error {
 			return s.CreateModelConfig(ctx, modelConfig, transaction)
 		})
 	}
@@ -6189,7 +6193,7 @@ func (s *RDBConfigStore) lockModelConfigScopeOwner(ctx context.Context, txDB *go
 // UpdateModelConfig updates a model config in the database.
 func (s *RDBConfigStore) UpdateModelConfig(ctx context.Context, modelConfig *tables.TableModelConfig, tx ...*gorm.DB) error {
 	if len(tx) == 0 {
-		return s.DB().WithContext(ctx).Transaction(func(transaction *gorm.DB) error {
+		return s.dbForContext(ctx).Transaction(func(transaction *gorm.DB) error {
 			return s.UpdateModelConfig(ctx, modelConfig, transaction)
 		})
 	}
@@ -6218,7 +6222,7 @@ func (s *RDBConfigStore) UpdateModelConfig(ctx context.Context, modelConfig *tab
 // UpdateModelConfigs updates multiple model configs in the database.
 func (s *RDBConfigStore) UpdateModelConfigs(ctx context.Context, modelConfigs []*tables.TableModelConfig, tx ...*gorm.DB) error {
 	if len(tx) == 0 {
-		return s.DB().WithContext(ctx).Transaction(func(transaction *gorm.DB) error {
+		return s.dbForContext(ctx).Transaction(func(transaction *gorm.DB) error {
 			return s.UpdateModelConfigs(ctx, modelConfigs, transaction)
 		})
 	}
@@ -6237,7 +6241,7 @@ func (s *RDBConfigStore) UpdateModelConfigs(ctx context.Context, modelConfigs []
 // DeleteModelConfig deletes a model config from the database.
 func (s *RDBConfigStore) DeleteModelConfig(ctx context.Context, id string, tx ...*gorm.DB) error {
 	if len(tx) == 0 || tx[0] == nil {
-		return s.DB().WithContext(ctx).Transaction(func(transaction *gorm.DB) error {
+		return s.dbForContext(ctx).Transaction(func(transaction *gorm.DB) error {
 			return s.DeleteModelConfig(ctx, id, transaction)
 		})
 	}
@@ -6302,34 +6306,34 @@ func (s *RDBConfigStore) GetGovernanceConfig(ctx context.Context) (*GovernanceCo
 		return nil, err
 	}
 	virtualKeys = loadedVKs
-	if err := s.DB().WithContext(ctx).
+	if err := s.dbForContext(ctx).
 		Select(teamSelectWithVKCount).
 		Find(&teams).Error; err != nil {
 		return nil, err
 	}
-	if err := s.DB().WithContext(ctx).Find(&customers).Error; err != nil {
+	if err := s.dbForContext(ctx).Find(&customers).Error; err != nil {
 		return nil, err
 	}
-	if err := s.DB().WithContext(ctx).Find(&budgets).Error; err != nil {
+	if err := s.dbForContext(ctx).Find(&budgets).Error; err != nil {
 		return nil, err
 	}
-	if err := s.DB().WithContext(ctx).Find(&rateLimits).Error; err != nil {
+	if err := s.dbForContext(ctx).Find(&rateLimits).Error; err != nil {
 		return nil, err
 	}
-	if err := s.DB().WithContext(ctx).Find(&modelConfigs).Error; err != nil {
+	if err := s.dbForContext(ctx).Find(&modelConfigs).Error; err != nil {
 		return nil, err
 	}
-	if err := s.DB().WithContext(ctx).Find(&providers).Error; err != nil {
+	if err := s.dbForContext(ctx).Find(&providers).Error; err != nil {
 		return nil, err
 	}
 	if err := s.loadRoutingRulesOrdered(ctx, &routingRules); err != nil {
 		return nil, err
 	}
-	if err := s.DB().WithContext(ctx).Find(&pricingOverrides).Error; err != nil {
+	if err := s.dbForContext(ctx).Find(&pricingOverrides).Error; err != nil {
 		return nil, err
 	}
 	// Fetching governance config for username and password
-	if err := s.DB().WithContext(ctx).Find(&governanceConfigs).Error; err != nil {
+	if err := s.dbForContext(ctx).Find(&governanceConfigs).Error; err != nil {
 		return nil, err
 	}
 	// Check if any config is present
@@ -6428,7 +6432,7 @@ func (s *RDBConfigStore) GetGovernanceConfig(ctx context.Context) (*GovernanceCo
 
 // GetComplexityAnalyzerConfig retrieves the typed complexity analyzer config.
 func (s *RDBConfigStore) GetComplexityAnalyzerConfig(ctx context.Context) (*ComplexityAnalyzerConfig, error) {
-	return s.getComplexityAnalyzerConfigWithDB(ctx, s.DB())
+	return s.getComplexityAnalyzerConfigWithDB(ctx, s.dbForContext(ctx))
 }
 
 // getComplexityAnalyzerConfigWithDB reads the analyzer row and the semantic row
@@ -6437,7 +6441,7 @@ func (s *RDBConfigStore) GetComplexityAnalyzerConfig(ctx context.Context) (*Comp
 // config missing either cannot classify anything.
 func (s *RDBConfigStore) getComplexityAnalyzerConfigWithDB(ctx context.Context, db *gorm.DB) (*ComplexityAnalyzerConfig, error) {
 	if db == nil {
-		db = s.DB()
+		db = s.dbForContext(ctx)
 	}
 
 	var configEntry tables.TableGovernanceConfig
@@ -6485,7 +6489,7 @@ func (s *RDBConfigStore) getComplexityAnalyzerConfigWithDB(ctx context.Context, 
 // row means semantic classification is not configured, which is not an error.
 func (s *RDBConfigStore) getComplexitySemanticConfigWithDB(ctx context.Context, db *gorm.DB) (*complexitySemanticConfigRecord, error) {
 	if db == nil {
-		db = s.DB()
+		db = s.dbForContext(ctx)
 	}
 
 	var configEntry tables.TableGovernanceConfig
@@ -6513,12 +6517,13 @@ func (s *RDBConfigStore) UpdateComplexityAnalyzerConfig(ctx context.Context, con
 		return err
 	}
 
+
 	if len(tx) > 0 && tx[0] != nil {
 		return s.updateComplexityAnalyzerConfigWithTx(ctx, &normalized, tx[0], true)
 	}
 	// Standalone calls own the transaction so the carry-over read below and the save
 	// that follows it cannot interleave with a concurrent update.
-	return s.DB().WithContext(ctx).Transaction(func(txDB *gorm.DB) error {
+	return s.dbForContext(ctx).Transaction(func(txDB *gorm.DB) error {
 		return s.updateComplexityAnalyzerConfigWithTx(ctx, &normalized, txDB, true)
 	})
 }
@@ -6540,7 +6545,7 @@ func (s *RDBConfigStore) ResetComplexityAnalyzerConfig(ctx context.Context, defa
 	}
 
 	var persisted ComplexityAnalyzerConfig
-	err := s.DB().WithContext(ctx).Transaction(func(txDB *gorm.DB) error {
+	err := s.dbForContext(ctx).Transaction(func(txDB *gorm.DB) error {
 		// Lock before reading, so the read is serialized against a concurrent save even
 		// when no row exists yet — otherwise a first-time save committed in between is
 		// invisible here and gets overwritten by the defaults below.
@@ -6725,17 +6730,17 @@ func (s *RDBConfigStore) GetAuthConfig(ctx context.Context) (*AuthConfig, error)
 	var username *string
 	var password *string
 	var isEnabled bool
-	if err := s.DB().WithContext(ctx).First(&tables.TableGovernanceConfig{}, "key = ?", tables.ConfigAdminUsernameKey).Select("value").Scan(&username).Error; err != nil {
+	if err := s.dbForContext(ctx).First(&tables.TableGovernanceConfig{}, "key = ?", tables.ConfigAdminUsernameKey).Select("value").Scan(&username).Error; err != nil {
 		if !errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, err
 		}
 	}
-	if err := s.DB().WithContext(ctx).First(&tables.TableGovernanceConfig{}, "key = ?", tables.ConfigAdminPasswordKey).Select("value").Scan(&password).Error; err != nil {
+	if err := s.dbForContext(ctx).First(&tables.TableGovernanceConfig{}, "key = ?", tables.ConfigAdminPasswordKey).Select("value").Scan(&password).Error; err != nil {
 		if !errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, err
 		}
 	}
-	if err := s.DB().WithContext(ctx).First(&tables.TableGovernanceConfig{}, "key = ?", tables.ConfigIsAuthEnabledKey).Select("value").Scan(&isEnabled).Error; err != nil {
+	if err := s.dbForContext(ctx).First(&tables.TableGovernanceConfig{}, "key = ?", tables.ConfigIsAuthEnabledKey).Select("value").Scan(&isEnabled).Error; err != nil {
 		if !errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, err
 		}
@@ -6752,7 +6757,7 @@ func (s *RDBConfigStore) GetAuthConfig(ctx context.Context) (*AuthConfig, error)
 
 // UpdateAuthConfig updates the auth configuration in the database.
 func (s *RDBConfigStore) UpdateAuthConfig(ctx context.Context, config *AuthConfig) error {
-	return s.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	return s.dbForContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if err := tx.Save(&tables.TableGovernanceConfig{
 			Key:   tables.ConfigAdminUsernameKey,
 			Value: config.AdminUserName.GetValue(),
@@ -6778,7 +6783,7 @@ func (s *RDBConfigStore) UpdateAuthConfig(ctx context.Context, config *AuthConfi
 // GetProxyConfig retrieves the proxy configuration from the database.
 func (s *RDBConfigStore) GetProxyConfig(ctx context.Context) (*tables.GlobalProxyConfig, error) {
 	var configEntry tables.TableGovernanceConfig
-	if err := s.DB().WithContext(ctx).First(&configEntry, "key = ?", tables.ConfigProxyKey).Error; err != nil {
+	if err := s.dbForContext(ctx).First(&configEntry, "key = ?", tables.ConfigProxyKey).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, nil
 		}
@@ -6825,7 +6830,7 @@ func (s *RDBConfigStore) UpdateProxyConfig(ctx context.Context, config *tables.G
 	if err != nil {
 		return fmt.Errorf("failed to marshal proxy config: %w", err)
 	}
-	return s.DB().WithContext(ctx).Save(&tables.TableGovernanceConfig{
+	return s.dbForContext(ctx).Save(&tables.TableGovernanceConfig{
 		Key:   tables.ConfigProxyKey,
 		Value: string(configJSON),
 	}).Error
@@ -6834,7 +6839,7 @@ func (s *RDBConfigStore) UpdateProxyConfig(ctx context.Context, config *tables.G
 // GetRestartRequiredConfig retrieves the restart required configuration from the database.
 func (s *RDBConfigStore) GetRestartRequiredConfig(ctx context.Context) (*tables.RestartRequiredConfig, error) {
 	var configEntry tables.TableGovernanceConfig
-	if err := s.DB().WithContext(ctx).First(&configEntry, "key = ?", tables.ConfigRestartRequiredKey).Error; err != nil {
+	if err := s.dbForContext(ctx).First(&configEntry, "key = ?", tables.ConfigRestartRequiredKey).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, nil
 		}
@@ -6856,7 +6861,7 @@ func (s *RDBConfigStore) SetRestartRequiredConfig(ctx context.Context, config *t
 	if err != nil {
 		return fmt.Errorf("failed to marshal restart required config: %w", err)
 	}
-	return s.DB().WithContext(ctx).Save(&tables.TableGovernanceConfig{
+	return s.dbForContext(ctx).Save(&tables.TableGovernanceConfig{
 		Key:   tables.ConfigRestartRequiredKey,
 		Value: string(configJSON),
 	}).Error
@@ -6864,7 +6869,7 @@ func (s *RDBConfigStore) SetRestartRequiredConfig(ctx context.Context, config *t
 
 // ClearRestartRequiredConfig clears the restart required configuration in the database.
 func (s *RDBConfigStore) ClearRestartRequiredConfig(ctx context.Context) error {
-	return s.DB().WithContext(ctx).Save(&tables.TableGovernanceConfig{
+	return s.dbForContext(ctx).Save(&tables.TableGovernanceConfig{
 		Key:   tables.ConfigRestartRequiredKey,
 		Value: `{"required":false,"reason":""}`,
 	}).Error
@@ -6874,11 +6879,11 @@ func (s *RDBConfigStore) ClearRestartRequiredConfig(ctx context.Context) error {
 func (s *RDBConfigStore) GetSession(ctx context.Context, token string) (*tables.SessionsTable, error) {
 	var session tables.SessionsTable
 	tokenHash := encrypt.HashSHA256(token)
-	err := s.DB().WithContext(ctx).First(&session, "token_hash = ?", tokenHash).Error
+	err := s.dbForContext(ctx).First(&session, "token_hash = ?", tokenHash).Error
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			// Fall back to plaintext lookup for backward compatibility
-			if err := s.DB().WithContext(ctx).First(&session, "token = ?", token).Error; err != nil {
+			if err := s.dbForContext(ctx).First(&session, "token = ?", token).Error; err != nil {
 				if errors.Is(err, gorm.ErrRecordNotFound) {
 					return nil, nil
 				}
@@ -6893,21 +6898,21 @@ func (s *RDBConfigStore) GetSession(ctx context.Context, token string) (*tables.
 
 // CreateSession creates a new session in the database.
 func (s *RDBConfigStore) CreateSession(ctx context.Context, session *tables.SessionsTable) error {
-	return s.DB().WithContext(ctx).Create(session).Error
+	return s.dbForContext(ctx).Create(session).Error
 }
 
 // DeleteSession deletes a session from the database.
 func (s *RDBConfigStore) DeleteSession(ctx context.Context, token string) error {
 	tokenHash := encrypt.HashSHA256(token)
 	var session tables.SessionsTable
-	if err := s.DB().WithContext(ctx).First(&session, "token_hash = ?", tokenHash).Error; err != nil {
+	if err := s.dbForContext(ctx).First(&session, "token_hash = ?", tokenHash).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			// Fall back to plaintext lookup for backward compatibility
-			return s.DB().WithContext(ctx).Delete(&tables.SessionsTable{}, "token = ?", token).Error // vault token is saved via tokenHash, so this case will not hit the vault scenario, but we keep it for backward compatibility with any existing plaintext tokens
+			return s.dbForContext(ctx).Delete(&tables.SessionsTable{}, "token = ?", token).Error // vault token is saved via tokenHash, so this case will not hit the vault scenario, but we keep it for backward compatibility with any existing plaintext tokens
 		}
 		return err
 	}
-	result := s.DB().WithContext(ctx).Delete(&session)
+	result := s.dbForContext(ctx).Delete(&session)
 	if result.Error != nil {
 		return result.Error
 	}
@@ -6916,7 +6921,7 @@ func (s *RDBConfigStore) DeleteSession(ctx context.Context, token string) error 
 
 // FlushSessions flushes all sessions from the database.
 func (s *RDBConfigStore) FlushSessions(ctx context.Context) error {
-	return s.DB().WithContext(ctx).Session(&gorm.Session{AllowGlobalUpdate: true}).Delete(&tables.SessionsTable{}).Error
+	return s.dbForContext(ctx).Session(&gorm.Session{AllowGlobalUpdate: true}).Delete(&tables.SessionsTable{}).Error
 }
 
 // CreateTempToken inserts a new temp_tokens row. The plaintext token must be
@@ -6925,7 +6930,7 @@ func (s *RDBConfigStore) FlushSessions(ctx context.Context) error {
 // lets callers fold this write into an existing transaction (mirrors the
 // pattern used by other mutating configstore methods).
 func (s *RDBConfigStore) CreateTempToken(ctx context.Context, token *tables.TempToken, tx ...*gorm.DB) error {
-	db := s.DB()
+	db := s.dbForContext(ctx)
 	if len(tx) > 0 {
 		db = tx[0]
 	}
@@ -6937,7 +6942,7 @@ func (s *RDBConfigStore) CreateTempToken(ctx context.Context, token *tables.Temp
 // as "no such token" rather than an error.
 func (s *RDBConfigStore) GetTempTokenByHash(ctx context.Context, tokenHash string) (*tables.TempToken, error) {
 	var token tables.TempToken
-	err := s.DB().WithContext(ctx).First(&token, "token_hash = ?", tokenHash).Error
+	err := s.dbForContext(ctx).First(&token, "token_hash = ?", tokenHash).Error
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, nil
@@ -6954,7 +6959,7 @@ func (s *RDBConfigStore) GetTempTokenByHash(ctx context.Context, tokenHash strin
 // future scopes that happen to reuse the same opaque ID untouched. The
 // optional tx lets callers fold the delete into an existing transaction.
 func (s *RDBConfigStore) DeleteTempTokensByResourceID(ctx context.Context, scope, resourceID string, tx ...*gorm.DB) (int64, error) {
-	db := s.DB()
+	db := s.dbForContext(ctx)
 	if len(tx) > 0 {
 		db = tx[0]
 	}
@@ -6970,7 +6975,7 @@ func (s *RDBConfigStore) DeleteTempTokensByResourceID(ctx context.Context, scope
 // DeleteExpiredTempTokens hard-deletes rows whose expires_at is at or before
 // the given cutoff. Returns the number of rows deleted.
 func (s *RDBConfigStore) DeleteExpiredTempTokens(ctx context.Context, before time.Time) (int64, error) {
-	res := s.DB().WithContext(ctx).Where("expires_at <= ?", before).Delete(&tables.TempToken{})
+	res := s.dbForContext(ctx).Where("expires_at <= ?", before).Delete(&tables.TempToken{})
 	if res.Error != nil {
 		return 0, res.Error
 	}
@@ -6979,7 +6984,7 @@ func (s *RDBConfigStore) DeleteExpiredTempTokens(ctx context.Context, before tim
 
 // ExecuteTransaction executes a transaction.
 func (s *RDBConfigStore) ExecuteTransaction(ctx context.Context, fn func(tx *gorm.DB) error) error {
-	return s.DB().WithContext(ctx).Transaction(fn)
+	return s.dbForContext(ctx).Transaction(fn)
 }
 
 // RetryOnNotFound retries a function up to 3 times with 1-second delays if it returns ErrNotFound
@@ -7011,16 +7016,16 @@ func (s *RDBConfigStore) RetryOnNotFound(ctx context.Context, fn func(ctx contex
 
 // doesTableExist checks if a table exists in the database.
 func (s *RDBConfigStore) doesTableExist(ctx context.Context, tableName string) bool {
-	return s.DB().WithContext(ctx).Migrator().HasTable(tableName)
+	return s.dbForContext(ctx).Migrator().HasTable(tableName)
 }
 
 func (s *RDBConfigStore) doesColumnExist(ctx context.Context, tableName, columnName string) bool {
-	return s.DB().WithContext(ctx).Migrator().HasColumn(tableName, columnName)
+	return s.dbForContext(ctx).Migrator().HasColumn(tableName, columnName)
 }
 
 // removeNullKeys removes null keys from the database.
 func (s *RDBConfigStore) removeNullKeys(ctx context.Context) error {
-	return s.DB().WithContext(ctx).Exec("DELETE FROM config_keys WHERE key_id IS NULL OR value IS NULL").Error
+	return s.dbForContext(ctx).Exec("DELETE FROM config_keys WHERE key_id IS NULL OR value IS NULL").Error
 }
 
 // removeDuplicateKeysAndNullKeys removes duplicate keys based on key_id and value combination
@@ -7039,7 +7044,7 @@ func (s *RDBConfigStore) removeDuplicateKeysAndNullKeys(ctx context.Context) err
 	s.logger.Debug("deleting duplicate keys from the database")
 	// Find and delete duplicate keys, keeping only the one with the smallest ID
 	// This query deletes all records except the one with the minimum ID for each (key_id, value) pair
-	result := s.DB().WithContext(ctx).Exec(`
+	result := s.dbForContext(ctx).Exec(`
 		DELETE FROM config_keys
 		WHERE id NOT IN (
 			SELECT MIN(id)
@@ -7073,7 +7078,7 @@ func (s *RDBConfigStore) TryAcquireLock(ctx context.Context, lock *tables.TableD
 	}
 
 	// Use GORM clause-based insert for dialect-appropriate SQL
-	result := s.DB().WithContext(ctx).Clauses(
+	result := s.dbForContext(ctx).Clauses(
 		clause.OnConflict{
 			Columns:   []clause.Column{{Name: "lock_key"}},
 			DoNothing: true,
@@ -7091,7 +7096,7 @@ func (s *RDBConfigStore) TryAcquireLock(ctx context.Context, lock *tables.TableD
 // GetLock retrieves a lock by its key. Returns nil if the lock doesn't exist.
 func (s *RDBConfigStore) GetLock(ctx context.Context, lockKey string) (*tables.TableDistributedLock, error) {
 	var lock tables.TableDistributedLock
-	result := s.DB().WithContext(ctx).Where("lock_key = ?", lockKey).First(&lock)
+	result := s.dbForContext(ctx).Where("lock_key = ?", lockKey).First(&lock)
 
 	if result.Error != nil {
 		if errors.Is(result.Error, gorm.ErrRecordNotFound) {
@@ -7106,7 +7111,7 @@ func (s *RDBConfigStore) GetLock(ctx context.Context, lockKey string) (*tables.T
 // UpdateLockExpiry updates the expiration time for an existing lock.
 // Only succeeds if the holder ID matches the current lock holder.
 func (s *RDBConfigStore) UpdateLockExpiry(ctx context.Context, lockKey, holderID string, expiresAt time.Time) error {
-	result := s.DB().WithContext(ctx).Model(&tables.TableDistributedLock{}).
+	result := s.dbForContext(ctx).Model(&tables.TableDistributedLock{}).
 		Where("lock_key = ? AND holder_id = ? AND expires_at > ?", lockKey, holderID, time.Now().UTC()).
 		Update("expires_at", expiresAt)
 
@@ -7124,7 +7129,7 @@ func (s *RDBConfigStore) UpdateLockExpiry(ctx context.Context, lockKey, holderID
 // ReleaseLock deletes a lock if the holder ID matches.
 // Returns true if the lock was released, false if it wasn't held by the given holder.
 func (s *RDBConfigStore) ReleaseLock(ctx context.Context, lockKey, holderID string) (bool, error) {
-	result := s.DB().WithContext(ctx).
+	result := s.dbForContext(ctx).
 		Where("lock_key = ? AND holder_id = ?", lockKey, holderID).
 		Delete(&tables.TableDistributedLock{})
 
@@ -7138,7 +7143,7 @@ func (s *RDBConfigStore) ReleaseLock(ctx context.Context, lockKey, holderID stri
 // CleanupExpiredLocks removes all locks that have expired.
 // Returns the number of locks cleaned up.
 func (s *RDBConfigStore) CleanupExpiredLocks(ctx context.Context) (int64, error) {
-	result := s.DB().WithContext(ctx).
+	result := s.dbForContext(ctx).
 		Where("expires_at < ?", time.Now().UTC()).
 		Delete(&tables.TableDistributedLock{})
 
@@ -7152,7 +7157,7 @@ func (s *RDBConfigStore) CleanupExpiredLocks(ctx context.Context) (int64, error)
 // CleanupExpiredLockByKey atomically deletes a specific lock only if it has expired.
 // Returns true if an expired lock was deleted, false if the lock doesn't exist or hasn't expired.
 func (s *RDBConfigStore) CleanupExpiredLockByKey(ctx context.Context, lockKey string) (bool, error) {
-	result := s.DB().WithContext(ctx).
+	result := s.dbForContext(ctx).
 		Where("lock_key = ? AND expires_at < ?", lockKey, time.Now().UTC()).
 		Delete(&tables.TableDistributedLock{})
 
@@ -7168,7 +7173,7 @@ func (s *RDBConfigStore) CleanupExpiredLockByKey(ctx context.Context, lockKey st
 // GetOauthConfigByID retrieves an OAuth config by its ID
 func (s *RDBConfigStore) GetOauthConfigByID(ctx context.Context, id string) (*tables.TableOauthConfig, error) {
 	var config tables.TableOauthConfig
-	result := s.DB().WithContext(ctx).Where("id = ?", id).First(&config)
+	result := s.dbForContext(ctx).Where("id = ?", id).First(&config)
 	if result.Error != nil {
 		if errors.Is(result.Error, gorm.ErrRecordNotFound) {
 			return nil, nil
@@ -7185,7 +7190,7 @@ func (s *RDBConfigStore) GetOauthConfigsByIDs(ctx context.Context, ids []string)
 		return map[string]*tables.TableOauthConfig{}, nil
 	}
 	var configs []tables.TableOauthConfig
-	if err := s.DB().WithContext(ctx).Where("id IN ?", ids).Find(&configs).Error; err != nil {
+	if err := s.dbForContext(ctx).Where("id IN ?", ids).Find(&configs).Error; err != nil {
 		return nil, fmt.Errorf("failed to batch-get oauth configs: %w", err)
 	}
 	result := make(map[string]*tables.TableOauthConfig, len(configs))
@@ -7198,7 +7203,7 @@ func (s *RDBConfigStore) GetOauthConfigsByIDs(ctx context.Context, ids []string)
 // GetOauthTokenByID retrieves an OAuth token by its ID
 func (s *RDBConfigStore) GetOauthTokenByID(ctx context.Context, id string) (*tables.TableMCPOauthToken, error) {
 	var token tables.TableMCPOauthToken
-	result := s.DB().WithContext(ctx).Where("id = ?", id).First(&token)
+	result := s.dbForContext(ctx).Where("id = ?", id).First(&token)
 	if result.Error != nil {
 		if errors.Is(result.Error, gorm.ErrRecordNotFound) {
 			return nil, nil
@@ -7224,7 +7229,7 @@ func (s *RDBConfigStore) GetSharedOauthTokenByConfigID(ctx context.Context, oaut
 	// '' — exactly the shape a stale/orphaned row can carry). Prefer an
 	// active row, then the most recently updated, so a stale row left behind
 	// by an earlier bug or a partial cleanup can't shadow the live one.
-	result := s.DB().WithContext(ctx).
+	result := s.dbForContext(ctx).
 		Where("oauth_config_id = ? AND auth_mode = ?", oauthConfigID, "shared").
 		Order("CASE WHEN status = 'active' THEN 0 ELSE 1 END, updated_at DESC, id DESC").
 		First(&token)
@@ -7247,7 +7252,7 @@ func (s *RDBConfigStore) DeleteSharedOauthTokensByConfigID(ctx context.Context, 
 	if oauthConfigID == "" {
 		return nil
 	}
-	db := s.DB()
+	db := s.dbForContext(ctx)
 	if len(tx) > 0 {
 		db = tx[0]
 	}
@@ -7271,7 +7276,7 @@ func (s *RDBConfigStore) GetSharedOauthTokensByConfigIDs(ctx context.Context, oa
 		return map[string]*tables.TableMCPOauthToken{}, nil
 	}
 	var tokens []tables.TableMCPOauthToken
-	if err := s.DB().WithContext(ctx).
+	if err := s.dbForContext(ctx).
 		Where("oauth_config_id IN ? AND auth_mode = ?", oauthConfigIDs, "shared").
 		Order("CASE WHEN status = 'active' THEN 0 ELSE 1 END, updated_at DESC, id DESC").
 		Find(&tokens).Error; err != nil {
@@ -7303,7 +7308,7 @@ func (s *RDBConfigStore) GetAdminOauthTokenByMCPClientID(ctx context.Context, mc
 		return nil, nil
 	}
 	var token tables.TableMCPOauthToken
-	result := s.DB().WithContext(ctx).Where("mcp_client_id = ? AND auth_mode = ?", mcpClientID, "admin").First(&token)
+	result := s.dbForContext(ctx).Where("mcp_client_id = ? AND auth_mode = ?", mcpClientID, "admin").First(&token)
 	if result.Error != nil {
 		if errors.Is(result.Error, gorm.ErrRecordNotFound) {
 			return nil, nil
@@ -7325,7 +7330,7 @@ func (s *RDBConfigStore) GetAdminOauthTokensByMCPClientIDs(ctx context.Context, 
 		return map[string]*tables.TableMCPOauthToken{}, nil
 	}
 	var tokens []tables.TableMCPOauthToken
-	if err := s.DB().WithContext(ctx).
+	if err := s.dbForContext(ctx).
 		Where("mcp_client_id IN ? AND auth_mode = ?", mcpClientIDs, "admin").
 		Find(&tokens).Error; err != nil {
 		return nil, fmt.Errorf("failed to batch-get admin oauth tokens: %w", err)
@@ -7359,7 +7364,7 @@ func (s *RDBConfigStore) PromoteSharedOauthTokenToAdmin(ctx context.Context, oau
 	if oauthConfigID == "" || mcpClientID == "" {
 		return fmt.Errorf("promote shared oauth token to admin: oauthConfigID and mcpClientID are required")
 	}
-	return s.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	return s.dbForContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var shared tables.TableMCPOauthToken
 		// Same active-first, most-recently-updated ordering as
 		// GetSharedOauthTokenByConfigID: nothing guarantees at most one
@@ -7438,7 +7443,7 @@ func (s *RDBConfigStore) PromoteSharedOauthTokenToAdmin(ctx context.Context, oau
 
 // CreateOauthConfig creates a new OAuth config
 func (s *RDBConfigStore) CreateOauthConfig(ctx context.Context, config *tables.TableOauthConfig) error {
-	result := s.DB().WithContext(ctx).Create(config)
+	result := s.dbForContext(ctx).Create(config)
 	if result.Error != nil {
 		return fmt.Errorf("failed to create oauth config: %w", result.Error)
 	}
@@ -7470,7 +7475,7 @@ func (s *RDBConfigStore) CreateOauthConfig(ctx context.Context, config *tables.T
 // DeleteVirtualKeyMCPConfig.
 func (s *RDBConfigStore) CreateOauthToken(ctx context.Context, token *tables.TableMCPOauthToken, tx ...*gorm.DB) error {
 	if len(tx) == 0 {
-		return s.DB().WithContext(ctx).Transaction(func(transaction *gorm.DB) error {
+		return s.dbForContext(ctx).Transaction(func(transaction *gorm.DB) error {
 			return s.CreateOauthToken(ctx, token, transaction)
 		})
 	}
@@ -7538,7 +7543,7 @@ func (s *RDBConfigStore) UpdateOauthConfig(ctx context.Context, config *tables.T
 	if len(tx) > 0 {
 		txDB = tx[0]
 	} else {
-		txDB = s.DB()
+		txDB = s.dbForContext(ctx)
 	}
 	result := txDB.WithContext(ctx).Save(config)
 	if result.Error != nil {
@@ -7549,7 +7554,7 @@ func (s *RDBConfigStore) UpdateOauthConfig(ctx context.Context, config *tables.T
 
 // UpdateOauthToken updates an existing OAuth token
 func (s *RDBConfigStore) UpdateOauthToken(ctx context.Context, token *tables.TableMCPOauthToken) error {
-	result := s.DB().WithContext(ctx).Save(token)
+	result := s.dbForContext(ctx).Save(token)
 	if result.Error != nil {
 		return fmt.Errorf("failed to update oauth token: %w", result.Error)
 	}
@@ -7583,7 +7588,7 @@ func (s *RDBConfigStore) UpdateOauthToken(ctx context.Context, token *tables.Tab
 // encryption hook still runs exactly as it does for every other token write.
 func (s *RDBConfigStore) RefreshOauthTokenFieldsIfActive(ctx context.Context, id string, expectedPriorRefreshToken, accessToken, refreshToken string, expiresAt *time.Time, lastRefreshedAt time.Time) (bool, error) {
 	updated := false
-	err := s.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	err := s.dbForContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var current tables.TableMCPOauthToken
 		if err := dbForUpdate(tx).Where("id = ?", id).First(&current).Error; err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -7619,14 +7624,14 @@ func (s *RDBConfigStore) RefreshOauthTokenFieldsIfActive(ctx context.Context, id
 func (s *RDBConfigStore) DeleteOauthToken(ctx context.Context, id string) error {
 	var existing tables.TableMCPOauthToken
 	// Check if the token exists before attempting to delete
-	err := s.DB().WithContext(ctx).Where("id = ?", id).First(&existing).Error
+	err := s.dbForContext(ctx).Where("id = ?", id).First(&existing).Error
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil // Token doesn't exist, consider it deleted
 		}
 		return fmt.Errorf("failed to check existence of oauth token: %w", err)
 	}
-	result := s.DB().WithContext(ctx).Delete(&existing)
+	result := s.dbForContext(ctx).Delete(&existing)
 	if result.Error != nil {
 		return fmt.Errorf("failed to delete oauth token: %w", result.Error)
 	}
@@ -7653,7 +7658,7 @@ func (s *RDBConfigStore) GetExpiringOauthTokens(ctx context.Context, before time
 	// calling the identity provider forever for an unused connection. When a
 	// client is re-enabled or attached later, GetAccessToken refreshes inline
 	// on first use.
-	result := s.DB().WithContext(ctx).
+	result := s.dbForContext(ctx).
 		// mcp_oauth_tokens holds both shared and per-user rows; callers
 		// decide which holder types get proactive background refresh via
 		// authModes (OAuthTokenRefreshWorker.AuthModes, shared + admin by default).
@@ -7665,11 +7670,11 @@ func (s *RDBConfigStore) GetExpiringOauthTokens(ctx context.Context, before time
 		// client with no template (token_exchange admin credentials, whose
 		// oauth_config_id is empty).
 		Where("EXISTS (?) OR (mcp_oauth_tokens.oauth_config_id = '' AND EXISTS (?))",
-			s.DB().Model(&tables.TableMCPClient{}).
+			s.dbForContext(ctx).Model(&tables.TableMCPClient{}).
 				Select("1").
 				Joins("JOIN oauth_configs ON oauth_configs.id = config_mcp_clients.oauth_config_id").
 				Where("oauth_configs.id = mcp_oauth_tokens.oauth_config_id AND config_mcp_clients.disabled = ?", false),
-			s.DB().Model(&tables.TableMCPClient{}).
+			s.dbForContext(ctx).Model(&tables.TableMCPClient{}).
 				Select("1").
 				Where("config_mcp_clients.client_id = mcp_oauth_tokens.mcp_client_id AND config_mcp_clients.disabled = ?", false)).
 		Find(&tokens)
@@ -7725,7 +7730,7 @@ func (s *RDBConfigStore) GetOauthUserSessionByID(ctx context.Context, id string)
 // caller-supplied ID could originate from an untrusted per-user context.
 func (s *RDBConfigStore) GetOauthFlowByID(ctx context.Context, id string) (*tables.TableMCPOauthFlow, error) {
 	var flow tables.TableMCPOauthFlow
-	result := s.DB().WithContext(ctx).Where("id = ? AND flow_mode = ?", id, "admin").First(&flow)
+	result := s.dbForContext(ctx).Where("id = ? AND flow_mode = ?", id, "admin").First(&flow)
 	if result.Error != nil {
 		if errors.Is(result.Error, gorm.ErrRecordNotFound) {
 			return nil, nil
@@ -7740,7 +7745,7 @@ func (s *RDBConfigStore) GetOauthFlowByID(ctx context.Context, id string) (*tabl
 // a flow failed without consuming it the way Claim*ByState does.
 func (s *RDBConfigStore) GetOauthUserSessionByState(ctx context.Context, state string) (*tables.TableMCPOauthFlow, error) {
 	var flow tables.TableMCPOauthFlow
-	result := s.DB().WithContext(ctx).Where("state = ?", state).First(&flow)
+	result := s.dbForContext(ctx).Where("state = ?", state).First(&flow)
 	if result.Error != nil {
 		if errors.Is(result.Error, gorm.ErrRecordNotFound) {
 			return nil, nil
@@ -7787,7 +7792,7 @@ func (s *RDBConfigStore) claimOauthFlowByStateAndModes(ctx context.Context, stat
 	// Doing the transition atomically in one UPDATE keyed on (state, status)
 	// closes that window: it can only succeed against the exact row this
 	// state token names, in whatever state it was in at that instant.
-	updateResult := s.DB().WithContext(ctx).Model(&tables.TableMCPOauthFlow{}).
+	updateResult := s.dbForContext(ctx).Model(&tables.TableMCPOauthFlow{}).
 		Where("state = ? AND status = ? AND flow_mode IN ?", state, "pending", modes).
 		Update("status", "claiming")
 	if updateResult.Error != nil {
@@ -7801,7 +7806,7 @@ func (s *RDBConfigStore) claimOauthFlowByStateAndModes(ctx context.Context, stat
 	// status='claiming', so InitiateUserOAuthFlow's pending-only reuse guard
 	// can no longer rewrite it out from under us.
 	var flow tables.TableMCPOauthFlow
-	if err := s.DB().WithContext(ctx).Where("state = ? AND status = ?", state, "claiming").First(&flow).Error; err != nil {
+	if err := s.dbForContext(ctx).Where("state = ? AND status = ?", state, "claiming").First(&flow).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, nil
 		}
@@ -7827,7 +7832,7 @@ func (s *RDBConfigStore) GetOauthUserSessionByModeIdentityAndMCPClient(ctx conte
 	if mode != schemas.MCPAuthModeAdmin && strings.TrimSpace(identity) == "" {
 		return nil, nil
 	}
-	q := s.DB().WithContext(ctx).Where("mcp_client_id = ?", mcpClientID)
+	q := s.dbForContext(ctx).Where("mcp_client_id = ?", mcpClientID)
 	switch mode {
 	case schemas.MCPAuthModeUser:
 		q = q.Where("user_id = ?", identity)
@@ -7852,7 +7857,7 @@ func (s *RDBConfigStore) GetOauthUserSessionByModeIdentityAndMCPClient(ctx conte
 
 // CreateOauthUserSession creates a new flow row (any flow_mode, including 'admin').
 func (s *RDBConfigStore) CreateOauthUserSession(ctx context.Context, session *tables.TableMCPOauthFlow) error {
-	result := s.DB().WithContext(ctx).Create(session)
+	result := s.dbForContext(ctx).Create(session)
 	if result.Error != nil {
 		return fmt.Errorf("failed to create oauth flow: %w", result.Error)
 	}
@@ -7861,7 +7866,7 @@ func (s *RDBConfigStore) CreateOauthUserSession(ctx context.Context, session *ta
 
 // UpdateOauthUserSession updates an existing flow row in place.
 func (s *RDBConfigStore) UpdateOauthUserSession(ctx context.Context, session *tables.TableMCPOauthFlow) error {
-	result := s.DB().WithContext(ctx).Save(session)
+	result := s.dbForContext(ctx).Save(session)
 	if result.Error != nil {
 		return fmt.Errorf("failed to update oauth flow: %w", result.Error)
 	}
@@ -7888,7 +7893,7 @@ func (s *RDBConfigStore) UpdateOauthUserToken(ctx context.Context, token *tables
 	if !slices.Contains(perUserOauthAuthModes, string(token.AuthMode)) {
 		return fmt.Errorf("UpdateOauthUserToken: refusing to save row %s with non-per-user auth_mode %q", token.ID, token.AuthMode)
 	}
-	result := s.DB().WithContext(ctx).Save(token)
+	result := s.dbForContext(ctx).Save(token)
 	if result.Error != nil {
 		return fmt.Errorf("failed to update oauth user token: %w", result.Error)
 	}
@@ -7899,7 +7904,7 @@ func (s *RDBConfigStore) UpdateOauthUserToken(ctx context.Context, token *tables
 // auth_mode IN ('user','vk','session') so a caller-supplied ID can never
 // delete a shared credential through this per-user-only path.
 func (s *RDBConfigStore) DeleteOauthUserToken(ctx context.Context, id string) error {
-	result := s.DB().WithContext(ctx).
+	result := s.dbForContext(ctx).
 		Where("id = ? AND auth_mode IN ?", id, perUserOauthAuthModes).
 		Delete(&tables.TableMCPOauthToken{})
 	if result.Error != nil {
@@ -7913,7 +7918,7 @@ func (s *RDBConfigStore) DeleteOauthUserSession(ctx context.Context, id string) 
 	if id == "" {
 		return nil
 	}
-	if err := s.DB().WithContext(ctx).Where("id = ?", id).Delete(&tables.TableMCPOauthFlow{}).Error; err != nil {
+	if err := s.dbForContext(ctx).Where("id = ?", id).Delete(&tables.TableMCPOauthFlow{}).Error; err != nil {
 		return fmt.Errorf("failed to delete oauth flow %s: %w", id, err)
 	}
 	return nil
@@ -7936,7 +7941,7 @@ func (s *RDBConfigStore) DeleteOauthUserSessionsByModeIdentityAndMCPClient(ctx c
 	if strings.TrimSpace(identity) == "" || strings.TrimSpace(mcpClientID) == "" {
 		return nil
 	}
-	q := s.DB().WithContext(ctx).Where("mcp_client_id = ?", mcpClientID)
+	q := s.dbForContext(ctx).Where("mcp_client_id = ?", mcpClientID)
 	switch mode {
 	case schemas.MCPAuthModeUser:
 		q = q.Where("user_id = ?", identity)
@@ -7966,15 +7971,15 @@ func (s *RDBConfigStore) GetOauthUserTokenByMode(ctx context.Context, mode schem
 	var result *gorm.DB
 	switch mode {
 	case schemas.MCPAuthModeUser:
-		result = s.DB().WithContext(ctx).
+		result = s.dbForContext(ctx).
 			Where("auth_mode = ? AND user_id = ? AND mcp_client_id = ? AND status = ?", string(schemas.MCPAuthModeUser), identity, mcpClientID, "active").
 			First(&token)
 	case schemas.MCPAuthModeVK:
-		result = s.DB().WithContext(ctx).
+		result = s.dbForContext(ctx).
 			Where("auth_mode = ? AND virtual_key_id = ? AND mcp_client_id = ? AND status = ?", string(schemas.MCPAuthModeVK), identity, mcpClientID, "active").
 			First(&token)
 	case schemas.MCPAuthModeSession:
-		result = s.DB().WithContext(ctx).
+		result = s.dbForContext(ctx).
 			Where("auth_mode = ? AND session_id = ? AND mcp_client_id = ? AND status = ?", string(schemas.MCPAuthModeSession), identity, mcpClientID, "active").
 			First(&token)
 	default:
@@ -8021,7 +8026,7 @@ func (s *RDBConfigStore) MarkOauthUserTokenNeedsReauthByID(ctx context.Context, 
 	if tokenID == "" {
 		return nil
 	}
-	result := s.DB().WithContext(ctx).
+	result := s.dbForContext(ctx).
 		Model(&tables.TableMCPOauthToken{}).
 		Where("id = ?", tokenID).
 		Updates(needsReauthColumns(reason))
@@ -8047,7 +8052,7 @@ func (s *RDBConfigStore) MarkTokensNeedsReauthByConfigID(ctx context.Context, oa
 	if len(tx) > 0 {
 		txDB = tx[0]
 	} else {
-		txDB = s.DB()
+		txDB = s.dbForContext(ctx)
 	}
 	result := txDB.WithContext(ctx).
 		Model(&tables.TableMCPOauthToken{}).
@@ -8071,7 +8076,7 @@ func (s *RDBConfigStore) MarkAdminExchangeTokenNeedsReauthByMCPClientID(ctx cont
 	if mcpClientID == "" {
 		return nil
 	}
-	result := s.DB().WithContext(ctx).
+	result := s.dbForContext(ctx).
 		Model(&tables.TableMCPOauthToken{}).
 		Where("mcp_client_id = ? AND auth_mode = ? AND oauth_config_id = ?", mcpClientID, "admin", "").
 		Updates(needsReauthColumns(reason))
@@ -8291,7 +8296,7 @@ func (s *RDBConfigStore) ListPendingOauthUserSessions(ctx context.Context, param
 // table, since this method only ever deletes rows already in a dead-end
 // pending/claiming state, never a live credential.
 func (s *RDBConfigStore) DeleteExpiredOauthUserSessions(ctx context.Context) (int64, error) {
-	result := s.DB().WithContext(ctx).
+	result := s.dbForContext(ctx).
 		Where("expires_at < ? AND status IN ?", time.Now(), []string{"pending", "claiming"}).
 		Delete(&tables.TableMCPOauthFlow{})
 	if result.Error != nil {
@@ -8312,7 +8317,7 @@ func (s *RDBConfigStore) DeleteOrphanedOauthUserTokens(ctx context.Context, olde
 		return 0, nil
 	}
 	cutoff := time.Now().Add(-olderThan)
-	result := s.DB().WithContext(ctx).
+	result := s.dbForContext(ctx).
 		Where("status = ? AND updated_at < ? AND auth_mode IN ?", "orphaned", cutoff, perUserOauthAuthModes).
 		Delete(&tables.TableMCPOauthToken{})
 	if result.Error != nil {
@@ -8348,19 +8353,19 @@ func (s *RDBConfigStore) GetMCPPerUserHeaderCredentialByMode(ctx context.Context
 	statuses := []string{"active", "needs_update"}
 	switch mode {
 	case schemas.MCPAuthModeUser:
-		result = s.DB().WithContext(ctx).
+		result = s.dbForContext(ctx).
 			Where("auth_mode = ? AND user_id = ? AND mcp_client_id = ? AND status IN ?", string(schemas.MCPAuthModeUser), identity, mcpClientID, statuses).
 			First(&cred)
 	case schemas.MCPAuthModeVK:
-		result = s.DB().WithContext(ctx).
+		result = s.dbForContext(ctx).
 			Where("auth_mode = ? AND virtual_key_id = ? AND mcp_client_id = ? AND status IN ?", string(schemas.MCPAuthModeVK), identity, mcpClientID, statuses).
 			First(&cred)
 	case schemas.MCPAuthModeSession:
-		result = s.DB().WithContext(ctx).
+		result = s.dbForContext(ctx).
 			Where("auth_mode = ? AND session_id = ? AND mcp_client_id = ? AND status IN ?", string(schemas.MCPAuthModeSession), identity, mcpClientID, statuses).
 			First(&cred)
 	case schemas.MCPAuthModeAdmin:
-		result = s.DB().WithContext(ctx).
+		result = s.dbForContext(ctx).
 			Where("auth_mode = ? AND mcp_client_id = ? AND status IN ?", "admin", mcpClientID, statuses).
 			First(&cred)
 	default:
@@ -8404,7 +8409,7 @@ func (s *RDBConfigStore) GetAdminMCPPerUserHeaderCredentialsByClientIDs(ctx cont
 		return map[string]*tables.TableMCPPerUserHeaderCredential{}, nil
 	}
 	var creds []tables.TableMCPPerUserHeaderCredential
-	if err := s.DB().WithContext(ctx).
+	if err := s.dbForContext(ctx).
 		Where("mcp_client_id IN ? AND auth_mode = ?", mcpClientIDs, "admin").
 		Find(&creds).Error; err != nil {
 		return nil, fmt.Errorf("failed to batch-get admin mcp per-user header credentials: %w", err)
@@ -8423,7 +8428,7 @@ func (s *RDBConfigStore) GetAdminMCPPerUserHeaderCredentialsByClientIDs(ctx cont
 // branches — the row represents the (identity, mcp_client) binding, so a
 // re-submit preserves CreatedAt.
 func (s *RDBConfigStore) UpsertMCPPerUserHeaderCredential(ctx context.Context, cred *tables.TableMCPPerUserHeaderCredential) error {
-	return s.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	return s.dbForContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var existing tables.TableMCPPerUserHeaderCredential
 		var lookupErr error
 		switch {
@@ -8470,7 +8475,7 @@ func (s *RDBConfigStore) DeleteMCPPerUserHeaderCredential(ctx context.Context, i
 	if id == "" {
 		return nil
 	}
-	result := s.DB().WithContext(ctx).Where("id = ?", id).Delete(&tables.TableMCPPerUserHeaderCredential{})
+	result := s.dbForContext(ctx).Where("id = ?", id).Delete(&tables.TableMCPPerUserHeaderCredential{})
 	if result.Error != nil {
 		return fmt.Errorf("failed to delete mcp per-user header credential: %w", result.Error)
 	}
@@ -8511,7 +8516,7 @@ func (s *RDBConfigStore) MarkMCPPerUserHeaderCredentialsNeedsUpdate(ctx context.
 	if mcpClientID == "" {
 		return nil
 	}
-	result := s.DB().WithContext(ctx).
+	result := s.dbForContext(ctx).
 		Model(&tables.TableMCPPerUserHeaderCredential{}).
 		Where("mcp_client_id = ? AND status = ?", mcpClientID, "active").
 		Update("status", "needs_update")
@@ -8529,7 +8534,7 @@ func (s *RDBConfigStore) DeleteOrphanedMCPPerUserHeaderCredentials(ctx context.C
 		return 0, nil
 	}
 	cutoff := time.Now().Add(-olderThan)
-	result := s.DB().WithContext(ctx).
+	result := s.dbForContext(ctx).
 		Where("status = ? AND updated_at < ?", "orphaned", cutoff).
 		Delete(&tables.TableMCPPerUserHeaderCredential{})
 	if result.Error != nil {
@@ -8544,7 +8549,7 @@ func (s *RDBConfigStore) CreateMCPPerUserHeaderFlow(ctx context.Context, flow *t
 	if flow == nil {
 		return fmt.Errorf("flow is nil")
 	}
-	if err := s.DB().WithContext(ctx).Create(flow).Error; err != nil {
+	if err := s.dbForContext(ctx).Create(flow).Error; err != nil {
 		return fmt.Errorf("failed to create mcp per-user header flow: %w", err)
 	}
 	return nil
@@ -8582,7 +8587,7 @@ func (s *RDBConfigStore) DeleteMCPPerUserHeaderFlow(ctx context.Context, id stri
 	if id == "" {
 		return nil
 	}
-	if err := s.DB().WithContext(ctx).Where("id = ?", id).Delete(&tables.TableMCPPerUserHeaderFlow{}).Error; err != nil {
+	if err := s.dbForContext(ctx).Where("id = ?", id).Delete(&tables.TableMCPPerUserHeaderFlow{}).Error; err != nil {
 		return fmt.Errorf("failed to delete mcp per-user header flow %s: %w", id, err)
 	}
 	return nil
@@ -8597,7 +8602,7 @@ func (s *RDBConfigStore) GetMCPPerUserHeaderFlowByModeIdentityAndMCPClient(ctx c
 	if identity == "" || mcpClientID == "" {
 		return nil, nil
 	}
-	q := s.DB().WithContext(ctx).
+	q := s.dbForContext(ctx).
 		Where("flow_mode = ? AND mcp_client_id = ?", string(mode), mcpClientID)
 	switch mode {
 	case schemas.MCPAuthModeUser:
@@ -8624,7 +8629,7 @@ func (s *RDBConfigStore) UpdateMCPPerUserHeaderFlow(ctx context.Context, flow *t
 	if flow == nil || flow.ID == "" {
 		return fmt.Errorf("flow id is required")
 	}
-	if err := s.DB().WithContext(ctx).Save(flow).Error; err != nil {
+	if err := s.dbForContext(ctx).Save(flow).Error; err != nil {
 		return fmt.Errorf("failed to update mcp per-user header flow: %w", err)
 	}
 	return nil
@@ -8637,7 +8642,7 @@ func (s *RDBConfigStore) DeleteMCPPerUserHeaderFlowsByModeIdentityAndMCPClient(c
 	if identity == "" || mcpClientID == "" {
 		return nil
 	}
-	q := s.DB().WithContext(ctx).
+	q := s.dbForContext(ctx).
 		Where("flow_mode = ? AND mcp_client_id = ?", string(mode), mcpClientID)
 	switch mode {
 	case schemas.MCPAuthModeUser:
@@ -8738,7 +8743,7 @@ func applyMCPSessionFilters(query *gorm.DB, params MCPSessionsFilterParams, t mc
 // ExpiresAt has passed. Status filter excludes already-completed rows
 // (which the submit path deletes immediately anyway).
 func (s *RDBConfigStore) DeleteExpiredMCPPerUserHeaderFlows(ctx context.Context) (int64, error) {
-	result := s.DB().WithContext(ctx).
+	result := s.dbForContext(ctx).
 		Where("expires_at < ? AND status = ?", time.Now(), "pending").
 		Delete(&tables.TableMCPPerUserHeaderFlow{})
 	if result.Error != nil {
@@ -8945,7 +8950,7 @@ func (s *RDBConfigStore) ReconcileOauthAfterVKChange(ctx context.Context, vkID s
 	if vkID == "" {
 		return nil
 	}
-	return s.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	return s.dbForContext(ctx).Transaction(func(tx *gorm.DB) error {
 		return reconcileVKDirectTokensDB(tx, vkID)
 	})
 }
@@ -8956,7 +8961,7 @@ func (s *RDBConfigStore) ReconcileMCPHeadersAfterVKChange(ctx context.Context, v
 	if vkID == "" {
 		return nil
 	}
-	return s.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	return s.dbForContext(ctx).Transaction(func(tx *gorm.DB) error {
 		return reconcileVKDirectHeaderRowsDB(tx, vkID)
 	})
 }
@@ -8968,7 +8973,7 @@ func (s *RDBConfigStore) ReconcileOauthAfterMCPChange(ctx context.Context, mcpCl
 	if mcpClientID == "" {
 		return nil
 	}
-	return s.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	return s.dbForContext(ctx).Transaction(func(tx *gorm.DB) error {
 		vkIDs, err := readVKsHoldingOauthCredsForMCP(tx, mcpClientID)
 		if err != nil {
 			return err
@@ -8992,7 +8997,7 @@ func (s *RDBConfigStore) ReconcileMCPHeadersAfterMCPChange(ctx context.Context, 
 	if mcpClientID == "" {
 		return nil
 	}
-	return s.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	return s.dbForContext(ctx).Transaction(func(tx *gorm.DB) error {
 		vkIDs, err := readVKsHoldingHeaderCredsForMCP(tx, mcpClientID)
 		if err != nil {
 			return err
@@ -9088,7 +9093,7 @@ func (s *RDBConfigStore) createOAuth2SigningKey(ctx context.Context) (*tables.OA
 	// first-use callers cannot last-writer-wins different keypairs. If the row
 	// already exists (RowsAffected == 0), another caller won the race — reload
 	// and return the persisted key so every caller agrees on a single keypair.
-	res := s.DB().WithContext(ctx).Clauses(clause.OnConflict{
+	res := s.dbForContext(ctx).Clauses(clause.OnConflict{
 		Columns:   []clause.Column{{Name: "key"}},
 		DoNothing: true,
 	}).Create(&tables.TableGovernanceConfig{
@@ -9111,7 +9116,7 @@ func (s *RDBConfigStore) createOAuth2SigningKey(ctx context.Context) (*tables.OA
 
 // CreateOAuth2Client persists a new DCR registration.
 func (s *RDBConfigStore) CreateOAuth2Client(ctx context.Context, client *tables.TableOAuth2Client) error {
-	if err := s.DB().WithContext(ctx).Create(client).Error; err != nil {
+	if err := s.dbForContext(ctx).Create(client).Error; err != nil {
 		return fmt.Errorf("create oauth2 client: %w", err)
 	}
 	return nil
@@ -9121,7 +9126,7 @@ func (s *RDBConfigStore) CreateOAuth2Client(ctx context.Context, client *tables.
 // if not found.
 func (s *RDBConfigStore) GetOAuth2ClientByClientID(ctx context.Context, clientID string) (*tables.TableOAuth2Client, error) {
 	var c tables.TableOAuth2Client
-	err := s.DB().WithContext(ctx).Where("client_id = ?", clientID).First(&c).Error
+	err := s.dbForContext(ctx).Where("client_id = ?", clientID).First(&c).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil, ErrNotFound
 	}
@@ -9135,7 +9140,7 @@ func (s *RDBConfigStore) GetOAuth2ClientByClientID(ctx context.Context, clientID
 
 // CreateOAuth2AuthorizeRequest persists a new pending authorize request.
 func (s *RDBConfigStore) CreateOAuth2AuthorizeRequest(ctx context.Context, req *tables.TableOAuth2AuthorizeRequest) error {
-	if err := s.DB().WithContext(ctx).Create(req).Error; err != nil {
+	if err := s.dbForContext(ctx).Create(req).Error; err != nil {
 		return fmt.Errorf("create oauth2 authorize request: %w", err)
 	}
 	return nil
@@ -9144,7 +9149,7 @@ func (s *RDBConfigStore) CreateOAuth2AuthorizeRequest(ctx context.Context, req *
 // GetOAuth2AuthorizeRequestByID returns the authorize request with the given ID.
 func (s *RDBConfigStore) GetOAuth2AuthorizeRequestByID(ctx context.Context, id string) (*tables.TableOAuth2AuthorizeRequest, error) {
 	var req tables.TableOAuth2AuthorizeRequest
-	err := s.DB().WithContext(ctx).Where("id = ?", id).First(&req).Error
+	err := s.dbForContext(ctx).Where("id = ?", id).First(&req).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil, ErrNotFound
 	}
@@ -9158,7 +9163,7 @@ func (s *RDBConfigStore) GetOAuth2AuthorizeRequestByID(ctx context.Context, id s
 // the hash of the auth code. Used by the token endpoint.
 func (s *RDBConfigStore) GetOAuth2AuthorizeRequestByCodeHash(ctx context.Context, codeHash string) (*tables.TableOAuth2AuthorizeRequest, error) {
 	var req tables.TableOAuth2AuthorizeRequest
-	err := s.DB().WithContext(ctx).
+	err := s.dbForContext(ctx).
 		Where("code_hash = ? AND status = ?", codeHash, tables.OAuth2AuthorizeRequestStatusConsented).
 		First(&req).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -9176,7 +9181,7 @@ func (s *RDBConfigStore) GetOAuth2AuthorizeRequestByCodeHash(ctx context.Context
 // under concurrency: a second consent for the same flow matches zero rows and
 // returns ErrNotFound rather than overwriting the code hash the first one minted.
 func (s *RDBConfigStore) ConsentOAuth2AuthorizeRequest(ctx context.Context, req *tables.TableOAuth2AuthorizeRequest) error {
-	result := s.DB().WithContext(ctx).Model(&tables.TableOAuth2AuthorizeRequest{}).
+	result := s.dbForContext(ctx).Model(&tables.TableOAuth2AuthorizeRequest{}).
 		Where("id = ? AND status = ?", req.ID, tables.OAuth2AuthorizeRequestStatusPending).
 		Updates(map[string]any{
 			"status":     tables.OAuth2AuthorizeRequestStatusConsented,
@@ -9197,7 +9202,7 @@ func (s *RDBConfigStore) ConsentOAuth2AuthorizeRequest(ctx context.Context, req 
 // SweepExpiredOAuth2AuthorizeRequests deletes pending/consented requests past
 // their TTL. Safe to call periodically.
 func (s *RDBConfigStore) SweepExpiredOAuth2AuthorizeRequests(ctx context.Context) error {
-	return s.DB().WithContext(ctx).
+	return s.dbForContext(ctx).
 		Where("expires_at < ? AND status != ?", time.Now(), tables.OAuth2AuthorizeRequestStatusCodeIssued).
 		Delete(&tables.TableOAuth2AuthorizeRequest{}).Error
 }
@@ -9207,7 +9212,7 @@ func (s *RDBConfigStore) SweepExpiredOAuth2AuthorizeRequests(ctx context.Context
 // GetOAuth2RefreshTokenByHash returns the refresh token row for the given hash.
 func (s *RDBConfigStore) GetOAuth2RefreshTokenByHash(ctx context.Context, hash string) (*tables.TableOAuth2RefreshToken, error) {
 	var rt tables.TableOAuth2RefreshToken
-	err := s.DB().WithContext(ctx).Where("token_hash = ? AND revoked_at IS NULL", hash).First(&rt).Error
+	err := s.dbForContext(ctx).Where("token_hash = ? AND revoked_at IS NULL", hash).First(&rt).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil, ErrNotFound
 	}
@@ -9223,7 +9228,7 @@ func (s *RDBConfigStore) GetOAuth2RefreshTokenByHash(ctx context.Context, hash s
 // request stays in "consented" state and the client can retry the token exchange.
 func (s *RDBConfigStore) ConsumeOAuth2AuthorizeRequest(ctx context.Context, requestID string, rt *tables.TableOAuth2RefreshToken) error {
 	now := time.Now()
-	return s.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	return s.dbForContext(ctx).Transaction(func(tx *gorm.DB) error {
 		// Conditional update guards single-use: only a still-consented, unexpired
 		// request transitions. A zero-row result means the code was already
 		// consumed, expired, or never consented — reject before minting a token so
@@ -9252,7 +9257,7 @@ func (s *RDBConfigStore) ConsumeOAuth2AuthorizeRequest(ctx context.Context, requ
 // is rolled back — the old token stays active and the client can retry the refresh.
 func (s *RDBConfigStore) RotateOAuth2RefreshToken(ctx context.Context, oldID string, newRT *tables.TableOAuth2RefreshToken) error {
 	now := time.Now()
-	return s.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	return s.dbForContext(ctx).Transaction(func(tx *gorm.DB) error {
 		// Only an active (not-yet-revoked) token may be rotated. A zero-row result
 		// means the token was already revoked — either by a concurrent rotation or
 		// as a replay — so reject before minting a replacement.
@@ -9277,7 +9282,7 @@ func (s *RDBConfigStore) RotateOAuth2RefreshToken(ctx context.Context, oldID str
 // identify its family and revoke all descendants (RFC 9700 §2.2.2).
 func (s *RDBConfigStore) GetOAuth2RefreshTokenByHashAny(ctx context.Context, hash string) (*tables.TableOAuth2RefreshToken, error) {
 	var rt tables.TableOAuth2RefreshToken
-	err := s.DB().WithContext(ctx).Where("token_hash = ?", hash).First(&rt).Error
+	err := s.dbForContext(ctx).Where("token_hash = ?", hash).First(&rt).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil, ErrNotFound
 	}
@@ -9292,7 +9297,7 @@ func (s *RDBConfigStore) GetOAuth2RefreshTokenByHashAny(ctx context.Context, has
 // the token family has been compromised (RFC 9700 §2.2.2).
 func (s *RDBConfigStore) RevokeOAuth2RefreshTokensByFamilyID(ctx context.Context, familyID string) error {
 	now := time.Now()
-	return s.DB().WithContext(ctx).
+	return s.dbForContext(ctx).
 		Model(&tables.TableOAuth2RefreshToken{}).
 		Where("family_id = ? AND revoked_at IS NULL", familyID).
 		Update("revoked_at", &now).Error
@@ -9303,7 +9308,7 @@ func (s *RDBConfigStore) RevokeOAuth2RefreshTokensByFamilyID(ctx context.Context
 // type (vk, user, or session).
 func (s *RDBConfigStore) RevokeOAuth2RefreshTokensByMode(ctx context.Context, bfMode string) error {
 	now := time.Now()
-	return s.DB().WithContext(ctx).
+	return s.dbForContext(ctx).
 		Model(&tables.TableOAuth2RefreshToken{}).
 		Where("bf_mode = ? AND revoked_at IS NULL", bfMode).
 		Update("revoked_at", &now).Error
@@ -9320,7 +9325,7 @@ func (s *RDBConfigStore) SweepOAuth2RefreshTokens(ctx context.Context, revokedOl
 		return 0, nil
 	}
 	cutoff := time.Now().Add(-revokedOlderThan)
-	result := s.DB().WithContext(ctx).
+	result := s.dbForContext(ctx).
 		Where("revoked_at IS NOT NULL AND revoked_at < ?", cutoff).
 		Delete(&tables.TableOAuth2RefreshToken{})
 	return result.RowsAffected, result.Error
@@ -9342,9 +9347,9 @@ func (s *RDBConfigStore) SweepOAuth2RefreshTokens(ctx context.Context, revokedOl
 // registeredOlderThan must exceed the authorization code TTL.
 func (s *RDBConfigStore) SweepOrphanedOAuth2Clients(ctx context.Context, registeredOlderThan time.Duration) (int64, error) {
 	cutoff := time.Now().Add(-registeredOlderThan)
-	result := s.DB().WithContext(ctx).
+	result := s.dbForContext(ctx).
 		Where("created_at < ? AND NOT EXISTS (?)", cutoff,
-			s.DB().Model(&tables.TableOAuth2RefreshToken{}).
+			s.dbForContext(ctx).Model(&tables.TableOAuth2RefreshToken{}).
 				Select("1").
 				Where("oauth2_refresh_tokens.client_id = oauth2_clients.client_id")).
 		Delete(&tables.TableOAuth2Client{})
@@ -9461,7 +9466,7 @@ func (s *RDBConfigStore) ListOAuth2Sessions(ctx context.Context, params OAuth2Se
 // Connected Clients UI). Returns ErrNotFound when the ID does not exist.
 func (s *RDBConfigStore) RevokeOAuth2Session(ctx context.Context, id string) error {
 	now := time.Now()
-	result := s.DB().WithContext(ctx).
+	result := s.dbForContext(ctx).
 		Model(&tables.TableOAuth2RefreshToken{}).
 		Where("id = ? AND revoked_at IS NULL", id).
 		Update("revoked_at", &now)
@@ -9502,7 +9507,7 @@ func generateWebhookSecret() (string, error) {
 // GetWebhookEndpoints returns all registered webhook endpoints.
 func (s *RDBConfigStore) GetWebhookEndpoints(ctx context.Context) ([]tables.TableWebhookEndpoint, error) {
 	var endpoints []tables.TableWebhookEndpoint
-	if err := s.DB().WithContext(ctx).Order("created_at ASC").Find(&endpoints).Error; err != nil {
+	if err := s.dbForContext(ctx).Order("created_at ASC").Find(&endpoints).Error; err != nil {
 		return nil, err
 	}
 	return endpoints, nil
@@ -9511,7 +9516,7 @@ func (s *RDBConfigStore) GetWebhookEndpoints(ctx context.Context) ([]tables.Tabl
 // GetWebhookEndpointsPaginated returns one page of webhook endpoints matching
 // the given filters, along with the total match count for pagination.
 func (s *RDBConfigStore) GetWebhookEndpointsPaginated(ctx context.Context, params WebhookEndpointsQueryParams) ([]tables.TableWebhookEndpoint, int64, error) {
-	query := s.DB().WithContext(ctx).Model(&tables.TableWebhookEndpoint{})
+	query := s.dbForContext(ctx).Model(&tables.TableWebhookEndpoint{})
 	if params.Search != "" {
 		// Escape LIKE metacharacters so a literal % or _ in the search matches
 		// itself rather than acting as a wildcard.
@@ -9551,7 +9556,7 @@ func (s *RDBConfigStore) GetWebhookEndpointsPaginated(ctx context.Context, param
 // GetWebhookEndpointByID retrieves a webhook endpoint by its ID.
 func (s *RDBConfigStore) GetWebhookEndpointByID(ctx context.Context, id string) (*tables.TableWebhookEndpoint, error) {
 	var endpoint tables.TableWebhookEndpoint
-	if err := s.DB().WithContext(ctx).Where("id = ?", id).First(&endpoint).Error; err != nil {
+	if err := s.dbForContext(ctx).Where("id = ?", id).First(&endpoint).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, ErrNotFound
 		}
@@ -9563,7 +9568,7 @@ func (s *RDBConfigStore) GetWebhookEndpointByID(ctx context.Context, id string) 
 // GetWebhookEndpointByName retrieves a webhook endpoint by its unique name.
 func (s *RDBConfigStore) GetWebhookEndpointByName(ctx context.Context, name string) (*tables.TableWebhookEndpoint, error) {
 	var endpoint tables.TableWebhookEndpoint
-	if err := s.DB().WithContext(ctx).Where("name = ?", name).First(&endpoint).Error; err != nil {
+	if err := s.dbForContext(ctx).Where("name = ?", name).First(&endpoint).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, ErrNotFound
 		}
@@ -9607,7 +9612,7 @@ func (s *RDBConfigStore) CreateWebhookEndpoint(ctx context.Context, endpoint *ta
 	// re-encrypt. Reference fields (Secret pointer, Headers map) are only ever
 	// reassigned by the hook, never mutated through, so the shallow copy is safe.
 	persist := *endpoint
-	return s.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	return s.dbForContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var existing tables.TableWebhookEndpoint
 		if err := tx.Where("name = ?", endpoint.Name).First(&existing).Error; err == nil {
 			return fmt.Errorf("webhook endpoint with name %q %w", endpoint.Name, ErrAlreadyExists)
@@ -9629,7 +9634,7 @@ func (s *RDBConfigStore) UpdateWebhookEndpoint(ctx context.Context, endpoint *ta
 	if endpoint == nil {
 		return fmt.Errorf("webhook endpoint cannot be nil")
 	}
-	return s.DB().Transaction(func(tx *gorm.DB) error {
+	return s.dbForContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var existing tables.TableWebhookEndpoint
 		if err := dbForUpdate(tx.WithContext(ctx)).Where("id = ?", endpoint.ID).First(&existing).Error; err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -9660,7 +9665,7 @@ func (s *RDBConfigStore) UpdateWebhookEndpoint(ctx context.Context, endpoint *ta
 
 // DeleteWebhookEndpoint removes a webhook endpoint by ID.
 func (s *RDBConfigStore) DeleteWebhookEndpoint(ctx context.Context, id string) error {
-	result := s.DB().WithContext(ctx).Where("id = ?", id).Delete(&tables.TableWebhookEndpoint{})
+	result := s.dbForContext(ctx).Where("id = ?", id).Delete(&tables.TableWebhookEndpoint{})
 	if result.Error != nil {
 		return result.Error
 	}
@@ -9680,7 +9685,7 @@ func (s *RDBConfigStore) RotateWebhookEndpointSecret(ctx context.Context, id str
 		return nil, err
 	}
 	var rotated tables.TableWebhookEndpoint
-	err = s.DB().Transaction(func(tx *gorm.DB) error {
+	err = s.dbForContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if err := dbForUpdate(tx.WithContext(ctx)).Where("id = ?", id).First(&rotated).Error; err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
 				return ErrNotFound
@@ -9703,7 +9708,7 @@ func (s *RDBConfigStore) RotateWebhookEndpointSecret(ctx context.Context, id str
 // results for the same endpoint concurrently — and bypass the save hooks so
 // they never touch the endpoint's config fields or updated_at.
 func (s *RDBConfigStore) RecordWebhookEndpointSuccess(ctx context.Context, id string) error {
-	res := s.DB().WithContext(ctx).
+	res := s.dbForContext(ctx).
 		Model(&tables.TableWebhookEndpoint{}).
 		Where("id = ?", id).
 		UpdateColumns(map[string]any{
@@ -9726,7 +9731,7 @@ func (s *RDBConfigStore) RecordWebhookEndpointSuccess(ctx context.Context, id st
 // read-back inside the transaction observes this recorder's own increment.
 func (s *RDBConfigStore) RecordWebhookEndpointFailure(ctx context.Context, id string) (int, error) {
 	var failures int
-	err := s.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	err := s.dbForContext(ctx).Transaction(func(tx *gorm.DB) error {
 		res := tx.Model(&tables.TableWebhookEndpoint{}).
 			Where("id = ?", id).
 			UpdateColumns(map[string]any{
@@ -9790,7 +9795,7 @@ func (s *RDBConfigStore) CreateWebhookJob(ctx context.Context, job *tables.Table
 		job.NextAttemptAt = job.NextAttemptAt.UTC()
 	}
 	job.CreatedAt = now
-	return s.parseGormError(s.DB().WithContext(ctx).Create(job).Error)
+	return s.parseGormError(s.dbForContext(ctx).Create(job).Error)
 }
 
 // ListDueWebhookJobs returns up to limit jobs that are due for a delivery
@@ -9800,7 +9805,7 @@ func (s *RDBConfigStore) CreateWebhookJob(ctx context.Context, job *tables.Table
 // job, so listing needs no cross-node coordination.
 func (s *RDBConfigStore) ListDueWebhookJobs(ctx context.Context, limit int) ([]tables.TableWebhookJob, error) {
 	now := time.Now().UTC()
-	query := s.DB().WithContext(ctx).
+	query := s.dbForContext(ctx).
 		Where("next_attempt_at <= ? AND (claimed_until IS NULL OR claimed_until < ?)", now, now).
 		Order("next_attempt_at ASC")
 	if limit > 0 {
@@ -9827,7 +9832,7 @@ func (s *RDBConfigStore) ClaimWebhookJob(ctx context.Context, id, runnerID strin
 	if !leaseUntil.After(now) {
 		return false, fmt.Errorf("webhook job lease must expire in the future")
 	}
-	res := s.DB().WithContext(ctx).
+	res := s.dbForContext(ctx).
 		Model(&tables.TableWebhookJob{}).
 		Where("id = ? AND next_attempt_at <= ? AND (claimed_until IS NULL OR claimed_until < ?)", id, now, now).
 		Updates(map[string]any{
@@ -9855,7 +9860,7 @@ func normalizeLeaseTime(t time.Time) time.Time {
 // same runner (the single-node runner id is empty), while a reclaim always
 // carries a later lease expiry, so a stale owner's mutation matches nothing.
 func (s *RDBConfigStore) RescheduleWebhookJob(ctx context.Context, id, runnerID string, leaseUntil, nextAttemptAt time.Time) error {
-	res := s.DB().WithContext(ctx).
+	res := s.dbForContext(ctx).
 		Model(&tables.TableWebhookJob{}).
 		Where("id = ? AND claimed_by = ? AND claimed_until = ?", id, runnerID, normalizeLeaseTime(leaseUntil)).
 		Updates(map[string]any{
@@ -9878,7 +9883,7 @@ func (s *RDBConfigStore) RescheduleWebhookJob(ctx context.Context, id, runnerID 
 // plus the exact lease issued to this claim (see RescheduleWebhookJob), so
 // only the current claim holder can retire the job.
 func (s *RDBConfigStore) DeleteWebhookJob(ctx context.Context, id, runnerID string, leaseUntil time.Time) error {
-	res := s.DB().WithContext(ctx).
+	res := s.dbForContext(ctx).
 		Where("id = ? AND claimed_by = ? AND claimed_until = ?", id, runnerID, normalizeLeaseTime(leaseUntil)).
 		Delete(&tables.TableWebhookJob{})
 	if res.Error != nil {
