@@ -82,6 +82,17 @@ func GetProviderVoice(provider schemas.ModelProvider, voiceType string) string {
 		default:
 			return "21m00Tcm4TlvDq8ikWAM"
 		}
+	case schemas.SiliconFlow:
+		switch voiceType {
+		case "primary":
+			return "FunAudioLLM/CosyVoice2-0.5B:alex"
+		case "secondary":
+			return "FunAudioLLM/CosyVoice2-0.5B:anna"
+		case "tertiary":
+			return "FunAudioLLM/CosyVoice2-0.5B:benjamin"
+		default:
+			return "FunAudioLLM/CosyVoice2-0.5B:alex"
+		}
 	default:
 		// Default to OpenAI voices for other providers
 		switch voiceType {
