@@ -38,6 +38,8 @@ target/
 # Go workspaces (local only)
 go.work
 go.work.sum
+go.fork-ci.work
+go.fork-ci.work.sum
 
 # Generated schema copy (created by go generate)
 transports/schema/config.schema.json
