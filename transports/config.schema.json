@@ -29,8 +29,8 @@
     },
     "source_of_truth": {
       "type": "string",
-      "description": "Controls how config.json is reconciled with the config store. \"split\" preserves existing merge behavior. \"config.json\" makes present config.json sections authoritative during startup sync; missing sections leave database rows untouched.",
-      "enum": ["split", "config.json"],
+      "description": "Controls how config.json is reconciled with the config store. \"split\" preserves existing merge behavior. \"config.json\" makes present config.json sections authoritative during startup sync; missing sections leave database rows untouched. The fork-only \"config_store\" mode requires PostgreSQL and makes the database authoritative for runtime configuration while config.json remains bootstrap-only; it is not available in upstream OSS.",
+      "enum": ["split", "config.json", "config_store"],
       "default": "split"
     },
     "encryption_key": {
@@ -2988,6 +2988,35 @@
       "$ref": "#/$defs/circuit_breaker_config"
     }
   },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "source_of_truth": {
+            "const": "config_store"
+          }
+        },
+        "required": ["source_of_truth"]
+      },
+      "then": {
+        "required": ["config_store"],
+        "properties": {
+          "config_store": {
+            "required": ["enabled", "type"],
+            "properties": {
+              "enabled": {
+                "const": true
+              },
+              "type": {
+                "const": "postgres"
+              }
+            }
+          }
+        }
+      }
+    }
+  ],
+
   "additionalProperties": false,
   "$defs": {
     "otel_endpoint": {

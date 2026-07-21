@@ -62,6 +62,15 @@ func NewProviderHandler(modelsManager ModelsManager, inMemoryStore *lib.Config, 
 	}
 }
 
+func configApplyContext(ctx context.Context) context.Context {
+	return context.WithValue(context.WithoutCancel(ctx), schemas.BifrostContextKeySkipDBUpdate, true)
+}
+
+func isConfigSyncEnabled(store configstore.ConfigStore) bool {
+	syncMode, ok := store.(configstore.ConfigSyncMode)
+	return ok && syncMode.IsConfigSyncEnabled()
+}
+
 type ProviderStatus = string
 
 const (
@@ -184,6 +193,7 @@ func (h *ProviderHandler) listProviders(ctx *fasthttp.RequestCtx) {
 		Total:     len(providerResponses),
 	}
 
+	setCurrentConfigRevisionHeaders(ctx, h.dbStore)
 	SendJSON(ctx, response)
 }
 
@@ -232,12 +242,18 @@ func (h *ProviderHandler) getProvider(ctx *fasthttp.RequestCtx) {
 
 	response := h.getProviderResponseFromConfig(provider, *redactedConfig, providerStatus)
 
+	setCurrentConfigRevisionHeaders(ctx, h.dbStore)
 	SendJSON(ctx, response)
 }
 
 // addProvider handles POST /api/providers - Add a new provider
 // NOTE: This only gets called when a new custom provider is added
 func (h *ProviderHandler) addProvider(ctx *fasthttp.RequestCtx) {
+	prepared, ok := prepareConfigMutation(ctx, h.dbStore)
+	if !ok {
+		return
+	}
+
 	var payload providerCreatePayload
 	if err := sonic.Unmarshal(ctx.PostBody(), &payload); err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, "Invalid request payload")
@@ -291,14 +307,20 @@ func (h *ProviderHandler) addProvider(ctx *fasthttp.RequestCtx) {
 			}
 		}
 	}
-	// Check if provider already exists
-	if _, err := h.inMemoryStore.GetProviderConfigRedacted(payload.Provider); err != nil {
-		if !errors.Is(err, lib.ErrNotFound) {
-			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to check provider config: %v", err))
-			return
-		}
+	// Check the authoritative store in sync mode so a lagging replica cannot
+	// incorrectly accept or reject a create.
+	var existingErr error
+	if prepared.enabled {
+		_, existingErr = h.dbStore.GetProviderConfig(ctx, payload.Provider)
 	} else {
+		_, existingErr = h.inMemoryStore.GetProviderConfigRedacted(payload.Provider)
+	}
+	if existingErr == nil {
 		SendError(ctx, fasthttp.StatusConflict, fmt.Sprintf("Provider %s already exists", payload.Provider))
+		return
+	}
+	if !errors.Is(existingErr, lib.ErrNotFound) && !errors.Is(existingErr, configstore.ErrNotFound) {
+		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to check provider config: %v", existingErr))
 		return
 	}
 
@@ -318,21 +340,43 @@ func (h *ProviderHandler) addProvider(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid custom provider config: %v", err))
 		return
 	}
-	// Add provider to store (env vars will be processed by store)
-	if err := h.inMemoryStore.AddProvider(ctx, payload.Provider, config); err != nil {
+	// In legacy source modes the Config method preserves the existing combined
+	// persistence/runtime behavior. Config-store authoritative mode persists in
+	// the revision transaction and applies locally only after it commits.
+	revision, err := commitConfigMutation(ctx, h.dbStore, prepared, func(mutationCtx context.Context) error {
+		if !prepared.enabled {
+			return h.inMemoryStore.AddProvider(mutationCtx, payload.Provider, config)
+		}
+		return h.dbStore.AddProvider(mutationCtx, payload.Provider, config)
+	})
+	if err != nil {
 		logger.Warn("Failed to add provider %s: %v", payload.Provider, err)
-		if errors.Is(err, lib.ErrAlreadyExists) {
+		if handleConfigMutationError(ctx, err) {
+			return
+		}
+		if errors.Is(err, lib.ErrAlreadyExists) || errors.Is(err, configstore.ErrAlreadyExists) {
 			SendError(ctx, fasthttp.StatusConflict, err.Error())
 			return
 		}
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to add provider: %v", err))
 		return
 	}
+	if prepared.enabled {
+		if err := h.inMemoryStore.AddProvider(configApplyContext(ctx), payload.Provider, config); err != nil {
+			logger.Warn("Failed to apply provider %s after commit: %v", payload.Provider, err)
+			sendConfigMutationPending(ctx, revision)
+			return
+		}
+	}
 	logger.Info("Provider %s added successfully", payload.Provider)
 
 	if err := h.reloadProviderAfterCreate(ctx, payload.Provider); err != nil {
 		logger.Warn("Failed to reload provider %s after add: %v", payload.Provider, err)
-		if rollbackErr := h.inMemoryStore.RemoveProvider(context.Background(), payload.Provider); rollbackErr != nil {
+		if prepared.enabled {
+			sendConfigMutationPending(ctx, revision)
+			return
+		}
+		if rollbackErr := h.inMemoryStore.RemoveProvider(ctx, payload.Provider); rollbackErr != nil {
 			logger.Error("Failed to rollback provider %s after reload failure: %v", payload.Provider, rollbackErr)
 			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to initialize provider after add: %v (rollback failed: %v)", err, rollbackErr))
 			return
@@ -357,12 +401,18 @@ func (h *ProviderHandler) addProvider(ctx *fasthttp.RequestCtx) {
 			Status:                   config.Status,
 			Description:              config.Description,
 		}, ProviderStatusActive)
+		if prepared.enabled {
+			setConfigRevisionHeaders(ctx, revision)
+		}
 		SendJSON(ctx, response)
 		return
 	}
 
 	response := h.getProviderResponseFromConfig(payload.Provider, *redactedConfig, ProviderStatusActive)
 
+	if prepared.enabled {
+		setConfigRevisionHeaders(ctx, revision)
+	}
 	SendJSON(ctx, response)
 }
 
@@ -372,6 +422,11 @@ func (h *ProviderHandler) addProvider(ctx *fasthttp.RequestCtx) {
 // The frontend should send the complete provider configuration.
 // This flow upserts the config
 func (h *ProviderHandler) updateProvider(ctx *fasthttp.RequestCtx) {
+	prepared, ok := prepareConfigMutation(ctx, h.dbStore)
+	if !ok {
+		return
+	}
+
 	provider, err := getProviderFromCtx(ctx)
 	if err != nil {
 		// If not found, then first we create and then update
@@ -404,29 +459,28 @@ func (h *ProviderHandler) updateProvider(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	// Get the raw config to access actual values for merging with redacted request values
-	oldConfigRaw, err := h.inMemoryStore.GetProviderConfigRaw(provider)
+	// Read the mutation base from the authoritative store when config sync is
+	// enabled so validation and secret merging do not depend on replica lag.
+	providerExists := true
+	var oldConfigRaw *configstore.ProviderConfig
+	if prepared.enabled {
+		oldConfigRaw, err = h.dbStore.GetProviderConfig(ctx, provider)
+	} else {
+		oldConfigRaw, err = h.inMemoryStore.GetProviderConfigRaw(provider)
+	}
 	if err != nil {
-		if !errors.Is(err, lib.ErrNotFound) {
+		if !errors.Is(err, lib.ErrNotFound) && !errors.Is(err, configstore.ErrNotFound) {
 			logger.Warn("Failed to get old config for provider %s: %v", provider, err)
 			SendError(ctx, fasthttp.StatusInternalServerError, err.Error())
 			return
 		}
+		providerExists = false
 	}
-
 	if oldConfigRaw == nil {
 		oldConfigRaw = &configstore.ProviderConfig{}
 	}
 
-	oldRedactedConfig, err := h.inMemoryStore.GetProviderConfigRedacted(provider)
-	if err != nil {
-		if !errors.Is(err, lib.ErrNotFound) {
-			logger.Warn("Failed to get old redacted config for provider %s: %v", provider, err)
-			SendError(ctx, fasthttp.StatusInternalServerError, err.Error())
-			return
-		}
-	}
-
+	oldRedactedConfig := oldConfigRaw.Redacted()
 	if oldRedactedConfig == nil {
 		oldRedactedConfig = &configstore.ProviderConfig{}
 	}
@@ -442,6 +496,7 @@ func (h *ProviderHandler) updateProvider(ctx *fasthttp.RequestCtx) {
 		StoreRawRequestResponse:  oldConfigRaw.StoreRawRequestResponse,
 		Status:                   oldConfigRaw.Status,
 		Description:              oldConfigRaw.Description,
+		ConfigHash:               oldConfigRaw.ConfigHash,
 	}
 
 	if payload.ConcurrencyAndBufferSize.Concurrency == 0 {
@@ -517,45 +572,68 @@ func (h *ProviderHandler) updateProvider(ctx *fasthttp.RequestCtx) {
 		config.StoreRawRequestResponse = *payload.StoreRawRequestResponse
 	}
 
-	// Add provider to store if it doesn't exist (upsert behavior)
-	if _, err := h.inMemoryStore.GetProviderConfigRaw(provider); err != nil {
-		if !errors.Is(err, lib.ErrNotFound) {
-			logger.Warn("Failed to get provider %s: %v", provider, err)
-			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to get provider: %v", err))
+	revision, err := commitConfigMutation(ctx, h.dbStore, prepared, func(mutationCtx context.Context) error {
+		if !prepared.enabled {
+			if !providerExists {
+				if addErr := h.inMemoryStore.AddProvider(mutationCtx, provider, config); addErr != nil && !errors.Is(addErr, lib.ErrAlreadyExists) {
+					return fmt.Errorf("failed to add provider: %w", addErr)
+				}
+			}
+			return h.inMemoryStore.UpdateProviderConfig(mutationCtx, provider, config)
+		}
+
+		if providerExists {
+			updateErr := h.dbStore.UpdateProvider(mutationCtx, provider, config)
+			if updateErr == nil || !errors.Is(updateErr, configstore.ErrNotFound) {
+				return updateErr
+			}
+		}
+		addErr := h.dbStore.AddProvider(mutationCtx, provider, config)
+		if errors.Is(addErr, configstore.ErrAlreadyExists) {
+			return h.dbStore.UpdateProvider(mutationCtx, provider, config)
+		}
+		return addErr
+	})
+	if err != nil {
+		logger.Warn("Failed to update provider %s: %v", provider, err)
+		if handleConfigMutationError(ctx, err) {
 			return
 		}
-		// Adding the provider to store
-		if err := h.inMemoryStore.AddProvider(ctx, provider, config); err != nil {
-			// In an upsert flow, "already exists" is not fatal — the provider may have been
-			// added concurrently or exist in the DB from a previous failed attempt.
-			if !errors.Is(err, lib.ErrAlreadyExists) {
-				logger.Warn("Failed to add provider %s: %v", provider, err)
-				SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to add provider: %v", err))
-				return
-			}
-			logger.Info("Provider %s already exists during upsert, proceeding with update", provider)
-		}
-	}
-
-	// Update provider config in store (env vars will be processed by store)
-	if err := h.inMemoryStore.UpdateProviderConfig(ctx, provider, config); err != nil {
-		logger.Warn("Failed to update provider %s: %v", provider, err)
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to update provider: %v", err))
 		return
 	}
-	// Attempt model discovery (also triggers cluster broadcast via ReloadProvider).
-	// For keyless providers, model discovery is skipped but we still need to
-	// call ReloadProvider directly so the config change is broadcast to cluster peers.
-	if payload.CustomProviderConfig != nil && payload.CustomProviderConfig.IsKeyLess {
-		ctxWithTimeout, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-		defer cancel()
-		if _, reloadErr := h.modelsManager.ReloadProvider(ctxWithTimeout, provider); reloadErr != nil {
-			logger.Warn("ReloadProvider failed for keyless provider %s: %v", provider, reloadErr)
+
+	if prepared.enabled {
+		applyCtx := configApplyContext(ctx)
+		var applyErr error
+		if providerExists {
+			applyErr = h.inMemoryStore.UpdateProviderConfig(applyCtx, provider, config)
+		} else {
+			applyErr = h.inMemoryStore.AddProvider(applyCtx, provider, config)
+			if errors.Is(applyErr, lib.ErrAlreadyExists) {
+				applyErr = h.inMemoryStore.UpdateProviderConfig(applyCtx, provider, config)
+			}
 		}
+		if applyErr != nil {
+			logger.Warn("Failed to apply provider %s after commit: %v", provider, applyErr)
+			sendConfigMutationPending(ctx, revision)
+			return
+		}
+	}
+
+	var reloadErr error
+	if payload.CustomProviderConfig != nil && payload.CustomProviderConfig.IsKeyLess {
+		ctxWithTimeout, cancel := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)
+		_, reloadErr = h.modelsManager.ReloadProvider(ctxWithTimeout, provider)
+		cancel()
 	} else {
-		err = h.attemptModelDiscovery(ctx, provider, payload.CustomProviderConfig)
-		if err != nil {
-			logger.Warn("Model discovery failed for provider %s: %v", provider, err)
+		reloadErr = h.attemptModelDiscovery(ctx, provider, payload.CustomProviderConfig)
+	}
+	if reloadErr != nil {
+		logger.Warn("Failed to reload provider %s after update: %v", provider, reloadErr)
+		if prepared.enabled {
+			sendConfigMutationPending(ctx, revision)
+			return
 		}
 	}
 
@@ -575,17 +653,28 @@ func (h *ProviderHandler) updateProvider(ctx *fasthttp.RequestCtx) {
 			Status:                   config.Status,
 			Description:              config.Description,
 		}, ProviderStatusActive)
+		if prepared.enabled {
+			setConfigRevisionHeaders(ctx, revision)
+		}
 		SendJSON(ctx, response)
 		return
 	}
 
 	response := h.getProviderResponseFromConfig(provider, *redactedConfig, ProviderStatusActive)
 
+	if prepared.enabled {
+		setConfigRevisionHeaders(ctx, revision)
+	}
 	SendJSON(ctx, response)
 }
 
 // deleteProvider handles DELETE /api/providers/{provider} - Remove provider
 func (h *ProviderHandler) deleteProvider(ctx *fasthttp.RequestCtx) {
+	prepared, ok := prepareConfigMutation(ctx, h.dbStore)
+	if !ok {
+		return
+	}
+
 	provider, err := getProviderFromCtx(ctx)
 	if err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid provider: %v", err))
@@ -598,8 +687,32 @@ func (h *ProviderHandler) deleteProvider(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	if err := h.modelsManager.RemoveProvider(ctx, provider); err != nil {
-		logger.Warn("Failed to delete models for provider %s: %v", provider, err)
+	if !prepared.enabled {
+		if err := h.modelsManager.RemoveProvider(ctx, provider); err != nil {
+			logger.Warn("Failed to delete models for provider %s: %v", provider, err)
+		}
+	} else {
+		revision, err := commitConfigMutation(ctx, h.dbStore, prepared, func(mutationCtx context.Context) error {
+			return h.dbStore.DeleteProvider(mutationCtx, provider)
+		})
+		if err != nil {
+			logger.Warn("Failed to delete provider %s: %v", provider, err)
+			if handleConfigMutationError(ctx, err) {
+				return
+			}
+			if errors.Is(err, configstore.ErrNotFound) {
+				SendError(ctx, fasthttp.StatusNotFound, "Provider not found")
+				return
+			}
+			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to delete provider: %v", err))
+			return
+		}
+		if err := h.modelsManager.RemoveProvider(configApplyContext(ctx), provider); err != nil {
+			logger.Warn("Failed to apply provider %s deletion after commit: %v", provider, err)
+			sendConfigMutationPending(ctx, revision)
+			return
+		}
+		setConfigRevisionHeaders(ctx, revision)
 	}
 
 	response := ProviderResponse{
@@ -617,6 +730,7 @@ func (h *ProviderHandler) listKeys(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	setCurrentConfigRevisionHeaders(ctx, h.dbStore)
 	SendJSON(ctx, keys)
 }
 
@@ -715,6 +829,7 @@ func (h *ProviderHandler) listModels(ctx *fasthttp.RequestCtx) {
 		Total:  total,
 	}
 
+	setCurrentConfigRevisionHeaders(ctx, h.dbStore)
 	SendJSON(ctx, response)
 }
 
@@ -772,6 +887,7 @@ func (h *ProviderHandler) listModelDetails(ctx *fasthttp.RequestCtx) {
 		responseModels = append(responseModels, details)
 	}
 
+	setCurrentConfigRevisionHeaders(ctx, h.dbStore)
 	SendJSON(ctx, ListModelDetailsResponse{
 		Models: responseModels,
 		Total:  total,
@@ -994,6 +1110,7 @@ func (h *ProviderHandler) getModelParameters(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	setCurrentConfigRevisionHeaders(ctx, h.dbStore)
 	ctx.SetContentType("application/json")
 	ctx.SetStatusCode(fasthttp.StatusOK)
 	ctx.SetBodyString(params.Data)
@@ -1145,6 +1262,7 @@ func (h *ProviderHandler) listBaseModels(ctx *fasthttp.RequestCtx) {
 
 	modelCatalog := h.inMemoryStore.ModelCatalog
 	if modelCatalog == nil {
+		setCurrentConfigRevisionHeaders(ctx, h.dbStore)
 		SendJSON(ctx, ListBaseModelsResponse{Models: []string{}, Total: 0})
 		return
 	}
@@ -1168,13 +1286,14 @@ func (h *ProviderHandler) listBaseModels(ctx *fasthttp.RequestCtx) {
 		baseModels = baseModels[:limit]
 	}
 
+	setCurrentConfigRevisionHeaders(ctx, h.dbStore)
 	SendJSON(ctx, ListBaseModelsResponse{Models: baseModels, Total: total})
 }
 
 // reloadProviderAfterCreate performs a single bounded runtime reload after provider creation.
 // ReloadProvider also refreshes model discovery, so create should not invoke a second discovery pass.
 func (h *ProviderHandler) reloadProviderAfterCreate(ctx *fasthttp.RequestCtx, provider schemas.ModelProvider) error {
-	ctxWithTimeout, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	ctxWithTimeout, cancel := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)
 	defer cancel()
 
 	_, err := h.modelsManager.ReloadProvider(ctxWithTimeout, provider)
@@ -1192,7 +1311,7 @@ func (h *ProviderHandler) attemptModelDiscovery(ctx *fasthttp.RequestCtx, provid
 	}
 
 	// Attempt model discovery with reasonable timeout
-	ctxWithTimeout, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	ctxWithTimeout, cancel := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)
 	defer cancel()
 
 	_, err := h.modelsManager.ReloadProvider(ctxWithTimeout, provider)
@@ -1280,6 +1399,11 @@ func validateRetryBackoff(networkConfig *schemas.NetworkConfig) error {
 // entry is missing. An entry with an empty AdditionalAttributes map clears
 // the column for that (model, provider).
 func (h *ProviderHandler) upsertModelCatalogEntries(ctx *fasthttp.RequestCtx) {
+	prepared, ok := prepareConfigMutation(ctx, h.dbStore)
+	if !ok {
+		return
+	}
+
 	var payload []ModelPricingAttributesEntry
 	if err := sonic.Unmarshal(ctx.PostBody(), &payload); err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, "Invalid request payload")
@@ -1294,9 +1418,50 @@ func (h *ProviderHandler) upsertModelCatalogEntries(ctx *fasthttp.RequestCtx) {
 		}
 	}
 
-	if err := h.modelsManager.UpsertModelPricingAttributes(ctx, payload); err != nil {
+	revision, err := commitConfigMutation(ctx, h.dbStore, prepared, func(mutationCtx context.Context) error {
+		if !prepared.enabled {
+			return h.modelsManager.UpsertModelPricingAttributes(mutationCtx, payload)
+		}
+
+		missing := make([]string, 0)
+		for _, entry := range payload {
+			rows, upsertErr := h.dbStore.UpsertModelPricingAttributes(
+				mutationCtx,
+				entry.Model,
+				entry.Provider,
+				entry.AdditionalAttributes,
+			)
+			if upsertErr != nil {
+				return upsertErr
+			}
+			if rows == 0 {
+				missing = append(missing, fmt.Sprintf("%s/%s", entry.Provider, entry.Model))
+			}
+		}
+		if len(missing) > 0 {
+			return fmt.Errorf("no pricing row for one or more (model, provider) entries: %s", strings.Join(missing, ", "))
+		}
+		return nil
+	})
+	if err != nil {
+		if handleConfigMutationError(ctx, err) {
+			return
+		}
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to upsert catalog entries: %v", err))
 		return
+	}
+
+	if prepared.enabled {
+		if h.inMemoryStore == nil || h.inMemoryStore.ModelCatalog == nil {
+			sendConfigMutationPending(ctx, revision)
+			return
+		}
+		if err := h.inMemoryStore.ModelCatalog.ReloadPricing(context.WithoutCancel(ctx)); err != nil {
+			logger.Warn("Failed to reload model catalog after attribute commit: %v", err)
+			sendConfigMutationPending(ctx, revision)
+			return
+		}
+		setConfigRevisionHeaders(ctx, revision)
 	}
 	ctx.SetStatusCode(fasthttp.StatusNoContent)
 }

@@ -6,6 +6,8 @@ Official Helm charts for deploying [Bifrost](https://github.com/maximhq/bifrost)
 
 **Latest Version:** 2.1.31
 
+> **Fork notice:** This repository includes fork-specific OSS multinode PostgreSQL configuration synchronization documented below, in addition to upstream Bifrost Helm releases.
+
 ## Changelog
 
 ### 2.1.31
@@ -21,6 +23,11 @@ Official Helm charts for deploying [Bifrost](https://github.com/maximhq/bifrost)
 - Added `keep_alive_timeout_in_seconds` to provider `network_config` (default 30) to drop idle pooled connections before the upstream closes them. Renders into `network_config.keep_alive_timeout_in_seconds`.
 - Added `use_anthropic_endpoints` to provider keys (deepseek/fireworks/vllm/sgl) and to per-alias configs, routing chat completions and responses through Anthropic-compatible endpoints. Passes through into each key / alias as `use_anthropic_endpoints`.
 - Added SCIM auth-proxy / identity-aware-proxy support via `bifrost.scim.config.authProxy` (shared across all SCIM providers), for deployments fronted by a Zero Trust / ZTNA proxy — Cloudflare Access, a generic OIDC proxy, or AWS ALB. Carries `enabled`, `provider`, `mode` (`login_only`/`full`), the JWKS fields (`issuerUrl`/`jwksUrl`/`audience`/`allowedAudiences`/`headerName`), and the AWS ALB fields (`expectedSigner`/`region`/`publicKeyBaseUrl`), plus `userIdClaim`. Renders into `scim_config.config.authProxy`. (Also synced the field into the source-of-truth `transports/config.schema.json` so the generated config validates at startup.)
+
+### Fork-specific changes
+
+- Added `bifrost.sourceOfTruth: config_store` to render `source_of_truth: config_store`, making PostgreSQL authoritative for runtime configuration across this fork's OSS multinode deployments.
+- Changed the default readiness probe from `/health` to `/ready`, so fork deployments receive traffic only after the initial shared configuration snapshot is applied.
 
 ### 2.1.29
 

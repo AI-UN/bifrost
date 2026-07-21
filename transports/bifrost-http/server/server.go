@@ -73,6 +73,7 @@ type ServerCallbacks interface {
 	NormalizePluginConfig(name string, config map[string]any) (map[string]any, error)
 	ExpandPluginConfigForAPI(name string, config map[string]any) (map[string]any, error)
 	// Auth related callbacks
+	ApplyAuthConfig(ctx context.Context, authConfig *configstore.AuthConfig) error
 	UpdateAuthConfig(ctx context.Context, authConfig *configstore.AuthConfig) error
 	ReloadClientConfigFromConfigStore(ctx context.Context) error
 	// Pricing related callbacks
@@ -166,13 +167,15 @@ type BifrostHTTPServer struct {
 	devPprofHandler    *handlers.DevPprofHandler
 	IntegrationHandler *handlers.IntegrationHandler
 
-	AuthMiddleware       *handlers.AuthMiddleware
-	CORSMiddleware       *handlers.CorsMiddleware
-	TracingMiddleware    *handlers.TracingMiddleware
-	WSTicketStore        *handlers.WSTicketStore
-	TempTokens           *temptoken.Service
-	TempTokenSweepWorker *temptoken.SweepWorker
-	OAuth2SweepWorker    *oauth2SweepWorker
+	AuthMiddleware           *handlers.AuthMiddleware
+	CORSMiddleware           *handlers.CorsMiddleware
+	TracingMiddleware        *handlers.TracingMiddleware
+	WSTicketStore            *handlers.WSTicketStore
+	TempTokens               *temptoken.Service
+	TempTokenSweepWorker     *temptoken.SweepWorker
+	OAuth2SweepWorker        *oauth2SweepWorker
+	ConfigSnapshotReconciler ConfigSnapshotReconciler
+	configSyncWorker         *configSyncWorker
 	// OAuth2IdentityResolver scopes a user-mode /mcp request to the user's own
 	// tools. Optional; wired at server init when user-mode identity resolution
 	// is available, otherwise left nil (user-mode requests fall back to the
@@ -1508,7 +1511,7 @@ func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks Ser
 	// Adding telemetry middleware
 	// Chaining all middlewares
 	// lib.ChainMiddlewares chains multiple middlewares together
-	healthHandler := handlers.NewHealthHandler(s.Config)
+	healthHandler := handlers.NewHealthHandler(s.Config, s.isReady)
 	providerHandler := handlers.NewProviderHandler(callbacks, s.Config, s.Client)
 	oauthHandler := handlers.NewOAuthHandler(s.Config.OAuthProvider, s.Client, s.Config)
 	mcpHandler := handlers.NewMCPHandler(callbacks, callbacks, s.Client, s.Config, oauthHandler)
@@ -2034,6 +2037,9 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 		ReadBufferSize:     s.Config.ServerConfig.ReadBufferSize,
 	}
 	startSkillsOrphanCleanupWorker(s.Ctx, s.Config)
+	if err := s.startConfigSyncWorker(s.Ctx); err != nil {
+		return fmt.Errorf("failed to start config sync worker: %v", err)
+	}
 	return nil
 }
 
@@ -2049,10 +2055,15 @@ func (s *BifrostHTTPServer) Start() error {
 	errChan := make(chan error, 1)
 	// Watching for signals
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+	defer signal.Stop(sigChan)
 	// Start server in a goroutine
 	serverAddr := net.JoinHostPort(s.Host, s.Port)
 	ln, err := net.Listen("tcp", serverAddr)
 	if err != nil {
+		if s.cancel != nil {
+			s.cancel()
+		}
+		s.stopConfigSyncWorker()
 		return fmt.Errorf("failed to create listener on %s: %v", serverAddr, err)
 	}
 	go func() {
@@ -2082,6 +2093,7 @@ func (s *BifrostHTTPServer) Start() error {
 		if s.cancel != nil {
 			s.cancel()
 		}
+		s.stopConfigSyncWorker()
 		// Wait for shutdown to complete or timeout
 		done := make(chan struct{})
 		go func() {
@@ -2146,6 +2158,10 @@ func (s *BifrostHTTPServer) Start() error {
 		}
 
 	case err := <-errChan:
+		if s.cancel != nil {
+			s.cancel()
+		}
+		s.stopConfigSyncWorker()
 		if s.IntegrationHandler != nil {
 			s.IntegrationHandler.Close()
 		}

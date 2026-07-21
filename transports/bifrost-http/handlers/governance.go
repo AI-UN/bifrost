@@ -1058,6 +1058,7 @@ func (h *GovernanceHandler) getComplexityAnalyzerConfig(ctx *fasthttp.RequestCtx
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to get complexity analyzer config: %v", err))
 		return
 	}
+	setCurrentConfigRevisionHeaders(ctx, h.configStore)
 	if cfg == nil {
 		defaults := complexity.DefaultAnalyzerConfig()
 		SendJSON(ctx, defaults)
@@ -1089,14 +1090,27 @@ func (h *GovernanceHandler) updateComplexityAnalyzerConfig(ctx *fasthttp.Request
 		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
 		return
 	}
-
-	if err := h.configStore.UpdateComplexityAnalyzerConfig(ctx, normalized); err != nil {
+	prepared, ok := prepareConfigMutation(ctx, h.configStore)
+	if !ok {
+		return
+	}
+	revision, err := commitConfigMutation(ctx, h.configStore, prepared, func(mutationCtx context.Context) error {
+		return h.configStore.UpdateComplexityAnalyzerConfig(mutationCtx, normalized)
+	})
+	if err != nil {
+		if handleConfigMutationError(ctx, err) {
+			return
+		}
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to update complexity analyzer config: %v", err))
 		return
 	}
 	if err := h.reloadComplexityAnalyzerConfig(ctx, normalized); err != nil {
-		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to reload complexity analyzer config in memory: %v, please restart bifrost to sync with the database", err))
+		logger.Error("failed to reload complexity analyzer config in memory: %v", err)
+		sendConfigMutationPending(ctx, revision)
 		return
+	}
+	if prepared.enabled {
+		setConfigRevisionHeaders(ctx, revision)
 	}
 
 	SendJSON(ctx, normalized)
@@ -1109,13 +1123,27 @@ func (h *GovernanceHandler) resetComplexityAnalyzerConfig(ctx *fasthttp.RequestC
 	}
 
 	defaults := complexity.DefaultAnalyzerConfig()
-	if err := h.configStore.UpdateComplexityAnalyzerConfig(ctx, &defaults); err != nil {
+	prepared, ok := prepareConfigMutation(ctx, h.configStore)
+	if !ok {
+		return
+	}
+	revision, err := commitConfigMutation(ctx, h.configStore, prepared, func(mutationCtx context.Context) error {
+		return h.configStore.UpdateComplexityAnalyzerConfig(mutationCtx, &defaults)
+	})
+	if err != nil {
+		if handleConfigMutationError(ctx, err) {
+			return
+		}
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to reset complexity analyzer config: %v", err))
 		return
 	}
 	if err := h.reloadComplexityAnalyzerConfig(ctx, &defaults); err != nil {
-		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to reload complexity analyzer config in memory: %v, please restart bifrost to sync with the database", err))
+		logger.Error("failed to reload complexity analyzer config in memory: %v", err)
+		sendConfigMutationPending(ctx, revision)
 		return
+	}
+	if prepared.enabled {
+		setConfigRevisionHeaders(ctx, revision)
 	}
 
 	SendJSON(ctx, defaults)
@@ -1133,6 +1161,7 @@ func (h *GovernanceHandler) reloadComplexityAnalyzerConfig(ctx context.Context, 
 
 // getVirtualKeys handles GET /api/governance/virtual-keys - Get all virtual keys with relationships
 func (h *GovernanceHandler) getVirtualKeys(ctx *fasthttp.RequestCtx) {
+	setCurrentConfigRevisionHeaders(ctx, h.configStore)
 	// Check if "from_memory" query parameter is set to true
 	fromMemory := string(ctx.QueryArgs().Peek("from_memory")) == "true"
 	if fromMemory {
@@ -1318,132 +1347,142 @@ func (h *GovernanceHandler) createVirtualKey(ctx *fasthttp.RequestCtx) {
 			return
 		}
 	}
+	prepared, ok := prepareConfigMutation(ctx, h.configStore)
+	if !ok {
+		return
+	}
 	var vk configstoreTables.TableVirtualKey
-	if err := h.configStore.ExecuteTransaction(ctx, func(tx *gorm.DB) error {
-		vk = configstoreTables.TableVirtualKey{
-			ID:              uuid.NewString(),
-			Name:            req.Name,
-			Value:           *schemas.NewSecretVar(governance.GenerateVirtualKey()),
-			Description:     req.Description,
-			TeamID:          req.TeamID,
-			CustomerID:      req.CustomerID,
-			IsActive:        isActive,
-			CalendarAligned: req.CalendarAligned,
-			ExpiresAt:       req.ExpiresAt,
-		}
-		if err := h.configStore.CreateVirtualKey(ctx, &vk, tx); err != nil {
-			return err
-		}
-		// VK top-level and per-provider budgets/rate-limits are stored in VK-scoped model configs,
-		// the single source of truth, written via syncVKGovernanceToModelConfigs below.
-		// The per-provider desired state is accumulated while creating the provider configs.
-		var vkGovProviders []vkModelConfigDesired
-		if req.ProviderConfigs != nil {
-			for _, pc := range req.ProviderConfigs {
-				providerName := schemas.ModelProvider(strings.TrimSpace(pc.Provider))
-				if providerName == "" {
-					return &badRequestError{err: fmt.Errorf("provider name is required")}
+	revision, err := commitConfigMutation(ctx, h.configStore, prepared, func(mutationCtx context.Context) error {
+		return h.configStore.ExecuteTransaction(mutationCtx, func(tx *gorm.DB) error {
+			vk = configstoreTables.TableVirtualKey{
+				ID:              uuid.NewString(),
+				Name:            req.Name,
+				Value:           *schemas.NewSecretVar(governance.GenerateVirtualKey()),
+				Description:     req.Description,
+				TeamID:          req.TeamID,
+				CustomerID:      req.CustomerID,
+				IsActive:        isActive,
+				CalendarAligned: req.CalendarAligned,
+				ExpiresAt:       req.ExpiresAt,
+			}
+			if err := h.configStore.CreateVirtualKey(mutationCtx, &vk, tx); err != nil {
+				return err
+			}
+			// VK top-level and per-provider budgets/rate-limits are stored in VK-scoped model configs,
+			// the single source of truth, written via syncVKGovernanceToModelConfigs below.
+			// The per-provider desired state is accumulated while creating the provider configs.
+			var vkGovProviders []vkModelConfigDesired
+			if req.ProviderConfigs != nil {
+				for _, pc := range req.ProviderConfigs {
+					providerName := schemas.ModelProvider(strings.TrimSpace(pc.Provider))
+					if providerName == "" {
+						return &badRequestError{err: fmt.Errorf("provider name is required")}
+					}
+					if _, ok := providerSet[providerName]; !ok {
+						return &badRequestError{err: fmt.Errorf("invalid provider name: %s", pc.Provider)}
+					}
+					if err := pc.AllowedModels.Validate(); err != nil {
+						return &badRequestError{err: fmt.Errorf("invalid allowed_models for provider %s: %w", pc.Provider, err)}
+					}
+					if err := pc.BlacklistedModels.Validate(); err != nil {
+						return &badRequestError{err: fmt.Errorf("invalid blacklisted_models for provider %s: %w", pc.Provider, err)}
+					}
+					if err := pc.KeyIDs.Validate(); err != nil {
+						return &badRequestError{err: fmt.Errorf("invalid key_ids for provider %s: %w", pc.Provider, err)}
+					}
+
+					// Get keys for this provider config if specified
+					var keys []configstoreTables.TableKey
+					allowAllKeys := false
+					if pc.KeyIDs.IsUnrestricted() {
+						allowAllKeys = true
+					} else if !pc.KeyIDs.IsEmpty() {
+						var err error
+						keys, err = h.configStore.GetKeysByIDs(mutationCtx, pc.KeyIDs)
+						if err != nil {
+							return fmt.Errorf("failed to get keys by IDs for provider %s: %w", pc.Provider, err)
+						}
+						if len(keys) != len(pc.KeyIDs) {
+							return fmt.Errorf("some keys not found for provider %s: expected %d, found %d", pc.Provider, len(pc.KeyIDs), len(keys))
+						}
+					}
+
+					providerConfig := &configstoreTables.TableVirtualKeyProviderConfig{
+						VirtualKeyID:      vk.ID,
+						Provider:          string(providerName),
+						Weight:            pc.Weight,
+						AllowedModels:     pc.AllowedModels,
+						BlacklistedModels: pc.BlacklistedModels,
+						AllowAllKeys:      allowAllKeys,
+						Keys:              keys,
+					}
+
+					if err := h.configStore.CreateVirtualKeyProviderConfig(mutationCtx, providerConfig, tx); err != nil {
+						return err
+					}
+					// Provider-config budgets/rate-limit are stored in the VK-scoped model config
+					// for this provider (written by syncVKGovernanceToModelConfigs).
+					providerNameStr := string(providerName)
+					var pcRateLimit *configstoreTables.TableRateLimit
+					if pc.RateLimit != nil {
+						pcRateLimit = rateLimitFromRequestFields(pc.RateLimit.TokenMaxLimit, pc.RateLimit.TokenResetDuration, pc.RateLimit.RequestMaxLimit, pc.RateLimit.RequestResetDuration)
+					}
+					vkGovProviders = append(vkGovProviders, vkModelConfigDesired{
+						provider:          &providerNameStr,
+						budgetsProvided:   true,
+						budgets:           pc.Budgets,
+						rateLimitProvided: pc.RateLimit != nil,
+						rateLimit:         pcRateLimit,
+					})
 				}
-				if _, ok := providerSet[providerName]; !ok {
-					return &badRequestError{err: fmt.Errorf("invalid provider name: %s", pc.Provider)}
-				}
-				if err := pc.AllowedModels.Validate(); err != nil {
-					return &badRequestError{err: fmt.Errorf("invalid allowed_models for provider %s: %w", pc.Provider, err)}
-				}
-				if err := pc.BlacklistedModels.Validate(); err != nil {
-					return &badRequestError{err: fmt.Errorf("invalid blacklisted_models for provider %s: %w", pc.Provider, err)}
-				}
-				if err := pc.KeyIDs.Validate(); err != nil {
-					return &badRequestError{err: fmt.Errorf("invalid key_ids for provider %s: %w", pc.Provider, err)}
+			}
+			// Fold VK top-level + per-provider governance into VK-scoped model configs.
+			var topRateLimit *configstoreTables.TableRateLimit
+			if req.RateLimit != nil {
+				topRateLimit = rateLimitFromRequestFields(req.RateLimit.TokenMaxLimit, req.RateLimit.TokenResetDuration, req.RateLimit.RequestMaxLimit, req.RateLimit.RequestResetDuration)
+			}
+			if err := h.syncVKGovernanceToModelConfigs(mutationCtx, tx, &vk, vkModelConfigDesired{
+				budgetsProvided:   true,
+				budgets:           req.Budgets,
+				rateLimitProvided: req.RateLimit != nil,
+				rateLimit:         topRateLimit,
+			}, vkGovProviders, true); err != nil {
+				return err
+			}
+			if req.MCPConfigs != nil {
+				// Check for duplicate MCPClientName values before processing
+				seenMCPClientNames := make(map[string]bool)
+				for _, mc := range req.MCPConfigs {
+					if seenMCPClientNames[mc.MCPClientName] {
+						return &badRequestError{err: fmt.Errorf("duplicate mcp_client_name: %s", mc.MCPClientName)}
+					}
+					seenMCPClientNames[mc.MCPClientName] = true
 				}
 
-				// Get keys for this provider config if specified
-				var keys []configstoreTables.TableKey
-				allowAllKeys := false
-				if pc.KeyIDs.IsUnrestricted() {
-					allowAllKeys = true
-				} else if !pc.KeyIDs.IsEmpty() {
-					var err error
-					keys, err = h.configStore.GetKeysByIDs(ctx, pc.KeyIDs)
+				for _, mc := range req.MCPConfigs {
+					if err := mc.ToolsToExecute.Validate(); err != nil {
+						return &badRequestError{err: fmt.Errorf("invalid tools_to_execute for mcp client %s: %w", mc.MCPClientName, err)}
+					}
+					mcpClient, err := h.configStore.GetMCPClientByName(mutationCtx, mc.MCPClientName)
 					if err != nil {
-						return fmt.Errorf("failed to get keys by IDs for provider %s: %w", pc.Provider, err)
+						return fmt.Errorf("failed to get MCP client: %w", err)
 					}
-					if len(keys) != len(pc.KeyIDs) {
-						return fmt.Errorf("some keys not found for provider %s: expected %d, found %d", pc.Provider, len(pc.KeyIDs), len(keys))
+					if err := h.configStore.CreateVirtualKeyMCPConfig(mutationCtx, &configstoreTables.TableVirtualKeyMCPConfig{
+						VirtualKeyID:   vk.ID,
+						MCPClientID:    mcpClient.ID,
+						ToolsToExecute: mc.ToolsToExecute,
+					}, tx); err != nil {
+						return err
 					}
 				}
-
-				providerConfig := &configstoreTables.TableVirtualKeyProviderConfig{
-					VirtualKeyID:      vk.ID,
-					Provider:          string(providerName),
-					Weight:            pc.Weight,
-					AllowedModels:     pc.AllowedModels,
-					BlacklistedModels: pc.BlacklistedModels,
-					AllowAllKeys:      allowAllKeys,
-					Keys:              keys,
-				}
-
-				if err := h.configStore.CreateVirtualKeyProviderConfig(ctx, providerConfig, tx); err != nil {
-					return err
-				}
-				// Provider-config budgets/rate-limit are stored in the VK-scoped model config
-				// for this provider (written by syncVKGovernanceToModelConfigs).
-				providerNameStr := string(providerName)
-				var pcRateLimit *configstoreTables.TableRateLimit
-				if pc.RateLimit != nil {
-					pcRateLimit = rateLimitFromRequestFields(pc.RateLimit.TokenMaxLimit, pc.RateLimit.TokenResetDuration, pc.RateLimit.RequestMaxLimit, pc.RateLimit.RequestResetDuration)
-				}
-				vkGovProviders = append(vkGovProviders, vkModelConfigDesired{
-					provider:          &providerNameStr,
-					budgetsProvided:   true,
-					budgets:           pc.Budgets,
-					rateLimitProvided: pc.RateLimit != nil,
-					rateLimit:         pcRateLimit,
-				})
 			}
+			return nil
+		})
+	})
+	if err != nil {
+		if handleConfigMutationError(ctx, err) {
+			return
 		}
-		// Fold VK top-level + per-provider governance into VK-scoped model configs.
-		var topRateLimit *configstoreTables.TableRateLimit
-		if req.RateLimit != nil {
-			topRateLimit = rateLimitFromRequestFields(req.RateLimit.TokenMaxLimit, req.RateLimit.TokenResetDuration, req.RateLimit.RequestMaxLimit, req.RateLimit.RequestResetDuration)
-		}
-		if err := h.syncVKGovernanceToModelConfigs(ctx, tx, &vk, vkModelConfigDesired{
-			budgetsProvided:   true,
-			budgets:           req.Budgets,
-			rateLimitProvided: req.RateLimit != nil,
-			rateLimit:         topRateLimit,
-		}, vkGovProviders, true); err != nil {
-			return err
-		}
-		if req.MCPConfigs != nil {
-			// Check for duplicate MCPClientName values before processing
-			seenMCPClientNames := make(map[string]bool)
-			for _, mc := range req.MCPConfigs {
-				if seenMCPClientNames[mc.MCPClientName] {
-					return &badRequestError{err: fmt.Errorf("duplicate mcp_client_name: %s", mc.MCPClientName)}
-				}
-				seenMCPClientNames[mc.MCPClientName] = true
-			}
-
-			for _, mc := range req.MCPConfigs {
-				if err := mc.ToolsToExecute.Validate(); err != nil {
-					return &badRequestError{err: fmt.Errorf("invalid tools_to_execute for mcp client %s: %w", mc.MCPClientName, err)}
-				}
-				mcpClient, err := h.configStore.GetMCPClientByName(ctx, mc.MCPClientName)
-				if err != nil {
-					return fmt.Errorf("failed to get MCP client: %w", err)
-				}
-				if err := h.configStore.CreateVirtualKeyMCPConfig(ctx, &configstoreTables.TableVirtualKeyMCPConfig{
-					VirtualKeyID:   vk.ID,
-					MCPClientID:    mcpClient.ID,
-					ToolsToExecute: mc.ToolsToExecute,
-				}, tx); err != nil {
-					return err
-				}
-			}
-		}
-		return nil
-	}); err != nil {
 		var badReqErr *badRequestError
 		if errors.As(err, &badReqErr) {
 			SendError(ctx, 400, err.Error())
@@ -1459,10 +1498,15 @@ func (h *GovernanceHandler) createVirtualKey(ctx *fasthttp.RequestCtx) {
 	preloadedVk, err := h.governanceManager.ReloadVirtualKey(ctx, vk.ID)
 	if err != nil {
 		logger.Error("failed to reload virtual key: %v", err)
-		preloadedVk = &vk
+		sendConfigMutationPending(ctx, revision)
+		return
 	}
 	// Reverse-map governance from the model configs just written, for display.
 	h.hydrateVKGovernance(ctx, preloadedVk)
+
+	if prepared.enabled {
+		setConfigRevisionHeaders(ctx, revision)
+	}
 
 	SendJSON(ctx, map[string]any{
 		"message":     "Virtual key created successfully",
@@ -1472,6 +1516,7 @@ func (h *GovernanceHandler) createVirtualKey(ctx *fasthttp.RequestCtx) {
 
 // getVirtualKey handles GET /api/governance/virtual-keys/{vk_id} - Get a specific virtual key
 func (h *GovernanceHandler) getVirtualKey(ctx *fasthttp.RequestCtx) {
+	setCurrentConfigRevisionHeaders(ctx, h.configStore)
 	vkID := ctx.UserValue("vk_id").(string)
 	// Check if "from_memory" query parameter is set to true
 	fromMemory := string(ctx.QueryArgs().Peek("from_memory")) == "true"
@@ -1542,6 +1587,10 @@ func (h *GovernanceHandler) updateVirtualKey(ctx *fasthttp.RequestCtx) {
 		}
 		newExpiresAt = &parsed
 	}
+	prepared, ok := prepareConfigMutation(ctx, h.configStore)
+	if !ok {
+		return
+	}
 	vk, err := h.configStore.GetVirtualKey(ctx, vkID)
 	if err != nil {
 		if errors.Is(err, configstore.ErrNotFound) {
@@ -1559,349 +1608,355 @@ func (h *GovernanceHandler) updateVirtualKey(ctx *fasthttp.RequestCtx) {
 			return
 		}
 	}
-	if err := h.configStore.ExecuteTransaction(ctx, func(tx *gorm.DB) error {
-		var rateLimitIDToDelete string
-		var providerBudgetIDsToDelete []string
-		var providerRateLimitIDsToDelete []string
-		var lockedVK configstoreTables.TableVirtualKey
-		if err := dbForUpdate(tx.WithContext(ctx)).
-			Preload("Budgets").
-			Preload("RateLimit").
-			Preload("ProviderConfigs").
-			First(&lockedVK, "id = ?", vkID).Error; err != nil {
-			if errors.Is(err, gorm.ErrRecordNotFound) {
-				return configstore.ErrNotFound
-			}
-			return err
-		}
-		vk = &lockedVK
-		sort.Slice(vk.Budgets, func(i, j int) bool {
-			if vk.Budgets[i].ResetDuration == vk.Budgets[j].ResetDuration {
-				return vk.Budgets[i].ID < vk.Budgets[j].ID
-			}
-			return vk.Budgets[i].ResetDuration < vk.Budgets[j].ResetDuration
-		})
-
-		// Update fields if provided
-		if req.Name != nil {
-			vk.Name = *req.Name
-		}
-		if req.Description != nil {
-			vk.Description = *req.Description
-		}
-		if err := applyVirtualKeyOwnershipUpdate(vk, &req); err != nil {
-			if errors.Is(err, errVirtualKeyDualAssociation) {
-				return &badRequestError{err: err}
-			}
-			return err
-		}
-		if req.IsActive != nil {
-			vk.IsActive = req.IsActive
-		}
-		if req.ExpiresAt != nil {
-			vk.ExpiresAt = newExpiresAt
-		}
-		if req.CalendarAligned != nil {
-			vk.CalendarAligned = *req.CalendarAligned
-		}
-		// VK top-level and per-provider budgets/rate-limits are stored in VK-scoped model
-		// configs (the single source of truth), written by syncVKGovernanceToModelConfigs
-		// below. Per-provider desired state is accumulated while reconciling provider config rows.
-		var vkGovProviders []vkModelConfigDesired
-
-		if err := h.configStore.UpdateVirtualKey(ctx, vk, tx); err != nil {
-			return err
-		}
-		if req.ProviderConfigs != nil {
-			// Get existing provider configs for comparison
-			var existingConfigs []configstoreTables.TableVirtualKeyProviderConfig
-			if err := tx.Where("virtual_key_id = ?", vk.ID).
+	revision, err := commitConfigMutation(ctx, h.configStore, prepared, func(mutationCtx context.Context) error {
+		return h.configStore.ExecuteTransaction(mutationCtx, func(tx *gorm.DB) error {
+			var rateLimitIDToDelete string
+			var providerBudgetIDsToDelete []string
+			var providerRateLimitIDsToDelete []string
+			var lockedVK configstoreTables.TableVirtualKey
+			if err := dbForUpdate(tx.WithContext(mutationCtx)).
 				Preload("Budgets").
-				Find(&existingConfigs).Error; err != nil {
+				Preload("RateLimit").
+				Preload("ProviderConfigs").
+				First(&lockedVK, "id = ?", vkID).Error; err != nil {
+				if errors.Is(err, gorm.ErrRecordNotFound) {
+					return configstore.ErrNotFound
+				}
 				return err
 			}
-			sort.Slice(existingConfigs, func(i, j int) bool { return existingConfigs[i].ID < existingConfigs[j].ID })
-			sort.Slice(req.ProviderConfigs, func(i, j int) bool {
-				if req.ProviderConfigs[i].ID == nil && req.ProviderConfigs[j].ID != nil {
-					return false
+			vk = &lockedVK
+			sort.Slice(vk.Budgets, func(i, j int) bool {
+				if vk.Budgets[i].ResetDuration == vk.Budgets[j].ResetDuration {
+					return vk.Budgets[i].ID < vk.Budgets[j].ID
 				}
-				if req.ProviderConfigs[i].ID != nil && req.ProviderConfigs[j].ID == nil {
-					return true
-				}
-				if req.ProviderConfigs[i].ID != nil && req.ProviderConfigs[j].ID != nil && *req.ProviderConfigs[i].ID != *req.ProviderConfigs[j].ID {
-					return *req.ProviderConfigs[i].ID < *req.ProviderConfigs[j].ID
-				}
-				return req.ProviderConfigs[i].Provider < req.ProviderConfigs[j].Provider
+				return vk.Budgets[i].ResetDuration < vk.Budgets[j].ResetDuration
 			})
-			// Create maps for easier lookup
-			existingConfigsMap := make(map[uint]configstoreTables.TableVirtualKeyProviderConfig)
-			for _, config := range existingConfigs {
-				existingConfigsMap[config.ID] = config
+
+			// Update fields if provided
+			if req.Name != nil {
+				vk.Name = *req.Name
 			}
-			requestConfigsMap := make(map[uint]bool)
-			// Process new configs: create new ones and update existing ones
-			for _, pc := range req.ProviderConfigs {
-				providerName := schemas.ModelProvider(strings.TrimSpace(pc.Provider))
-				if providerName == "" {
-					return &badRequestError{err: fmt.Errorf("provider name is required")}
+			if req.Description != nil {
+				vk.Description = *req.Description
+			}
+			if err := applyVirtualKeyOwnershipUpdate(vk, &req); err != nil {
+				if errors.Is(err, errVirtualKeyDualAssociation) {
+					return &badRequestError{err: err}
 				}
-				if _, ok := providerSet[providerName]; !ok {
-					return &badRequestError{err: fmt.Errorf("invalid provider name: %s", pc.Provider)}
+				return err
+			}
+			if req.IsActive != nil {
+				vk.IsActive = req.IsActive
+			}
+			if req.ExpiresAt != nil {
+				vk.ExpiresAt = newExpiresAt
+			}
+			if req.CalendarAligned != nil {
+				vk.CalendarAligned = *req.CalendarAligned
+			}
+			// VK top-level and per-provider budgets/rate-limits are stored in VK-scoped model
+			// configs (the single source of truth), written by syncVKGovernanceToModelConfigs
+			// below. Per-provider desired state is accumulated while reconciling provider config rows.
+			var vkGovProviders []vkModelConfigDesired
+
+			if err := h.configStore.UpdateVirtualKey(mutationCtx, vk, tx); err != nil {
+				return err
+			}
+			if req.ProviderConfigs != nil {
+				// Get existing provider configs for comparison
+				var existingConfigs []configstoreTables.TableVirtualKeyProviderConfig
+				if err := tx.Where("virtual_key_id = ?", vk.ID).
+					Preload("Budgets").
+					Find(&existingConfigs).Error; err != nil {
+					return err
 				}
-				if pc.ID == nil {
-					if err := pc.AllowedModels.Validate(); err != nil {
-						return &badRequestError{err: fmt.Errorf("invalid allowed_models for provider %s: %w", pc.Provider, err)}
+				sort.Slice(existingConfigs, func(i, j int) bool { return existingConfigs[i].ID < existingConfigs[j].ID })
+				sort.Slice(req.ProviderConfigs, func(i, j int) bool {
+					if req.ProviderConfigs[i].ID == nil && req.ProviderConfigs[j].ID != nil {
+						return false
 					}
-					if err := pc.BlacklistedModels.Validate(); err != nil {
-						return &badRequestError{err: fmt.Errorf("invalid blacklisted_models for provider %s: %w", pc.Provider, err)}
+					if req.ProviderConfigs[i].ID != nil && req.ProviderConfigs[j].ID == nil {
+						return true
 					}
-					if err := pc.KeyIDs.Validate(); err != nil {
-						return &badRequestError{err: fmt.Errorf("invalid key_ids for provider %s: %w", pc.Provider, err)}
+					if req.ProviderConfigs[i].ID != nil && req.ProviderConfigs[j].ID != nil && *req.ProviderConfigs[i].ID != *req.ProviderConfigs[j].ID {
+						return *req.ProviderConfigs[i].ID < *req.ProviderConfigs[j].ID
 					}
-
-					// Get keys for this provider config if specified
-					var keys []configstoreTables.TableKey
-					allowAllKeys := false
-					if pc.KeyIDs.IsUnrestricted() {
-						allowAllKeys = true
-					} else if !pc.KeyIDs.IsEmpty() {
-						var err error
-						keys, err = h.configStore.GetKeysByIDs(ctx, pc.KeyIDs)
-						if err != nil {
-							return fmt.Errorf("failed to get keys by IDs for provider %s: %w", pc.Provider, err)
+					return req.ProviderConfigs[i].Provider < req.ProviderConfigs[j].Provider
+				})
+				// Create maps for easier lookup
+				existingConfigsMap := make(map[uint]configstoreTables.TableVirtualKeyProviderConfig)
+				for _, config := range existingConfigs {
+					existingConfigsMap[config.ID] = config
+				}
+				requestConfigsMap := make(map[uint]bool)
+				// Process new configs: create new ones and update existing ones
+				for _, pc := range req.ProviderConfigs {
+					providerName := schemas.ModelProvider(strings.TrimSpace(pc.Provider))
+					if providerName == "" {
+						return &badRequestError{err: fmt.Errorf("provider name is required")}
+					}
+					if _, ok := providerSet[providerName]; !ok {
+						return &badRequestError{err: fmt.Errorf("invalid provider name: %s", pc.Provider)}
+					}
+					if pc.ID == nil {
+						if err := pc.AllowedModels.Validate(); err != nil {
+							return &badRequestError{err: fmt.Errorf("invalid allowed_models for provider %s: %w", pc.Provider, err)}
 						}
-						if len(keys) != len(pc.KeyIDs) {
-							return fmt.Errorf("some keys not found for provider %s: expected %d, found %d", pc.Provider, len(pc.KeyIDs), len(keys))
+						if err := pc.BlacklistedModels.Validate(); err != nil {
+							return &badRequestError{err: fmt.Errorf("invalid blacklisted_models for provider %s: %w", pc.Provider, err)}
 						}
-					}
-
-					// Create new provider config
-					providerConfig := &configstoreTables.TableVirtualKeyProviderConfig{
-						VirtualKeyID:      vk.ID,
-						Provider:          string(providerName),
-						Weight:            pc.Weight,
-						AllowedModels:     pc.AllowedModels,
-						BlacklistedModels: pc.BlacklistedModels,
-						AllowAllKeys:      allowAllKeys,
-						Keys:              keys,
-					}
-					if err := h.configStore.CreateVirtualKeyProviderConfig(ctx, providerConfig, tx); err != nil {
-						return err
-					}
-					// Provider-config governance is stored in the VK-scoped model config for this provider.
-					pName := string(providerName)
-					var pcRL *configstoreTables.TableRateLimit
-					if pc.RateLimit != nil {
-						pcRL = rateLimitFromRequestFields(pc.RateLimit.TokenMaxLimit, pc.RateLimit.TokenResetDuration, pc.RateLimit.RequestMaxLimit, pc.RateLimit.RequestResetDuration)
-					}
-					vkGovProviders = append(vkGovProviders, vkModelConfigDesired{
-						provider:          &pName,
-						budgetsProvided:   true,
-						budgets:           pc.Budgets,
-						rateLimitProvided: pc.RateLimit != nil,
-						rateLimit:         pcRL,
-					})
-				} else {
-					// Update existing provider config
-					existing, ok := existingConfigsMap[*pc.ID]
-					if !ok {
-						return fmt.Errorf("provider config %d does not belong to this virtual key", *pc.ID)
-					}
-					requestConfigsMap[*pc.ID] = true
-					if err := pc.AllowedModels.Validate(); err != nil {
-						return &badRequestError{err: fmt.Errorf("invalid allowed_models for provider %s: %w", pc.Provider, err)}
-					}
-					if err := pc.BlacklistedModels.Validate(); err != nil {
-						return &badRequestError{err: fmt.Errorf("invalid blacklisted_models for provider %s: %w", pc.Provider, err)}
-					}
-					if err := pc.KeyIDs.Validate(); err != nil {
-						return &badRequestError{err: fmt.Errorf("invalid key_ids for provider %s: %w", pc.Provider, err)}
-					}
-					existing.Provider = string(providerName)
-					existing.Weight = pc.Weight
-					existing.AllowedModels = pc.AllowedModels
-					existing.BlacklistedModels = pc.BlacklistedModels
-
-					// Get keys for this provider config if specified
-					var keys []configstoreTables.TableKey
-					allowAllKeys := false
-					if pc.KeyIDs.IsUnrestricted() {
-						allowAllKeys = true
-					} else if !pc.KeyIDs.IsEmpty() {
-						var err error
-						keys, err = h.configStore.GetKeysByIDs(ctx, pc.KeyIDs)
-						if err != nil {
-							return fmt.Errorf("failed to get keys by IDs for provider %s: %w", pc.Provider, err)
+						if err := pc.KeyIDs.Validate(); err != nil {
+							return &badRequestError{err: fmt.Errorf("invalid key_ids for provider %s: %w", pc.Provider, err)}
 						}
-						if len(keys) != len(pc.KeyIDs) {
-							return fmt.Errorf("some keys not found for provider %s: expected %d, found %d", pc.Provider, len(pc.KeyIDs), len(keys))
-						}
-					}
-					existing.AllowAllKeys = allowAllKeys
-					existing.Keys = keys
 
-					// Provider-config governance is stored in the VK-scoped model config for this
-					// provider (written by syncVKGovernanceToModelConfigs). pc.Budgets == nil
-					// leaves existing budgets unchanged; an explicit set reconciles them.
-					pName := string(providerName)
-					rlRemove := false
-					var pcRL *configstoreTables.TableRateLimit
-					if pc.RateLimit != nil {
-						if isRateLimitRemovalRequest(pc.RateLimit) {
-							rlRemove = true
-						} else {
+						// Get keys for this provider config if specified
+						var keys []configstoreTables.TableKey
+						allowAllKeys := false
+						if pc.KeyIDs.IsUnrestricted() {
+							allowAllKeys = true
+						} else if !pc.KeyIDs.IsEmpty() {
+							var err error
+							keys, err = h.configStore.GetKeysByIDs(mutationCtx, pc.KeyIDs)
+							if err != nil {
+								return fmt.Errorf("failed to get keys by IDs for provider %s: %w", pc.Provider, err)
+							}
+							if len(keys) != len(pc.KeyIDs) {
+								return fmt.Errorf("some keys not found for provider %s: expected %d, found %d", pc.Provider, len(pc.KeyIDs), len(keys))
+							}
+						}
+
+						// Create new provider config
+						providerConfig := &configstoreTables.TableVirtualKeyProviderConfig{
+							VirtualKeyID:      vk.ID,
+							Provider:          string(providerName),
+							Weight:            pc.Weight,
+							AllowedModels:     pc.AllowedModels,
+							BlacklistedModels: pc.BlacklistedModels,
+							AllowAllKeys:      allowAllKeys,
+							Keys:              keys,
+						}
+						if err := h.configStore.CreateVirtualKeyProviderConfig(mutationCtx, providerConfig, tx); err != nil {
+							return err
+						}
+						// Provider-config governance is stored in the VK-scoped model config for this provider.
+						pName := string(providerName)
+						var pcRL *configstoreTables.TableRateLimit
+						if pc.RateLimit != nil {
 							pcRL = rateLimitFromRequestFields(pc.RateLimit.TokenMaxLimit, pc.RateLimit.TokenResetDuration, pc.RateLimit.RequestMaxLimit, pc.RateLimit.RequestResetDuration)
 						}
+						vkGovProviders = append(vkGovProviders, vkModelConfigDesired{
+							provider:          &pName,
+							budgetsProvided:   true,
+							budgets:           pc.Budgets,
+							rateLimitProvided: pc.RateLimit != nil,
+							rateLimit:         pcRL,
+						})
+					} else {
+						// Update existing provider config
+						existing, ok := existingConfigsMap[*pc.ID]
+						if !ok {
+							return fmt.Errorf("provider config %d does not belong to this virtual key", *pc.ID)
+						}
+						requestConfigsMap[*pc.ID] = true
+						if err := pc.AllowedModels.Validate(); err != nil {
+							return &badRequestError{err: fmt.Errorf("invalid allowed_models for provider %s: %w", pc.Provider, err)}
+						}
+						if err := pc.BlacklistedModels.Validate(); err != nil {
+							return &badRequestError{err: fmt.Errorf("invalid blacklisted_models for provider %s: %w", pc.Provider, err)}
+						}
+						if err := pc.KeyIDs.Validate(); err != nil {
+							return &badRequestError{err: fmt.Errorf("invalid key_ids for provider %s: %w", pc.Provider, err)}
+						}
+						existing.Provider = string(providerName)
+						existing.Weight = pc.Weight
+						existing.AllowedModels = pc.AllowedModels
+						existing.BlacklistedModels = pc.BlacklistedModels
+
+						// Get keys for this provider config if specified
+						var keys []configstoreTables.TableKey
+						allowAllKeys := false
+						if pc.KeyIDs.IsUnrestricted() {
+							allowAllKeys = true
+						} else if !pc.KeyIDs.IsEmpty() {
+							var err error
+							keys, err = h.configStore.GetKeysByIDs(mutationCtx, pc.KeyIDs)
+							if err != nil {
+								return fmt.Errorf("failed to get keys by IDs for provider %s: %w", pc.Provider, err)
+							}
+							if len(keys) != len(pc.KeyIDs) {
+								return fmt.Errorf("some keys not found for provider %s: expected %d, found %d", pc.Provider, len(pc.KeyIDs), len(keys))
+							}
+						}
+						existing.AllowAllKeys = allowAllKeys
+						existing.Keys = keys
+
+						// Provider-config governance is stored in the VK-scoped model config for this
+						// provider (written by syncVKGovernanceToModelConfigs). pc.Budgets == nil
+						// leaves existing budgets unchanged; an explicit set reconciles them.
+						pName := string(providerName)
+						rlRemove := false
+						var pcRL *configstoreTables.TableRateLimit
+						if pc.RateLimit != nil {
+							if isRateLimitRemovalRequest(pc.RateLimit) {
+								rlRemove = true
+							} else {
+								pcRL = rateLimitFromRequestFields(pc.RateLimit.TokenMaxLimit, pc.RateLimit.TokenResetDuration, pc.RateLimit.RequestMaxLimit, pc.RateLimit.RequestResetDuration)
+							}
+						}
+						vkGovProviders = append(vkGovProviders, vkModelConfigDesired{
+							provider:          &pName,
+							budgetsProvided:   pc.Budgets != nil,
+							budgets:           pc.Budgets,
+							rateLimitProvided: pc.RateLimit != nil,
+							rateLimitRemove:   rlRemove,
+							rateLimit:         pcRL,
+						})
+						if err := h.configStore.UpdateVirtualKeyProviderConfig(mutationCtx, &existing, tx); err != nil {
+							return err
+						}
 					}
-					vkGovProviders = append(vkGovProviders, vkModelConfigDesired{
-						provider:          &pName,
-						budgetsProvided:   pc.Budgets != nil,
-						budgets:           pc.Budgets,
-						rateLimitProvided: pc.RateLimit != nil,
-						rateLimitRemove:   rlRemove,
-						rateLimit:         pcRL,
-					})
-					if err := h.configStore.UpdateVirtualKeyProviderConfig(ctx, &existing, tx); err != nil {
-						return err
+				}
+				// Delete provider configs that are not in the request
+				configIDs := make([]uint, 0, len(existingConfigsMap))
+				for id := range existingConfigsMap {
+					configIDs = append(configIDs, id)
+				}
+				sort.Slice(configIDs, func(i, j int) bool { return configIDs[i] < configIDs[j] })
+				for _, id := range configIDs {
+					if !requestConfigsMap[id] {
+						providerBudgetIDsToDelete, providerRateLimitIDsToDelete = collectProviderConfigDeleteIDs(
+							existingConfigsMap[id],
+							providerBudgetIDsToDelete,
+							providerRateLimitIDsToDelete,
+						)
+						if err := h.configStore.DeleteVirtualKeyProviderConfig(mutationCtx, id, tx); err != nil {
+							return err
+						}
 					}
 				}
 			}
-			// Delete provider configs that are not in the request
-			configIDs := make([]uint, 0, len(existingConfigsMap))
-			for id := range existingConfigsMap {
-				configIDs = append(configIDs, id)
+			// Fold VK governance into VK-scoped model configs. The top-level is always reconciled
+			// (provided-aware); per-provider configs are reconciled only when the request supplied
+			// provider_configs (else they're left untouched).
+			top := vkModelConfigDesired{
+				budgetsProvided:   req.Budgets != nil,
+				budgets:           req.Budgets,
+				rateLimitProvided: req.RateLimit != nil,
 			}
-			sort.Slice(configIDs, func(i, j int) bool { return configIDs[i] < configIDs[j] })
-			for _, id := range configIDs {
-				if !requestConfigsMap[id] {
-					providerBudgetIDsToDelete, providerRateLimitIDsToDelete = collectProviderConfigDeleteIDs(
-						existingConfigsMap[id],
-						providerBudgetIDsToDelete,
-						providerRateLimitIDsToDelete,
-					)
-					if err := h.configStore.DeleteVirtualKeyProviderConfig(ctx, id, tx); err != nil {
-						return err
-					}
-				}
-			}
-		}
-		// Fold VK governance into VK-scoped model configs. The top-level is always reconciled
-		// (provided-aware); per-provider configs are reconciled only when the request supplied
-		// provider_configs (else they're left untouched).
-		top := vkModelConfigDesired{
-			budgetsProvided:   req.Budgets != nil,
-			budgets:           req.Budgets,
-			rateLimitProvided: req.RateLimit != nil,
-		}
-		if req.RateLimit != nil {
-			if isRateLimitRemovalRequest(req.RateLimit) {
-				top.rateLimitRemove = true
-			} else {
-				top.rateLimit = rateLimitFromRequestFields(req.RateLimit.TokenMaxLimit, req.RateLimit.TokenResetDuration, req.RateLimit.RequestMaxLimit, req.RateLimit.RequestResetDuration)
-			}
-		}
-		if err := h.syncVKGovernanceToModelConfigs(ctx, tx, vk, top, vkGovProviders, req.ProviderConfigs != nil); err != nil {
-			return err
-		}
-		if req.MCPConfigs != nil {
-			// Check for duplicate MCPClientName values among all configs before processing
-			seenMCPClientNames := make(map[string]bool)
-			for _, mc := range req.MCPConfigs {
-				if seenMCPClientNames[mc.MCPClientName] {
-					return &badRequestError{err: fmt.Errorf("duplicate mcp_client_name: %s", mc.MCPClientName)}
-				}
-				seenMCPClientNames[mc.MCPClientName] = true
-			}
-			// Get existing MCP configs for comparison
-			var existingMCPConfigs []configstoreTables.TableVirtualKeyMCPConfig
-			if err := tx.Where("virtual_key_id = ?", vk.ID).Find(&existingMCPConfigs).Error; err != nil {
-				return err
-			}
-			sort.Slice(existingMCPConfigs, func(i, j int) bool { return existingMCPConfigs[i].ID < existingMCPConfigs[j].ID })
-			sort.Slice(req.MCPConfigs, func(i, j int) bool {
-				if req.MCPConfigs[i].ID == nil && req.MCPConfigs[j].ID != nil {
-					return false
-				}
-				if req.MCPConfigs[i].ID != nil && req.MCPConfigs[j].ID == nil {
-					return true
-				}
-				if req.MCPConfigs[i].ID != nil && req.MCPConfigs[j].ID != nil && *req.MCPConfigs[i].ID != *req.MCPConfigs[j].ID {
-					return *req.MCPConfigs[i].ID < *req.MCPConfigs[j].ID
-				}
-				return req.MCPConfigs[i].MCPClientName < req.MCPConfigs[j].MCPClientName
-			})
-			// Create maps for easier lookup
-			existingMCPConfigsMap := make(map[uint]configstoreTables.TableVirtualKeyMCPConfig)
-			for _, config := range existingMCPConfigs {
-				existingMCPConfigsMap[config.ID] = config
-			}
-			requestMCPConfigsMap := make(map[uint]bool)
-			// Process new configs: create new ones and update existing ones
-			for _, mc := range req.MCPConfigs {
-				if err := mc.ToolsToExecute.Validate(); err != nil {
-					return &badRequestError{err: fmt.Errorf("invalid tools_to_execute for mcp client %s: %w", mc.MCPClientName, err)}
-				}
-				if mc.ID == nil {
-					mcpClient, err := h.configStore.GetMCPClientByName(ctx, mc.MCPClientName)
-					if err != nil {
-						return fmt.Errorf("failed to get MCP client: %w", err)
-					}
-					// Create new MCP config
-					if err := h.configStore.CreateVirtualKeyMCPConfig(ctx, &configstoreTables.TableVirtualKeyMCPConfig{
-						VirtualKeyID:   vk.ID,
-						MCPClientID:    mcpClient.ID,
-						ToolsToExecute: mc.ToolsToExecute,
-					}, tx); err != nil {
-						return err
-					}
+			if req.RateLimit != nil {
+				if isRateLimitRemovalRequest(req.RateLimit) {
+					top.rateLimitRemove = true
 				} else {
-					// Update existing MCP config
-					existing, ok := existingMCPConfigsMap[*mc.ID]
-					if !ok {
-						return fmt.Errorf("MCP config %d does not belong to this virtual key", *mc.ID)
+					top.rateLimit = rateLimitFromRequestFields(req.RateLimit.TokenMaxLimit, req.RateLimit.TokenResetDuration, req.RateLimit.RequestMaxLimit, req.RateLimit.RequestResetDuration)
+				}
+			}
+			if err := h.syncVKGovernanceToModelConfigs(mutationCtx, tx, vk, top, vkGovProviders, req.ProviderConfigs != nil); err != nil {
+				return err
+			}
+			if req.MCPConfigs != nil {
+				// Check for duplicate MCPClientName values among all configs before processing
+				seenMCPClientNames := make(map[string]bool)
+				for _, mc := range req.MCPConfigs {
+					if seenMCPClientNames[mc.MCPClientName] {
+						return &badRequestError{err: fmt.Errorf("duplicate mcp_client_name: %s", mc.MCPClientName)}
 					}
-					requestMCPConfigsMap[*mc.ID] = true
-					existing.ToolsToExecute = mc.ToolsToExecute
-					if err := h.configStore.UpdateVirtualKeyMCPConfig(ctx, &existing, tx); err != nil {
-						return err
+					seenMCPClientNames[mc.MCPClientName] = true
+				}
+				// Get existing MCP configs for comparison
+				var existingMCPConfigs []configstoreTables.TableVirtualKeyMCPConfig
+				if err := tx.Where("virtual_key_id = ?", vk.ID).Find(&existingMCPConfigs).Error; err != nil {
+					return err
+				}
+				sort.Slice(existingMCPConfigs, func(i, j int) bool { return existingMCPConfigs[i].ID < existingMCPConfigs[j].ID })
+				sort.Slice(req.MCPConfigs, func(i, j int) bool {
+					if req.MCPConfigs[i].ID == nil && req.MCPConfigs[j].ID != nil {
+						return false
+					}
+					if req.MCPConfigs[i].ID != nil && req.MCPConfigs[j].ID == nil {
+						return true
+					}
+					if req.MCPConfigs[i].ID != nil && req.MCPConfigs[j].ID != nil && *req.MCPConfigs[i].ID != *req.MCPConfigs[j].ID {
+						return *req.MCPConfigs[i].ID < *req.MCPConfigs[j].ID
+					}
+					return req.MCPConfigs[i].MCPClientName < req.MCPConfigs[j].MCPClientName
+				})
+				// Create maps for easier lookup
+				existingMCPConfigsMap := make(map[uint]configstoreTables.TableVirtualKeyMCPConfig)
+				for _, config := range existingMCPConfigs {
+					existingMCPConfigsMap[config.ID] = config
+				}
+				requestMCPConfigsMap := make(map[uint]bool)
+				// Process new configs: create new ones and update existing ones
+				for _, mc := range req.MCPConfigs {
+					if err := mc.ToolsToExecute.Validate(); err != nil {
+						return &badRequestError{err: fmt.Errorf("invalid tools_to_execute for mcp client %s: %w", mc.MCPClientName, err)}
+					}
+					if mc.ID == nil {
+						mcpClient, err := h.configStore.GetMCPClientByName(mutationCtx, mc.MCPClientName)
+						if err != nil {
+							return fmt.Errorf("failed to get MCP client: %w", err)
+						}
+						// Create new MCP config
+						if err := h.configStore.CreateVirtualKeyMCPConfig(mutationCtx, &configstoreTables.TableVirtualKeyMCPConfig{
+							VirtualKeyID:   vk.ID,
+							MCPClientID:    mcpClient.ID,
+							ToolsToExecute: mc.ToolsToExecute,
+						}, tx); err != nil {
+							return err
+						}
+					} else {
+						// Update existing MCP config
+						existing, ok := existingMCPConfigsMap[*mc.ID]
+						if !ok {
+							return fmt.Errorf("MCP config %d does not belong to this virtual key", *mc.ID)
+						}
+						requestMCPConfigsMap[*mc.ID] = true
+						existing.ToolsToExecute = mc.ToolsToExecute
+						if err := h.configStore.UpdateVirtualKeyMCPConfig(mutationCtx, &existing, tx); err != nil {
+							return err
+						}
+					}
+				}
+				// Delete MCP configs that are not in the request
+				mcpConfigIDs := make([]uint, 0, len(existingMCPConfigsMap))
+				for id := range existingMCPConfigsMap {
+					mcpConfigIDs = append(mcpConfigIDs, id)
+				}
+				sort.Slice(mcpConfigIDs, func(i, j int) bool { return mcpConfigIDs[i] < mcpConfigIDs[j] })
+				for _, id := range mcpConfigIDs {
+					if !requestMCPConfigsMap[id] {
+						if err := h.configStore.DeleteVirtualKeyMCPConfig(mutationCtx, id, tx); err != nil {
+							return err
+						}
 					}
 				}
 			}
-			// Delete MCP configs that are not in the request
-			mcpConfigIDs := make([]uint, 0, len(existingMCPConfigsMap))
-			for id := range existingMCPConfigsMap {
-				mcpConfigIDs = append(mcpConfigIDs, id)
-			}
-			sort.Slice(mcpConfigIDs, func(i, j int) bool { return mcpConfigIDs[i] < mcpConfigIDs[j] })
-			for _, id := range mcpConfigIDs {
-				if !requestMCPConfigsMap[id] {
-					if err := h.configStore.DeleteVirtualKeyMCPConfig(ctx, id, tx); err != nil {
-						return err
-					}
+
+			if rateLimitIDToDelete != "" {
+				if err := h.configStore.DeleteRateLimit(mutationCtx, rateLimitIDToDelete, tx); err != nil {
+					return err
 				}
 			}
-		}
+			sort.Strings(providerBudgetIDsToDelete)
+			for _, id := range providerBudgetIDsToDelete {
+				if err := h.configStore.DeleteBudget(mutationCtx, id, tx); err != nil && !errors.Is(err, configstore.ErrNotFound) {
+					return err
+				}
+			}
+			sort.Strings(providerRateLimitIDsToDelete)
+			for _, id := range providerRateLimitIDsToDelete {
+				if err := h.configStore.DeleteRateLimit(mutationCtx, id, tx); err != nil && !errors.Is(err, configstore.ErrNotFound) {
+					return err
+				}
+			}
 
-		if rateLimitIDToDelete != "" {
-			if err := h.configStore.DeleteRateLimit(ctx, rateLimitIDToDelete, tx); err != nil {
-				return err
-			}
+			return nil
+		})
+	})
+	if err != nil {
+		if handleConfigMutationError(ctx, err) {
+			return
 		}
-		sort.Strings(providerBudgetIDsToDelete)
-		for _, id := range providerBudgetIDsToDelete {
-			if err := h.configStore.DeleteBudget(ctx, id, tx); err != nil && !errors.Is(err, configstore.ErrNotFound) {
-				return err
-			}
-		}
-		sort.Strings(providerRateLimitIDsToDelete)
-		for _, id := range providerRateLimitIDsToDelete {
-			if err := h.configStore.DeleteRateLimit(ctx, id, tx); err != nil && !errors.Is(err, configstore.ErrNotFound) {
-				return err
-			}
-		}
-
-		return nil
-	}); err != nil {
 		var badReqErr *badRequestError
 		if errors.As(err, &badReqErr) {
 			SendError(ctx, 400, fmt.Sprintf("Failed to update virtual key: %v", err))
@@ -1914,20 +1969,14 @@ func (h *GovernanceHandler) updateVirtualKey(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, 500, fmt.Sprintf("Failed to update virtual key: %v", err))
 		return
 	}
-	// Load relationships for response
-	preloadedVk, err := h.configStore.GetVirtualKey(ctx, vk.ID)
+	preloadedVk, err := h.governanceManager.ReloadVirtualKey(ctx, vk.ID)
 	if err != nil {
-		logger.Error("failed to load relationships for updated VK: %v", err)
-		preloadedVk = vk
+		logger.Error("failed to reload virtual key after update: %v", err)
+		sendConfigMutationPending(ctx, revision)
+		return
 	}
 	// Reverse-map governance from VK-scoped model configs for display.
 	h.hydrateVKGovernance(ctx, preloadedVk)
-	if _, err := h.governanceManager.ReloadVirtualKey(ctx, vk.ID); err != nil {
-		// Should never happen but just in case
-		logger.Error("failed to reload virtual key after update: %v", err)
-		SendError(ctx, 500, "Virtual key updated in database but failed to reload in-memory state")
-		return
-	}
 
 	// Per-user credential reconciliation when the VK's MCP allowlist
 	// changed. Mirrors the AP-propagation path: enterprise orphans /
@@ -1943,15 +1992,28 @@ func (h *GovernanceHandler) updateVirtualKey(ctx *fasthttp.RequestCtx) {
 		}
 	}
 
+	if prepared.enabled {
+		setConfigRevisionHeaders(ctx, revision)
+	}
+
 	SendJSON(ctx, map[string]interface{}{
 		"message":     "Virtual key updated successfully",
 		"virtual_key": preloadedVk,
 	})
 }
 
-func (h *GovernanceHandler) rotateVirtualKeyByID(ctx context.Context, vkID string) (*configstoreTables.TableVirtualKey, error) {
-	vk, err := h.configStore.GetVirtualKey(ctx, vkID)
-	if err != nil {
+func (h *GovernanceHandler) rotateVirtualKeyByID(ctx context.Context, tx *gorm.DB, vkID string) (*configstoreTables.TableVirtualKey, error) {
+	var vk configstoreTables.TableVirtualKey
+	if tx == nil {
+		loaded, err := h.configStore.GetVirtualKey(ctx, vkID)
+		if err != nil {
+			return nil, err
+		}
+		vk = *loaded
+	} else if err := dbForUpdate(tx.WithContext(ctx)).First(&vk, "id = ?", vkID).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, configstore.ErrNotFound
+		}
 		return nil, err
 	}
 	oldValue := vk.Value.GetValue()
@@ -1959,22 +2021,40 @@ func (h *GovernanceHandler) rotateVirtualKeyByID(ctx context.Context, vkID strin
 	if vk.Value.GetValue() == oldValue {
 		return nil, fmt.Errorf("generated virtual key matched existing value")
 	}
-	if err := h.configStore.UpdateVirtualKey(ctx, vk); err != nil {
+	if tx == nil {
+		if err := h.configStore.UpdateVirtualKey(ctx, &vk); err != nil {
+			return nil, err
+		}
+	} else if err := h.configStore.UpdateVirtualKey(ctx, &vk, tx); err != nil {
 		return nil, err
 	}
-	preloadedVk, err := h.governanceManager.ReloadVirtualKey(ctx, vk.ID)
-	if err != nil {
-		return nil, fmt.Errorf("virtual key rotated in database but failed to reload in-memory state: %w", err)
-	}
-	h.hydrateVKGovernance(ctx, preloadedVk)
-	return preloadedVk, nil
+	return &vk, nil
 }
 
 // rotateVirtualKey handles POST /api/governance/virtual-keys/{vk_id}/rotate - Rotate only the virtual key value
 func (h *GovernanceHandler) rotateVirtualKey(ctx *fasthttp.RequestCtx) {
 	vkID := ctx.UserValue("vk_id").(string)
-	preloadedVk, err := h.rotateVirtualKeyByID(ctx, vkID)
+	prepared, ok := prepareConfigMutation(ctx, h.configStore)
+	if !ok {
+		return
+	}
+	var vk *configstoreTables.TableVirtualKey
+	revision, err := commitConfigMutation(ctx, h.configStore, prepared, func(mutationCtx context.Context) error {
+		if !prepared.enabled {
+			var rotateErr error
+			vk, rotateErr = h.rotateVirtualKeyByID(mutationCtx, nil, vkID)
+			return rotateErr
+		}
+		return h.configStore.ExecuteTransaction(mutationCtx, func(tx *gorm.DB) error {
+			var rotateErr error
+			vk, rotateErr = h.rotateVirtualKeyByID(mutationCtx, tx, vkID)
+			return rotateErr
+		})
+	})
 	if err != nil {
+		if handleConfigMutationError(ctx, err) {
+			return
+		}
 		if errors.Is(err, configstore.ErrNotFound) {
 			SendError(ctx, 404, "Virtual key not found")
 			return
@@ -1982,6 +2062,16 @@ func (h *GovernanceHandler) rotateVirtualKey(ctx *fasthttp.RequestCtx) {
 		logger.Error("failed to rotate virtual key: %v", err)
 		SendError(ctx, 500, fmt.Sprintf("Failed to rotate virtual key: %v", err))
 		return
+	}
+	preloadedVk, err := h.governanceManager.ReloadVirtualKey(ctx, vk.ID)
+	if err != nil {
+		logger.Error("failed to reload rotated virtual key: %v", err)
+		sendConfigMutationPending(ctx, revision)
+		return
+	}
+	h.hydrateVKGovernance(ctx, preloadedVk)
+	if prepared.enabled {
+		setConfigRevisionHeaders(ctx, revision)
 	}
 	SendJSON(ctx, map[string]interface{}{
 		"message":     "Virtual key rotated successfully",
@@ -2016,33 +2106,75 @@ func (h *GovernanceHandler) rotateVirtualKeys(ctx *fasthttp.RequestCtx) {
 		ids = append(ids, id)
 	}
 
+	prepared, ok := prepareConfigMutation(ctx, h.configStore)
+	if !ok {
+		return
+	}
 	rotated := make([]*configstoreTables.TableVirtualKey, 0, len(ids))
 	failures := make(map[string]string)
-	for _, id := range ids {
-		vk, err := h.rotateVirtualKeyByID(ctx, id)
-		if err != nil {
-			if errors.Is(err, configstore.ErrNotFound) {
-				failures[id] = "virtual key not found"
-			} else {
-				failures[id] = err.Error()
+	noRotationsErr := errors.New("no virtual keys were rotated")
+	revision, err := commitConfigMutation(ctx, h.configStore, prepared, func(mutationCtx context.Context) error {
+		rotateAll := func(tx *gorm.DB) error {
+			for _, id := range ids {
+				vk, rotateErr := h.rotateVirtualKeyByID(mutationCtx, tx, id)
+				if rotateErr != nil {
+					if errors.Is(rotateErr, configstore.ErrNotFound) {
+						failures[id] = "virtual key not found"
+					} else {
+						failures[id] = rotateErr.Error()
+					}
+					logger.Error("failed to rotate virtual key %s: %v", id, rotateErr)
+					continue
+				}
+				rotated = append(rotated, vk)
 			}
-			logger.Error("failed to rotate virtual key %s: %v", id, err)
-			continue
+			if len(rotated) == 0 {
+				return noRotationsErr
+			}
+			return nil
 		}
-		rotated = append(rotated, vk)
+		if !prepared.enabled {
+			return rotateAll(nil)
+		}
+		return h.configStore.ExecuteTransaction(mutationCtx, rotateAll)
+	})
+	if err != nil {
+		if handleConfigMutationError(ctx, err) {
+			return
+		}
+		if errors.Is(err, noRotationsErr) {
+			SendJSONWithStatus(ctx, map[string]interface{}{
+				"message":      "Failed to rotate virtual keys",
+				"virtual_keys": rotated,
+				"errors":       failures,
+			}, fasthttp.StatusInternalServerError)
+			return
+		}
+		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to rotate virtual keys: %v", err))
+		return
+	}
+
+	applied := make([]*configstoreTables.TableVirtualKey, 0, len(rotated))
+	for _, vk := range rotated {
+		preloadedVk, reloadErr := h.governanceManager.ReloadVirtualKey(ctx, vk.ID)
+		if reloadErr != nil {
+			logger.Error("failed to reload rotated virtual key %s: %v", vk.ID, reloadErr)
+			sendConfigMutationPending(ctx, revision)
+			return
+		}
+		h.hydrateVKGovernance(ctx, preloadedVk)
+		applied = append(applied, preloadedVk)
 	}
 
 	response := map[string]interface{}{
 		"message":      "Virtual keys rotated successfully",
-		"virtual_keys": rotated,
+		"virtual_keys": applied,
 	}
 	if len(failures) > 0 {
 		response["errors"] = failures
 	}
-	if len(rotated) == 0 {
-		response["message"] = "Failed to rotate virtual keys"
-		SendJSONWithStatus(ctx, response, 500)
-		return
+	if prepared.enabled {
+		setConfigRevisionHeaders(ctx, revision)
 	}
 	SendJSON(ctx, response)
 }
@@ -2050,7 +2182,10 @@ func (h *GovernanceHandler) rotateVirtualKeys(ctx *fasthttp.RequestCtx) {
 // deleteVirtualKey handles DELETE /api/governance/virtual-keys/{vk_id} - Delete a virtual key
 func (h *GovernanceHandler) deleteVirtualKey(ctx *fasthttp.RequestCtx) {
 	vkID := ctx.UserValue("vk_id").(string)
-	// Fetch the virtual key from the database to get the budget and rate limit
+	prepared, ok := prepareConfigMutation(ctx, h.configStore)
+	if !ok {
+		return
+	}
 	vk, err := h.configStore.GetVirtualKey(ctx, vkID)
 	if err != nil {
 		if errors.Is(err, configstore.ErrNotFound) {
@@ -2060,8 +2195,13 @@ func (h *GovernanceHandler) deleteVirtualKey(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, 500, "Failed to retrieve virtual key")
 		return
 	}
-	// Deleting key from database
-	if err := h.configStore.DeleteVirtualKey(ctx, vkID); err != nil {
+	revision, err := commitConfigMutation(ctx, h.configStore, prepared, func(mutationCtx context.Context) error {
+		return h.configStore.DeleteVirtualKey(mutationCtx, vkID)
+	})
+	if err != nil {
+		if handleConfigMutationError(ctx, err) {
+			return
+		}
 		if errors.Is(err, configstore.ErrNotFound) {
 			SendError(ctx, 404, "Virtual key not found")
 			return
@@ -2070,11 +2210,13 @@ func (h *GovernanceHandler) deleteVirtualKey(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, 500, "Failed to delete virtual key")
 		return
 	}
-	// Removing key from in-memory store
-	err = h.governanceManager.RemoveVirtualKey(ctx, vk.ID)
-	if err != nil {
-		// But we ignore this error because its not
+	if err := h.governanceManager.RemoveVirtualKey(ctx, vk.ID); err != nil {
 		logger.Error("failed to remove virtual key: %v", err)
+		sendConfigMutationPending(ctx, revision)
+		return
+	}
+	if prepared.enabled {
+		setConfigRevisionHeaders(ctx, revision)
 	}
 	SendJSON(ctx, map[string]interface{}{
 		"message": "Virtual key deleted successfully",
@@ -2085,6 +2227,7 @@ func (h *GovernanceHandler) deleteVirtualKey(ctx *fasthttp.RequestCtx) {
 
 // getTeams handles GET /api/governance/teams - Get all teams
 func (h *GovernanceHandler) getTeams(ctx *fasthttp.RequestCtx) {
+	setCurrentConfigRevisionHeaders(ctx, h.configStore)
 	customerID := string(ctx.QueryArgs().Peek("customer_id"))
 
 	// Check for pagination parameters
@@ -2158,65 +2301,75 @@ func (h *GovernanceHandler) createTeam(ctx *fasthttp.RequestCtx) {
 			return
 		}
 	}
+	prepared, ok := prepareConfigMutation(ctx, h.configStore)
+	if !ok {
+		return
+	}
 	// Creating team in database
 	var team configstoreTables.TableTeam
-	if err := h.configStore.ExecuteTransaction(ctx, func(tx *gorm.DB) error {
-		team = configstoreTables.TableTeam{
-			ID:              uuid.NewString(),
-			Name:            req.Name,
-			CustomerID:      req.CustomerID,
-			CalendarAligned: req.CalendarAligned,
-		}
-		if req.RateLimit != nil {
-			rateLimit := configstoreTables.TableRateLimit{
-				ID:                   uuid.NewString(),
-				TokenMaxLimit:        req.RateLimit.TokenMaxLimit,
-				TokenResetDuration:   req.RateLimit.TokenResetDuration,
-				RequestMaxLimit:      req.RateLimit.RequestMaxLimit,
-				RequestResetDuration: req.RateLimit.RequestResetDuration,
-				TokenLastReset:       time.Now(),
-				RequestLastReset:     time.Now(),
+	revision, err := commitConfigMutation(ctx, h.configStore, prepared, func(mutationCtx context.Context) error {
+		return h.configStore.ExecuteTransaction(mutationCtx, func(tx *gorm.DB) error {
+			team = configstoreTables.TableTeam{
+				ID:              uuid.NewString(),
+				Name:            req.Name,
+				CustomerID:      req.CustomerID,
+				CalendarAligned: req.CalendarAligned,
 			}
-			if err := h.configStore.CreateRateLimit(ctx, &rateLimit, tx); err != nil {
+			if req.RateLimit != nil {
+				rateLimit := configstoreTables.TableRateLimit{
+					ID:                   uuid.NewString(),
+					TokenMaxLimit:        req.RateLimit.TokenMaxLimit,
+					TokenResetDuration:   req.RateLimit.TokenResetDuration,
+					RequestMaxLimit:      req.RateLimit.RequestMaxLimit,
+					RequestResetDuration: req.RateLimit.RequestResetDuration,
+					TokenLastReset:       time.Now(),
+					RequestLastReset:     time.Now(),
+				}
+				if err := h.configStore.CreateRateLimit(mutationCtx, &rateLimit, tx); err != nil {
+					return err
+				}
+				team.RateLimitID = &rateLimit.ID
+			}
+			// Team row must exist before child budgets (FK on governance_budgets.team_id)
+			if err := h.configStore.CreateTeam(mutationCtx, &team, tx); err != nil {
 				return err
 			}
-			team.RateLimitID = &rateLimit.ID
+			// Create owned multi-budgets; enforce unique reset_duration per team
+			seenDurations := make(map[string]bool)
+			for _, b := range req.Budgets {
+				if b.MaxLimit < 0 {
+					return &badRequestError{err: fmt.Errorf("budget max_limit cannot be negative: %.2f", b.MaxLimit)}
+				}
+				if d, err := configstoreTables.ParseDuration(b.ResetDuration); err != nil || d <= 0 {
+					return &badRequestError{err: fmt.Errorf("invalid reset duration (must be a positive duration): %s", b.ResetDuration)}
+				}
+				if seenDurations[b.ResetDuration] {
+					return &badRequestError{err: fmt.Errorf("duplicate reset_duration in budgets: %s", b.ResetDuration)}
+				}
+				seenDurations[b.ResetDuration] = true
+				budget := configstoreTables.TableBudget{
+					ID:            uuid.NewString(),
+					MaxLimit:      b.MaxLimit,
+					ResetDuration: b.ResetDuration,
+					LastReset:     budgetLastReset(team.CalendarAligned, b.ResetDuration),
+					CurrentUsage:  0,
+					TeamID:        &team.ID,
+				}
+				if err := validateBudget(&budget); err != nil {
+					return err
+				}
+				if err := h.configStore.CreateBudget(mutationCtx, &budget, tx); err != nil {
+					return err
+				}
+				team.Budgets = append(team.Budgets, budget)
+			}
+			return nil
+		})
+	})
+	if err != nil {
+		if handleConfigMutationError(ctx, err) {
+			return
 		}
-		// Team row must exist before child budgets (FK on governance_budgets.team_id)
-		if err := h.configStore.CreateTeam(ctx, &team, tx); err != nil {
-			return err
-		}
-		// Create owned multi-budgets; enforce unique reset_duration per team
-		seenDurations := make(map[string]bool)
-		for _, b := range req.Budgets {
-			if b.MaxLimit < 0 {
-				return &badRequestError{err: fmt.Errorf("budget max_limit cannot be negative: %.2f", b.MaxLimit)}
-			}
-			if d, err := configstoreTables.ParseDuration(b.ResetDuration); err != nil || d <= 0 {
-				return &badRequestError{err: fmt.Errorf("invalid reset duration (must be a positive duration): %s", b.ResetDuration)}
-			}
-			if seenDurations[b.ResetDuration] {
-				return &badRequestError{err: fmt.Errorf("duplicate reset_duration in budgets: %s", b.ResetDuration)}
-			}
-			seenDurations[b.ResetDuration] = true
-			budget := configstoreTables.TableBudget{
-				ID:            uuid.NewString(),
-				MaxLimit:      b.MaxLimit,
-				ResetDuration: b.ResetDuration,
-				LastReset:     budgetLastReset(team.CalendarAligned, b.ResetDuration),
-				CurrentUsage:  0,
-				TeamID:        &team.ID,
-			}
-			if err := validateBudget(&budget); err != nil {
-				return err
-			}
-			if err := h.configStore.CreateBudget(ctx, &budget, tx); err != nil {
-				return err
-			}
-			team.Budgets = append(team.Budgets, budget)
-		}
-		return nil
-	}); err != nil {
 		var badReqErr *badRequestError
 		if errors.As(err, &badReqErr) {
 			SendError(ctx, 400, err.Error())
@@ -2230,11 +2383,14 @@ func (h *GovernanceHandler) createTeam(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, 500, "failed to create team")
 		return
 	}
-	// Reloading team from in-memory store
 	preloadedTeam, err := h.governanceManager.ReloadTeam(ctx, team.ID)
 	if err != nil {
 		logger.Error("failed to reload team: %v", err)
-		preloadedTeam = &team
+		sendConfigMutationPending(ctx, revision)
+		return
+	}
+	if prepared.enabled {
+		setConfigRevisionHeaders(ctx, revision)
 	}
 	SendJSON(ctx, map[string]interface{}{
 		"message": "Team created successfully",
@@ -2244,6 +2400,7 @@ func (h *GovernanceHandler) createTeam(ctx *fasthttp.RequestCtx) {
 
 // getTeam handles GET /api/governance/teams/{team_id} - Get a specific team
 func (h *GovernanceHandler) getTeam(ctx *fasthttp.RequestCtx) {
+	setCurrentConfigRevisionHeaders(ctx, h.configStore)
 	// The router matches on the raw (percent-encoded) path, so SCIM/IdP-synced team
 	// IDs containing spaces or other URL-sensitive characters arrive still encoded.
 	teamID, err := url.PathUnescape(ctx.UserValue("team_id").(string))
@@ -2280,6 +2437,10 @@ func (h *GovernanceHandler) updateTeam(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, 400, "Invalid JSON")
 		return
 	}
+	prepared, ok := prepareConfigMutation(ctx, h.configStore)
+	if !ok {
+		return
+	}
 	// Fetching team from database
 	team, err := h.configStore.GetTeam(ctx, teamID)
 	if err != nil {
@@ -2291,203 +2452,209 @@ func (h *GovernanceHandler) updateTeam(ctx *fasthttp.RequestCtx) {
 		return
 	}
 	// Updating team in database
-	if err := h.configStore.ExecuteTransaction(ctx, func(tx *gorm.DB) error {
-		// Track rate-limit ID to delete after updating the team (to avoid FK constraint)
-		var rateLimitIDToDelete string
+	revision, err := commitConfigMutation(ctx, h.configStore, prepared, func(mutationCtx context.Context) error {
+		return h.configStore.ExecuteTransaction(mutationCtx, func(tx *gorm.DB) error {
+			// Track rate-limit ID to delete after updating the team (to avoid FK constraint)
+			var rateLimitIDToDelete string
 
-		// Update fields if provided
-		if req.Name != nil {
-			team.Name = *req.Name
-		}
-		if req.CustomerID != nil {
-			if *req.CustomerID == "" {
-				team.CustomerID = nil
-			} else {
-				team.CustomerID = req.CustomerID
+			// Update fields if provided
+			if req.Name != nil {
+				team.Name = *req.Name
 			}
-		}
-		// Resolve team-level calendar alignment for this update:
-		//   - explicit team-level field wins (req.CalendarAligned != nil)
-		//   - else leave existing team.CalendarAligned untouched
-		wasCalendarAligned := team.CalendarAligned
-		if req.CalendarAligned != nil {
-			team.CalendarAligned = *req.CalendarAligned
-		}
-		calendarAlignmentJustEnabled := !wasCalendarAligned && team.CalendarAligned
-		// Snap-to-calendar-period happens after budget/rate-limit reconciliation
-		// below, so combined `calendar_aligned + budgets/rate_limit` updates see
-		// the final persisted state.
-
-		// Multi-budget reconciliation: match by reset_duration, preserve usage on update,
-		// create new budgets for new durations, delete unmatched existing budgets.
-		// Mirrors VK multi-budget handling above.
-		if req.Budgets != nil {
-			// Validate incoming budgets
-			seenDurations := make(map[string]bool)
-			for _, b := range req.Budgets {
-				if b.MaxLimit < 0 {
-					return &badRequestError{err: fmt.Errorf("budget max_limit cannot be negative: %.2f", b.MaxLimit)}
-				}
-				if d, err := configstoreTables.ParseDuration(b.ResetDuration); err != nil || d <= 0 {
-					return &badRequestError{err: fmt.Errorf("invalid reset duration (must be a positive duration): %s", b.ResetDuration)}
-				}
-				if seenDurations[b.ResetDuration] {
-					return &badRequestError{err: fmt.Errorf("duplicate reset_duration in budgets: %s", b.ResetDuration)}
-				}
-				seenDurations[b.ResetDuration] = true
-			}
-
-			existingByDuration := make(map[string]configstoreTables.TableBudget)
-			for _, existing := range team.Budgets {
-				existingByDuration[existing.ResetDuration] = existing
-			}
-
-			var reconciledBudgets []configstoreTables.TableBudget
-			matchedIDs := make(map[string]bool)
-			for _, b := range req.Budgets {
-				if existing, found := existingByDuration[b.ResetDuration]; found {
-					existing.MaxLimit = b.MaxLimit
-					// LastReset / CurrentUsage are preserved on update; if calendar
-					// alignment was just enabled in this request, the post-reconciliation
-					// snap block below resets them.
-					if err := validateBudget(&existing); err != nil {
-						return err
-					}
-					if err := h.configStore.UpdateBudget(ctx, &existing, tx); err != nil {
-						return err
-					}
-					reconciledBudgets = append(reconciledBudgets, existing)
-					matchedIDs[existing.ID] = true
+			if req.CustomerID != nil {
+				if *req.CustomerID == "" {
+					team.CustomerID = nil
 				} else {
-					budget := configstoreTables.TableBudget{
-						ID:            uuid.NewString(),
-						MaxLimit:      b.MaxLimit,
-						ResetDuration: b.ResetDuration,
-						LastReset:     budgetLastReset(team.CalendarAligned, b.ResetDuration),
-						CurrentUsage:  0,
-						TeamID:        &team.ID,
-					}
-					if err := validateBudget(&budget); err != nil {
-						return err
-					}
-					if err := h.configStore.CreateBudget(ctx, &budget, tx); err != nil {
-						return err
-					}
-					reconciledBudgets = append(reconciledBudgets, budget)
+					team.CustomerID = req.CustomerID
 				}
 			}
-			// Delete budgets that are no longer present
-			for _, existing := range team.Budgets {
-				if !matchedIDs[existing.ID] {
-					if err := h.configStore.DeleteBudget(ctx, existing.ID, tx); err != nil {
-						return fmt.Errorf("failed to delete removed team budget: %w", err)
-					}
-				}
+			// Resolve team-level calendar alignment for this update:
+			//   - explicit team-level field wins (req.CalendarAligned != nil)
+			//   - else leave existing team.CalendarAligned untouched
+			wasCalendarAligned := team.CalendarAligned
+			if req.CalendarAligned != nil {
+				team.CalendarAligned = *req.CalendarAligned
 			}
-			team.Budgets = reconciledBudgets
-		}
-		// Handle rate limit updates
-		if req.RateLimit != nil {
-			// Check if rate limit values are empty - means remove rate limit (reset durations don't matter)
-			rateLimitIsEmpty := req.RateLimit.TokenMaxLimit == nil && req.RateLimit.RequestMaxLimit == nil
-			if rateLimitIsEmpty {
-				// Mark rate limit for deletion after FK is removed
-				if team.RateLimitID != nil {
-					rateLimitIDToDelete = *team.RateLimitID
-					team.RateLimitID = nil
-					team.RateLimit = nil
-				}
-			} else if team.RateLimitID != nil {
-				// Update existing rate limit
-				rateLimit := configstoreTables.TableRateLimit{}
-				if err := tx.First(&rateLimit, "id = ?", *team.RateLimitID).Error; err != nil {
-					return err
-				}
-				rateLimit.TokenMaxLimit = req.RateLimit.TokenMaxLimit
-				rateLimit.TokenResetDuration = req.RateLimit.TokenResetDuration
-				rateLimit.RequestMaxLimit = req.RateLimit.RequestMaxLimit
-				rateLimit.RequestResetDuration = req.RateLimit.RequestResetDuration
-				if err := validateRateLimit(&rateLimit); err != nil {
-					return err
-				}
-				if err := h.configStore.UpdateRateLimit(ctx, &rateLimit, tx); err != nil {
-					return err
-				}
-				team.RateLimit = &rateLimit
-			} else {
-				// Create new rate limit
-				rateLimit := configstoreTables.TableRateLimit{
-					ID:                   uuid.NewString(),
-					TokenMaxLimit:        req.RateLimit.TokenMaxLimit,
-					TokenResetDuration:   req.RateLimit.TokenResetDuration,
-					RequestMaxLimit:      req.RateLimit.RequestMaxLimit,
-					RequestResetDuration: req.RateLimit.RequestResetDuration,
-					TokenLastReset:       time.Now(),
-					RequestLastReset:     time.Now(),
-				}
-				if err := validateRateLimit(&rateLimit); err != nil {
-					return err
-				}
-				if err := h.configStore.CreateRateLimit(ctx, &rateLimit, tx); err != nil {
-					return err
-				}
-				team.RateLimitID = &rateLimit.ID
-				team.RateLimit = &rateLimit
-			}
-		}
-		// Snap budgets and rate limit to the current calendar period when calendar
-		// alignment transitions false -> true in this request. Runs after budget/
-		// rate-limit reconciliation so both the standalone-toggle and the combined
-		// (toggle + budgets/rate_limit in the same request) cases are covered, and
-		// only fires once per transition.
-		if calendarAlignmentJustEnabled {
-			now := time.Now()
-			for i := range team.Budgets {
-				b := &team.Budgets[i]
-				if !configstoreTables.IsCalendarAlignableDuration(b.ResetDuration) {
-					continue
-				}
-				b.LastReset = configstoreTables.GetCalendarPeriodStart(b.ResetDuration, now)
-				b.CurrentUsage = 0
-				if err := h.configStore.UpdateBudget(ctx, b, tx); err != nil {
-					return fmt.Errorf("failed to snap team budget %s on calendar-align enable: %w", b.ID, err)
-				}
-			}
-			if team.RateLimit != nil {
-				rl := team.RateLimit
-				snapped := false
-				if rl.TokenResetDuration != nil && configstoreTables.IsCalendarAlignableDuration(*rl.TokenResetDuration) {
-					rl.TokenLastReset = configstoreTables.GetCalendarPeriodStart(*rl.TokenResetDuration, now)
-					rl.TokenCurrentUsage = 0
-					snapped = true
-				}
-				if rl.RequestResetDuration != nil && configstoreTables.IsCalendarAlignableDuration(*rl.RequestResetDuration) {
-					rl.RequestLastReset = configstoreTables.GetCalendarPeriodStart(*rl.RequestResetDuration, now)
-					rl.RequestCurrentUsage = 0
-					snapped = true
-				}
-				if snapped {
-					if err := h.configStore.UpdateRateLimit(ctx, rl, tx); err != nil {
-						return fmt.Errorf("failed to snap team rate limit on calendar-align enable: %w", err)
-					}
-				}
-			}
-		}
-		if err := h.configStore.UpdateTeam(ctx, team, tx); err != nil {
-			return err
-		}
+			calendarAlignmentJustEnabled := !wasCalendarAligned && team.CalendarAligned
+			// Snap-to-calendar-period happens after budget/rate-limit reconciliation
+			// below, so combined `calendar_aligned + budgets/rate_limit` updates see
+			// the final persisted state.
 
-		// Now that FK references are removed, delete the orphaned rate limit.
-		// Budgets are reconciled above (deletion of unmatched rows happens inside
-		// the reconciliation loop), so nothing to clean up here.
-		if rateLimitIDToDelete != "" {
-			if err := tx.Delete(&configstoreTables.TableRateLimit{}, "id = ?", rateLimitIDToDelete).Error; err != nil {
+			// Multi-budget reconciliation: match by reset_duration, preserve usage on update,
+			// create new budgets for new durations, delete unmatched existing budgets.
+			// Mirrors VK multi-budget handling above.
+			if req.Budgets != nil {
+				// Validate incoming budgets
+				seenDurations := make(map[string]bool)
+				for _, b := range req.Budgets {
+					if b.MaxLimit < 0 {
+						return &badRequestError{err: fmt.Errorf("budget max_limit cannot be negative: %.2f", b.MaxLimit)}
+					}
+					if d, err := configstoreTables.ParseDuration(b.ResetDuration); err != nil || d <= 0 {
+						return &badRequestError{err: fmt.Errorf("invalid reset duration (must be a positive duration): %s", b.ResetDuration)}
+					}
+					if seenDurations[b.ResetDuration] {
+						return &badRequestError{err: fmt.Errorf("duplicate reset_duration in budgets: %s", b.ResetDuration)}
+					}
+					seenDurations[b.ResetDuration] = true
+				}
+
+				existingByDuration := make(map[string]configstoreTables.TableBudget)
+				for _, existing := range team.Budgets {
+					existingByDuration[existing.ResetDuration] = existing
+				}
+
+				var reconciledBudgets []configstoreTables.TableBudget
+				matchedIDs := make(map[string]bool)
+				for _, b := range req.Budgets {
+					if existing, found := existingByDuration[b.ResetDuration]; found {
+						existing.MaxLimit = b.MaxLimit
+						// LastReset / CurrentUsage are preserved on update; if calendar
+						// alignment was just enabled in this request, the post-reconciliation
+						// snap block below resets them.
+						if err := validateBudget(&existing); err != nil {
+							return err
+						}
+						if err := h.configStore.UpdateBudget(mutationCtx, &existing, tx); err != nil {
+							return err
+						}
+						reconciledBudgets = append(reconciledBudgets, existing)
+						matchedIDs[existing.ID] = true
+					} else {
+						budget := configstoreTables.TableBudget{
+							ID:            uuid.NewString(),
+							MaxLimit:      b.MaxLimit,
+							ResetDuration: b.ResetDuration,
+							LastReset:     budgetLastReset(team.CalendarAligned, b.ResetDuration),
+							CurrentUsage:  0,
+							TeamID:        &team.ID,
+						}
+						if err := validateBudget(&budget); err != nil {
+							return err
+						}
+						if err := h.configStore.CreateBudget(mutationCtx, &budget, tx); err != nil {
+							return err
+						}
+						reconciledBudgets = append(reconciledBudgets, budget)
+					}
+				}
+				// Delete budgets that are no longer present
+				for _, existing := range team.Budgets {
+					if !matchedIDs[existing.ID] {
+						if err := h.configStore.DeleteBudget(mutationCtx, existing.ID, tx); err != nil {
+							return fmt.Errorf("failed to delete removed team budget: %w", err)
+						}
+					}
+				}
+				team.Budgets = reconciledBudgets
+			}
+			// Handle rate limit updates
+			if req.RateLimit != nil {
+				// Check if rate limit values are empty - means remove rate limit (reset durations don't matter)
+				rateLimitIsEmpty := req.RateLimit.TokenMaxLimit == nil && req.RateLimit.RequestMaxLimit == nil
+				if rateLimitIsEmpty {
+					// Mark rate limit for deletion after FK is removed
+					if team.RateLimitID != nil {
+						rateLimitIDToDelete = *team.RateLimitID
+						team.RateLimitID = nil
+						team.RateLimit = nil
+					}
+				} else if team.RateLimitID != nil {
+					// Update existing rate limit
+					rateLimit := configstoreTables.TableRateLimit{}
+					if err := tx.First(&rateLimit, "id = ?", *team.RateLimitID).Error; err != nil {
+						return err
+					}
+					rateLimit.TokenMaxLimit = req.RateLimit.TokenMaxLimit
+					rateLimit.TokenResetDuration = req.RateLimit.TokenResetDuration
+					rateLimit.RequestMaxLimit = req.RateLimit.RequestMaxLimit
+					rateLimit.RequestResetDuration = req.RateLimit.RequestResetDuration
+					if err := validateRateLimit(&rateLimit); err != nil {
+						return err
+					}
+					if err := h.configStore.UpdateRateLimit(mutationCtx, &rateLimit, tx); err != nil {
+						return err
+					}
+					team.RateLimit = &rateLimit
+				} else {
+					// Create new rate limit
+					rateLimit := configstoreTables.TableRateLimit{
+						ID:                   uuid.NewString(),
+						TokenMaxLimit:        req.RateLimit.TokenMaxLimit,
+						TokenResetDuration:   req.RateLimit.TokenResetDuration,
+						RequestMaxLimit:      req.RateLimit.RequestMaxLimit,
+						RequestResetDuration: req.RateLimit.RequestResetDuration,
+						TokenLastReset:       time.Now(),
+						RequestLastReset:     time.Now(),
+					}
+					if err := validateRateLimit(&rateLimit); err != nil {
+						return err
+					}
+					if err := h.configStore.CreateRateLimit(mutationCtx, &rateLimit, tx); err != nil {
+						return err
+					}
+					team.RateLimitID = &rateLimit.ID
+					team.RateLimit = &rateLimit
+				}
+			}
+			// Snap budgets and rate limit to the current calendar period when calendar
+			// alignment transitions false -> true in this request. Runs after budget/
+			// rate-limit reconciliation so both the standalone-toggle and the combined
+			// (toggle + budgets/rate_limit in the same request) cases are covered, and
+			// only fires once per transition.
+			if calendarAlignmentJustEnabled {
+				now := time.Now()
+				for i := range team.Budgets {
+					b := &team.Budgets[i]
+					if !configstoreTables.IsCalendarAlignableDuration(b.ResetDuration) {
+						continue
+					}
+					b.LastReset = configstoreTables.GetCalendarPeriodStart(b.ResetDuration, now)
+					b.CurrentUsage = 0
+					if err := h.configStore.UpdateBudget(mutationCtx, b, tx); err != nil {
+						return fmt.Errorf("failed to snap team budget %s on calendar-align enable: %w", b.ID, err)
+					}
+				}
+				if team.RateLimit != nil {
+					rl := team.RateLimit
+					snapped := false
+					if rl.TokenResetDuration != nil && configstoreTables.IsCalendarAlignableDuration(*rl.TokenResetDuration) {
+						rl.TokenLastReset = configstoreTables.GetCalendarPeriodStart(*rl.TokenResetDuration, now)
+						rl.TokenCurrentUsage = 0
+						snapped = true
+					}
+					if rl.RequestResetDuration != nil && configstoreTables.IsCalendarAlignableDuration(*rl.RequestResetDuration) {
+						rl.RequestLastReset = configstoreTables.GetCalendarPeriodStart(*rl.RequestResetDuration, now)
+						rl.RequestCurrentUsage = 0
+						snapped = true
+					}
+					if snapped {
+						if err := h.configStore.UpdateRateLimit(mutationCtx, rl, tx); err != nil {
+							return fmt.Errorf("failed to snap team rate limit on calendar-align enable: %w", err)
+						}
+					}
+				}
+			}
+			if err := h.configStore.UpdateTeam(mutationCtx, team, tx); err != nil {
 				return err
 			}
-		}
 
-		return nil
-	}); err != nil {
+			// Now that FK references are removed, delete the orphaned rate limit.
+			// Budgets are reconciled above (deletion of unmatched rows happens inside
+			// the reconciliation loop), so nothing to clean up here.
+			if rateLimitIDToDelete != "" {
+				if err := tx.Delete(&configstoreTables.TableRateLimit{}, "id = ?", rateLimitIDToDelete).Error; err != nil {
+					return err
+				}
+			}
+
+			return nil
+		})
+	})
+	if err != nil {
+		if handleConfigMutationError(ctx, err) {
+			return
+		}
 		var badReqErr *badRequestError
 		if errors.As(err, &badReqErr) {
 			SendError(ctx, 400, err.Error())
@@ -2497,11 +2664,14 @@ func (h *GovernanceHandler) updateTeam(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, 500, "Failed to update team")
 		return
 	}
-	// Reloading team from in-memory store
 	preloadedTeam, err := h.governanceManager.ReloadTeam(ctx, team.ID)
 	if err != nil {
 		logger.Error("failed to reload team: %v", err)
-		preloadedTeam = team
+		sendConfigMutationPending(ctx, revision)
+		return
+	}
+	if prepared.enabled {
+		setConfigRevisionHeaders(ctx, revision)
 	}
 	SendJSON(ctx, map[string]interface{}{
 		"message": "Team updated successfully",
@@ -2518,6 +2688,10 @@ func (h *GovernanceHandler) deleteTeam(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, 400, "Invalid team ID encoding")
 		return
 	}
+	prepared, ok := prepareConfigMutation(ctx, h.configStore)
+	if !ok {
+		return
+	}
 	team, err := h.configStore.GetTeam(ctx, teamID)
 	if err != nil {
 		if errors.Is(err, configstore.ErrNotFound) {
@@ -2527,19 +2701,27 @@ func (h *GovernanceHandler) deleteTeam(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, 500, "Failed to retrieve team")
 		return
 	}
-	// Removing team from in-memory store
-	err = h.governanceManager.RemoveTeam(ctx, team.ID)
+	revision, err := commitConfigMutation(ctx, h.configStore, prepared, func(mutationCtx context.Context) error {
+		return h.configStore.DeleteTeam(mutationCtx, teamID)
+	})
 	if err != nil {
-		// But we ignore this error because its not
-		logger.Error("failed to remove team: %v", err)
-	}
-	if err := h.configStore.DeleteTeam(ctx, teamID); err != nil {
+		if handleConfigMutationError(ctx, err) {
+			return
+		}
 		if errors.Is(err, configstore.ErrNotFound) {
 			SendError(ctx, 404, "Team not found")
 			return
 		}
 		SendError(ctx, 500, "Failed to delete team")
 		return
+	}
+	if err := h.governanceManager.RemoveTeam(ctx, team.ID); err != nil {
+		logger.Error("failed to remove team: %v", err)
+		sendConfigMutationPending(ctx, revision)
+		return
+	}
+	if prepared.enabled {
+		setConfigRevisionHeaders(ctx, revision)
 	}
 	SendJSON(ctx, map[string]interface{}{
 		"message": "Team deleted successfully",
@@ -2550,6 +2732,7 @@ func (h *GovernanceHandler) deleteTeam(ctx *fasthttp.RequestCtx) {
 
 // getCustomers handles GET /api/governance/customers - Get all customers
 func (h *GovernanceHandler) getCustomers(ctx *fasthttp.RequestCtx) {
+	setCurrentConfigRevisionHeaders(ctx, h.configStore)
 	limitStr := string(ctx.QueryArgs().Peek("limit"))
 	offsetStr := string(ctx.QueryArgs().Peek("offset"))
 	search := string(ctx.QueryArgs().Peek("search"))
@@ -2630,41 +2813,51 @@ func (h *GovernanceHandler) createCustomer(ctx *fasthttp.RequestCtx) {
 			ResetDuration: req.Budget.ResetDuration,
 		}}
 	}
+	prepared, ok := prepareConfigMutation(ctx, h.configStore)
+	if !ok {
+		return
+	}
 	var customer configstoreTables.TableCustomer
-	if err := h.configStore.ExecuteTransaction(ctx, func(tx *gorm.DB) error {
-		customer = configstoreTables.TableCustomer{
-			ID:              uuid.NewString(),
-			Name:            req.Name,
-			CalendarAligned: req.CalendarAligned,
-		}
-		if err := h.configStore.CreateCustomer(ctx, &customer, tx); err != nil {
-			return err
-		}
-		if len(budgetRequests) > 0 {
-			if err := h.reconcileCustomerBudgets(ctx, tx, &customer, budgetRequests); err != nil {
+	revision, err := commitConfigMutation(ctx, h.configStore, prepared, func(mutationCtx context.Context) error {
+		return h.configStore.ExecuteTransaction(mutationCtx, func(tx *gorm.DB) error {
+			customer = configstoreTables.TableCustomer{
+				ID:              uuid.NewString(),
+				Name:            req.Name,
+				CalendarAligned: req.CalendarAligned,
+			}
+			if err := h.configStore.CreateCustomer(mutationCtx, &customer, tx); err != nil {
 				return err
 			}
+			if len(budgetRequests) > 0 {
+				if err := h.reconcileCustomerBudgets(mutationCtx, tx, &customer, budgetRequests); err != nil {
+					return err
+				}
+			}
+			if req.RateLimit != nil {
+				rateLimit := configstoreTables.TableRateLimit{
+					ID:                   uuid.NewString(),
+					TokenMaxLimit:        req.RateLimit.TokenMaxLimit,
+					TokenResetDuration:   req.RateLimit.TokenResetDuration,
+					RequestMaxLimit:      req.RateLimit.RequestMaxLimit,
+					RequestResetDuration: req.RateLimit.RequestResetDuration,
+					TokenLastReset:       time.Now(),
+					RequestLastReset:     time.Now(),
+				}
+				if err := h.configStore.CreateRateLimit(mutationCtx, &rateLimit, tx); err != nil {
+					return err
+				}
+				customer.RateLimitID = &rateLimit.ID
+				if err := h.configStore.UpdateCustomer(mutationCtx, &customer, tx); err != nil {
+					return err
+				}
+			}
+			return nil
+		})
+	})
+	if err != nil {
+		if handleConfigMutationError(ctx, err) {
+			return
 		}
-		if req.RateLimit != nil {
-			rateLimit := configstoreTables.TableRateLimit{
-				ID:                   uuid.NewString(),
-				TokenMaxLimit:        req.RateLimit.TokenMaxLimit,
-				TokenResetDuration:   req.RateLimit.TokenResetDuration,
-				RequestMaxLimit:      req.RateLimit.RequestMaxLimit,
-				RequestResetDuration: req.RateLimit.RequestResetDuration,
-				TokenLastReset:       time.Now(),
-				RequestLastReset:     time.Now(),
-			}
-			if err := h.configStore.CreateRateLimit(ctx, &rateLimit, tx); err != nil {
-				return err
-			}
-			customer.RateLimitID = &rateLimit.ID
-			if err := h.configStore.UpdateCustomer(ctx, &customer, tx); err != nil {
-				return err
-			}
-		}
-		return nil
-	}); err != nil {
 		var badReqErr *badRequestError
 		if errors.As(err, &badReqErr) {
 			SendError(ctx, 400, err.Error())
@@ -2680,7 +2873,11 @@ func (h *GovernanceHandler) createCustomer(ctx *fasthttp.RequestCtx) {
 	preloadedCustomer, err := h.governanceManager.ReloadCustomer(ctx, customer.ID)
 	if err != nil {
 		logger.Error("failed to reload customer: %v", err)
-		preloadedCustomer = &customer
+		sendConfigMutationPending(ctx, revision)
+		return
+	}
+	if prepared.enabled {
+		setConfigRevisionHeaders(ctx, revision)
 	}
 	SendJSON(ctx, map[string]interface{}{
 		"message":  "Customer created successfully",
@@ -2690,6 +2887,7 @@ func (h *GovernanceHandler) createCustomer(ctx *fasthttp.RequestCtx) {
 
 // getCustomer handles GET /api/governance/customers/{customer_id} - Get a specific customer
 func (h *GovernanceHandler) getCustomer(ctx *fasthttp.RequestCtx) {
+	setCurrentConfigRevisionHeaders(ctx, h.configStore)
 	customerID := ctx.UserValue("customer_id").(string)
 	customer, err := h.configStore.GetCustomer(ctx, customerID)
 	if err != nil {
@@ -2717,6 +2915,10 @@ func (h *GovernanceHandler) updateCustomer(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, 400, "only one of 'budget' or 'budgets' may be set")
 		return
 	}
+	prepared, ok := prepareConfigMutation(ctx, h.configStore)
+	if !ok {
+		return
+	}
 	// Fetching customer from database
 	customer, err := h.configStore.GetCustomer(ctx, customerID)
 	if err != nil {
@@ -2728,135 +2930,141 @@ func (h *GovernanceHandler) updateCustomer(ctx *fasthttp.RequestCtx) {
 		return
 	}
 	// Updating customer in database
-	if err := h.configStore.ExecuteTransaction(ctx, func(tx *gorm.DB) error {
-		var rateLimitIDToDelete string
+	revision, err := commitConfigMutation(ctx, h.configStore, prepared, func(mutationCtx context.Context) error {
+		return h.configStore.ExecuteTransaction(mutationCtx, func(tx *gorm.DB) error {
+			var rateLimitIDToDelete string
 
-		// Update fields if provided
-		if req.Name != nil {
-			customer.Name = *req.Name
-		}
-		wasCalendarAligned := customer.CalendarAligned
-		if req.CalendarAligned != nil {
-			customer.CalendarAligned = *req.CalendarAligned
-		}
-		calendarAlignmentJustEnabled := !wasCalendarAligned && customer.CalendarAligned
-		// Handle budget updates: prefer Budgets slice; coerce legacy Budget if needed.
-		effectiveBudgets := req.Budgets
-		if effectiveBudgets == nil && req.Budget != nil {
-			if len(customer.Budgets) > 1 {
-				return &badRequestError{err: fmt.Errorf("deprecated 'budget' field cannot be used when multiple budgets already exist; use 'budgets'")}
+			// Update fields if provided
+			if req.Name != nil {
+				customer.Name = *req.Name
 			}
-			var existingBudget *configstoreTables.TableBudget
-			if len(customer.Budgets) == 1 {
-				existingBudget = &customer.Budgets[0]
+			wasCalendarAligned := customer.CalendarAligned
+			if req.CalendarAligned != nil {
+				customer.CalendarAligned = *req.CalendarAligned
 			}
-			effectiveBudgets = coerceLegacyBudget(req.Budget, existingBudget)
-			if effectiveBudgets == nil && !isBudgetRemovalRequest(req.Budget) {
-				return &badRequestError{err: fmt.Errorf("both max_limit and reset_duration are required when creating a new budget")}
-			}
-		}
-		if effectiveBudgets != nil {
-			if err := h.reconcileCustomerBudgets(ctx, tx, customer, *effectiveBudgets); err != nil {
-				return err
-			}
-		}
-		// Handle rate limit updates
-		if req.RateLimit != nil {
-			// Check if rate limit values are empty - means remove rate limit (reset durations don't matter)
-			rateLimitIsEmpty := req.RateLimit.TokenMaxLimit == nil && req.RateLimit.RequestMaxLimit == nil
-			if rateLimitIsEmpty {
-				// Mark rate limit for deletion after FK is removed
-				if customer.RateLimitID != nil {
-					rateLimitIDToDelete = *customer.RateLimitID
-					customer.RateLimitID = nil
-					customer.RateLimit = nil
+			calendarAlignmentJustEnabled := !wasCalendarAligned && customer.CalendarAligned
+			// Handle budget updates: prefer Budgets slice; coerce legacy Budget if needed.
+			effectiveBudgets := req.Budgets
+			if effectiveBudgets == nil && req.Budget != nil {
+				if len(customer.Budgets) > 1 {
+					return &badRequestError{err: fmt.Errorf("deprecated 'budget' field cannot be used when multiple budgets already exist; use 'budgets'")}
 				}
-			} else if customer.RateLimitID != nil {
-				// Update existing rate limit
-				rateLimit := configstoreTables.TableRateLimit{}
-				if err := tx.First(&rateLimit, "id = ?", *customer.RateLimitID).Error; err != nil {
+				var existingBudget *configstoreTables.TableBudget
+				if len(customer.Budgets) == 1 {
+					existingBudget = &customer.Budgets[0]
+				}
+				effectiveBudgets = coerceLegacyBudget(req.Budget, existingBudget)
+				if effectiveBudgets == nil && !isBudgetRemovalRequest(req.Budget) {
+					return &badRequestError{err: fmt.Errorf("both max_limit and reset_duration are required when creating a new budget")}
+				}
+			}
+			if effectiveBudgets != nil {
+				if err := h.reconcileCustomerBudgets(mutationCtx, tx, customer, *effectiveBudgets); err != nil {
 					return err
 				}
-				rateLimit.TokenMaxLimit = req.RateLimit.TokenMaxLimit
-				rateLimit.TokenResetDuration = req.RateLimit.TokenResetDuration
-				rateLimit.RequestMaxLimit = req.RateLimit.RequestMaxLimit
-				rateLimit.RequestResetDuration = req.RateLimit.RequestResetDuration
-				if err := validateRateLimit(&rateLimit); err != nil {
-					return err
-				}
-				if err := h.configStore.UpdateRateLimit(ctx, &rateLimit, tx); err != nil {
-					return err
-				}
-				customer.RateLimit = &rateLimit
-			} else {
-				// Create new rate limit
-				rateLimit := configstoreTables.TableRateLimit{
-					ID:                   uuid.NewString(),
-					TokenMaxLimit:        req.RateLimit.TokenMaxLimit,
-					TokenResetDuration:   req.RateLimit.TokenResetDuration,
-					RequestMaxLimit:      req.RateLimit.RequestMaxLimit,
-					RequestResetDuration: req.RateLimit.RequestResetDuration,
-					TokenLastReset:       time.Now(),
-					RequestLastReset:     time.Now(),
-				}
-				if err := validateRateLimit(&rateLimit); err != nil {
-					return err
-				}
-				if err := h.configStore.CreateRateLimit(ctx, &rateLimit, tx); err != nil {
-					return err
-				}
-				customer.RateLimitID = &rateLimit.ID
-				customer.RateLimit = &rateLimit
 			}
-		}
-		// Snap budgets and rate limit to the current calendar period when calendar
-		// alignment transitions false → true. Runs after reconciliation so combined
-		// "toggle + budgets" requests see the final reconciled state.
-		if calendarAlignmentJustEnabled {
-			now := time.Now()
-			for i := range customer.Budgets {
-				b := &customer.Budgets[i]
-				if !configstoreTables.IsCalendarAlignableDuration(b.ResetDuration) {
-					continue
-				}
-				b.LastReset = configstoreTables.GetCalendarPeriodStart(b.ResetDuration, now)
-				b.CurrentUsage = 0
-				if err := h.configStore.UpdateBudget(ctx, b, tx); err != nil {
-					return fmt.Errorf("failed to snap customer budget %s on calendar-align enable: %w", b.ID, err)
+			// Handle rate limit updates
+			if req.RateLimit != nil {
+				// Check if rate limit values are empty - means remove rate limit (reset durations don't matter)
+				rateLimitIsEmpty := req.RateLimit.TokenMaxLimit == nil && req.RateLimit.RequestMaxLimit == nil
+				if rateLimitIsEmpty {
+					// Mark rate limit for deletion after FK is removed
+					if customer.RateLimitID != nil {
+						rateLimitIDToDelete = *customer.RateLimitID
+						customer.RateLimitID = nil
+						customer.RateLimit = nil
+					}
+				} else if customer.RateLimitID != nil {
+					// Update existing rate limit
+					rateLimit := configstoreTables.TableRateLimit{}
+					if err := tx.First(&rateLimit, "id = ?", *customer.RateLimitID).Error; err != nil {
+						return err
+					}
+					rateLimit.TokenMaxLimit = req.RateLimit.TokenMaxLimit
+					rateLimit.TokenResetDuration = req.RateLimit.TokenResetDuration
+					rateLimit.RequestMaxLimit = req.RateLimit.RequestMaxLimit
+					rateLimit.RequestResetDuration = req.RateLimit.RequestResetDuration
+					if err := validateRateLimit(&rateLimit); err != nil {
+						return err
+					}
+					if err := h.configStore.UpdateRateLimit(mutationCtx, &rateLimit, tx); err != nil {
+						return err
+					}
+					customer.RateLimit = &rateLimit
+				} else {
+					// Create new rate limit
+					rateLimit := configstoreTables.TableRateLimit{
+						ID:                   uuid.NewString(),
+						TokenMaxLimit:        req.RateLimit.TokenMaxLimit,
+						TokenResetDuration:   req.RateLimit.TokenResetDuration,
+						RequestMaxLimit:      req.RateLimit.RequestMaxLimit,
+						RequestResetDuration: req.RateLimit.RequestResetDuration,
+						TokenLastReset:       time.Now(),
+						RequestLastReset:     time.Now(),
+					}
+					if err := validateRateLimit(&rateLimit); err != nil {
+						return err
+					}
+					if err := h.configStore.CreateRateLimit(mutationCtx, &rateLimit, tx); err != nil {
+						return err
+					}
+					customer.RateLimitID = &rateLimit.ID
+					customer.RateLimit = &rateLimit
 				}
 			}
-			if customer.RateLimit != nil {
-				rl := customer.RateLimit
-				snapped := false
-				if rl.TokenResetDuration != nil && configstoreTables.IsCalendarAlignableDuration(*rl.TokenResetDuration) {
-					rl.TokenLastReset = configstoreTables.GetCalendarPeriodStart(*rl.TokenResetDuration, now)
-					rl.TokenCurrentUsage = 0
-					snapped = true
+			// Snap budgets and rate limit to the current calendar period when calendar
+			// alignment transitions false → true. Runs after reconciliation so combined
+			// "toggle + budgets" requests see the final reconciled state.
+			if calendarAlignmentJustEnabled {
+				now := time.Now()
+				for i := range customer.Budgets {
+					b := &customer.Budgets[i]
+					if !configstoreTables.IsCalendarAlignableDuration(b.ResetDuration) {
+						continue
+					}
+					b.LastReset = configstoreTables.GetCalendarPeriodStart(b.ResetDuration, now)
+					b.CurrentUsage = 0
+					if err := h.configStore.UpdateBudget(mutationCtx, b, tx); err != nil {
+						return fmt.Errorf("failed to snap customer budget %s on calendar-align enable: %w", b.ID, err)
+					}
 				}
-				if rl.RequestResetDuration != nil && configstoreTables.IsCalendarAlignableDuration(*rl.RequestResetDuration) {
-					rl.RequestLastReset = configstoreTables.GetCalendarPeriodStart(*rl.RequestResetDuration, now)
-					rl.RequestCurrentUsage = 0
-					snapped = true
-				}
-				if snapped {
-					if err := h.configStore.UpdateRateLimit(ctx, rl, tx); err != nil {
-						return fmt.Errorf("failed to snap customer rate limit on calendar-align enable: %w", err)
+				if customer.RateLimit != nil {
+					rl := customer.RateLimit
+					snapped := false
+					if rl.TokenResetDuration != nil && configstoreTables.IsCalendarAlignableDuration(*rl.TokenResetDuration) {
+						rl.TokenLastReset = configstoreTables.GetCalendarPeriodStart(*rl.TokenResetDuration, now)
+						rl.TokenCurrentUsage = 0
+						snapped = true
+					}
+					if rl.RequestResetDuration != nil && configstoreTables.IsCalendarAlignableDuration(*rl.RequestResetDuration) {
+						rl.RequestLastReset = configstoreTables.GetCalendarPeriodStart(*rl.RequestResetDuration, now)
+						rl.RequestCurrentUsage = 0
+						snapped = true
+					}
+					if snapped {
+						if err := h.configStore.UpdateRateLimit(mutationCtx, rl, tx); err != nil {
+							return fmt.Errorf("failed to snap customer rate limit on calendar-align enable: %w", err)
+						}
 					}
 				}
 			}
-		}
-		if err := h.configStore.UpdateCustomer(ctx, customer, tx); err != nil {
-			return err
-		}
-
-		if rateLimitIDToDelete != "" {
-			if err := tx.Delete(&configstoreTables.TableRateLimit{}, "id = ?", rateLimitIDToDelete).Error; err != nil {
+			if err := h.configStore.UpdateCustomer(mutationCtx, customer, tx); err != nil {
 				return err
 			}
-		}
 
-		return nil
-	}); err != nil {
+			if rateLimitIDToDelete != "" {
+				if err := tx.Delete(&configstoreTables.TableRateLimit{}, "id = ?", rateLimitIDToDelete).Error; err != nil {
+					return err
+				}
+			}
+
+			return nil
+		})
+	})
+	if err != nil {
+		if handleConfigMutationError(ctx, err) {
+			return
+		}
 		var badReqErr *badRequestError
 		if errors.As(err, &badReqErr) {
 			SendError(ctx, 400, err.Error())
@@ -2869,9 +3077,13 @@ func (h *GovernanceHandler) updateCustomer(ctx *fasthttp.RequestCtx) {
 	preloadedCustomer, err := h.governanceManager.ReloadCustomer(ctx, customer.ID)
 	if err != nil {
 		logger.Error("failed to reload customer: %v", err)
-		preloadedCustomer = customer
+		sendConfigMutationPending(ctx, revision)
+		return
 	}
 
+	if prepared.enabled {
+		setConfigRevisionHeaders(ctx, revision)
+	}
 	SendJSON(ctx, map[string]interface{}{
 		"message":  "Customer updated successfully",
 		"customer": preloadedCustomer,
@@ -2882,6 +3094,10 @@ func (h *GovernanceHandler) updateCustomer(ctx *fasthttp.RequestCtx) {
 func (h *GovernanceHandler) deleteCustomer(ctx *fasthttp.RequestCtx) {
 	customerID := ctx.UserValue("customer_id").(string)
 
+	prepared, ok := prepareConfigMutation(ctx, h.configStore)
+	if !ok {
+		return
+	}
 	customer, err := h.configStore.GetCustomer(ctx, customerID)
 	if err != nil {
 		if errors.Is(err, configstore.ErrNotFound) {
@@ -2891,18 +3107,27 @@ func (h *GovernanceHandler) deleteCustomer(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, 500, "Failed to retrieve customer")
 		return
 	}
-	err = h.governanceManager.RemoveCustomer(ctx, customer.ID)
+	revision, err := commitConfigMutation(ctx, h.configStore, prepared, func(mutationCtx context.Context) error {
+		return h.configStore.DeleteCustomer(mutationCtx, customerID)
+	})
 	if err != nil {
-		// But we ignore this error because its not
-		logger.Error("failed to remove customer: %v", err)
-	}
-	if err := h.configStore.DeleteCustomer(ctx, customerID); err != nil {
+		if handleConfigMutationError(ctx, err) {
+			return
+		}
 		if errors.Is(err, configstore.ErrNotFound) {
 			SendError(ctx, 404, "Customer not found")
 			return
 		}
 		SendError(ctx, 500, "Failed to delete customer")
 		return
+	}
+	if err := h.governanceManager.RemoveCustomer(ctx, customer.ID); err != nil {
+		logger.Error("failed to remove customer: %v", err)
+		sendConfigMutationPending(ctx, revision)
+		return
+	}
+	if prepared.enabled {
+		setConfigRevisionHeaders(ctx, revision)
 	}
 	SendJSON(ctx, map[string]interface{}{
 		"message": "Customer deleted successfully",
@@ -3002,6 +3227,7 @@ func validateBudget(budget *configstoreTables.TableBudget) error {
 
 // getModelConfigs handles GET /api/governance/model-configs - Get all model configs
 func (h *GovernanceHandler) getModelConfigs(ctx *fasthttp.RequestCtx) {
+	setCurrentConfigRevisionHeaders(ctx, h.configStore)
 	fromMemory := string(ctx.QueryArgs().Peek("from_memory")) == "true"
 	if fromMemory {
 		data := h.governanceManager.GetGovernanceData(ctx)
@@ -3157,6 +3383,7 @@ func (h *GovernanceHandler) getModelConfigs(ctx *fasthttp.RequestCtx) {
 
 // getModelConfig handles GET /api/governance/model-configs/{mc_id} - Get a specific model config
 func (h *GovernanceHandler) getModelConfig(ctx *fasthttp.RequestCtx) {
+	setCurrentConfigRevisionHeaders(ctx, h.configStore)
 	mcID := ctx.UserValue("mc_id").(string)
 	mc, err := h.configStore.GetModelConfigByID(ctx, mcID)
 	if err != nil {
@@ -3252,6 +3479,10 @@ func (h *GovernanceHandler) createModelConfig(ctx *fasthttp.RequestCtx) {
 			scopeCalendarAligned = vk.CalendarAligned
 		}
 	}
+	prepared, ok := prepareConfigMutation(ctx, h.configStore)
+	if !ok {
+		return
+	}
 	// Check if a model config with the same identity (scope, scope_id, model_name, provider) already exists
 	existing, err := h.configStore.GetModelConfig(ctx, req.Scope, req.ScopeID, req.ModelName, req.Provider)
 	if err != nil && err != configstore.ErrNotFound {
@@ -3289,72 +3520,81 @@ func (h *GovernanceHandler) createModelConfig(ctx *fasthttp.RequestCtx) {
 		seenDurations[req.Budgets[i].ResetDuration] = true
 	}
 	var mc configstoreTables.TableModelConfig
-	if err := h.configStore.ExecuteTransaction(ctx, func(tx *gorm.DB) error {
-		mc = configstoreTables.TableModelConfig{
-			ID:              uuid.NewString(),
-			ModelName:       req.ModelName,
-			Provider:        req.Provider,
-			Scope:           req.Scope,
-			ScopeID:         req.ScopeID,
-			CalendarAligned: scopeCalendarAligned,
-			CreatedAt:       time.Now(),
-			UpdatedAt:       time.Now(),
-		}
-		// Create rate limit if provided (mc references it via RateLimitID, so create first).
-		if req.RateLimit != nil {
-			rateLimit := configstoreTables.TableRateLimit{
-				ID:                   uuid.NewString(),
-				TokenMaxLimit:        req.RateLimit.TokenMaxLimit,
-				TokenResetDuration:   req.RateLimit.TokenResetDuration,
-				RequestMaxLimit:      req.RateLimit.RequestMaxLimit,
-				RequestResetDuration: req.RateLimit.RequestResetDuration,
-				TokenLastReset:       time.Now(),
-				RequestLastReset:     time.Now(),
+	revision, err := commitConfigMutation(ctx, h.configStore, prepared, func(mutationCtx context.Context) error {
+		return h.configStore.ExecuteTransaction(mutationCtx, func(tx *gorm.DB) error {
+			mc = configstoreTables.TableModelConfig{
+				ID:              uuid.NewString(),
+				ModelName:       req.ModelName,
+				Provider:        req.Provider,
+				Scope:           req.Scope,
+				ScopeID:         req.ScopeID,
+				CalendarAligned: scopeCalendarAligned,
+				CreatedAt:       time.Now(),
+				UpdatedAt:       time.Now(),
 			}
-			if err := validateRateLimit(&rateLimit); err != nil {
+			// Create rate limit if provided (mc references it via RateLimitID, so create first).
+			if req.RateLimit != nil {
+				rateLimit := configstoreTables.TableRateLimit{
+					ID:                   uuid.NewString(),
+					TokenMaxLimit:        req.RateLimit.TokenMaxLimit,
+					TokenResetDuration:   req.RateLimit.TokenResetDuration,
+					RequestMaxLimit:      req.RateLimit.RequestMaxLimit,
+					RequestResetDuration: req.RateLimit.RequestResetDuration,
+					TokenLastReset:       time.Now(),
+					RequestLastReset:     time.Now(),
+				}
+				if err := validateRateLimit(&rateLimit); err != nil {
+					return err
+				}
+				if err := h.configStore.CreateRateLimit(mutationCtx, &rateLimit, tx); err != nil {
+					return err
+				}
+				mc.RateLimitID = &rateLimit.ID
+				mc.RateLimit = &rateLimit
+			}
+			// Create the model config row first so its budgets can reference it via ModelConfigID.
+			if err := h.configStore.CreateModelConfig(mutationCtx, &mc, tx); err != nil {
 				return err
 			}
-			if err := h.configStore.CreateRateLimit(ctx, &rateLimit, tx); err != nil {
-				return err
+			// Create owned budgets (a model config may carry multiple).
+			for _, b := range req.Budgets {
+				budget := configstoreTables.TableBudget{
+					ID:            uuid.NewString(),
+					MaxLimit:      b.MaxLimit,
+					ResetDuration: b.ResetDuration,
+					LastReset:     budgetLastReset(mc.CalendarAligned, b.ResetDuration),
+					CurrentUsage:  0,
+					ModelConfigID: &mc.ID,
+				}
+				if err := validateBudget(&budget); err != nil {
+					return err
+				}
+				if err := h.configStore.CreateBudget(mutationCtx, &budget, tx); err != nil {
+					return err
+				}
+				mc.Budgets = append(mc.Budgets, budget)
 			}
-			mc.RateLimitID = &rateLimit.ID
-			mc.RateLimit = &rateLimit
+			return nil
+		})
+	})
+	if err != nil {
+		if handleConfigMutationError(ctx, err) {
+			return
 		}
-		// Create the model config row first so its budgets can reference it via ModelConfigID.
-		if err := h.configStore.CreateModelConfig(ctx, &mc, tx); err != nil {
-			return err
-		}
-		// Create owned budgets (a model config may carry multiple).
-		for _, b := range req.Budgets {
-			budget := configstoreTables.TableBudget{
-				ID:            uuid.NewString(),
-				MaxLimit:      b.MaxLimit,
-				ResetDuration: b.ResetDuration,
-				LastReset:     budgetLastReset(mc.CalendarAligned, b.ResetDuration),
-				CurrentUsage:  0,
-				ModelConfigID: &mc.ID,
-			}
-			if err := validateBudget(&budget); err != nil {
-				return err
-			}
-			if err := h.configStore.CreateBudget(ctx, &budget, tx); err != nil {
-				return err
-			}
-			mc.Budgets = append(mc.Budgets, budget)
-		}
-		return nil
-	}); err != nil {
 		logger.Error("failed to create model config: %v", err)
 		SendError(ctx, 500, fmt.Sprintf("Failed to create model config: %v", err))
 		return
 	}
-	// Reload model config in memory
 	preloadedMC, err := h.governanceManager.ReloadModelConfig(ctx, mc.ID)
 	if err != nil {
 		logger.Error("failed to reload model config in memory: %v", err)
-		preloadedMC = &mc
+		sendConfigMutationPending(ctx, revision)
+		return
 	}
 	h.resolveModelConfigScopeName(ctx, preloadedMC, map[string]string{})
+	if prepared.enabled {
+		setConfigRevisionHeaders(ctx, revision)
+	}
 	SendJSON(ctx, map[string]interface{}{
 		"message":      "Model config created successfully",
 		"model_config": preloadedMC,
@@ -3369,6 +3609,10 @@ func (h *GovernanceHandler) updateModelConfig(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, 400, "Invalid JSON")
 		return
 	}
+	prepared, ok := prepareConfigMutation(ctx, h.configStore)
+	if !ok {
+		return
+	}
 	mc, err := h.configStore.GetModelConfigByID(ctx, mcID)
 	if err != nil {
 		if errors.Is(err, configstore.ErrNotFound) {
@@ -3378,101 +3622,110 @@ func (h *GovernanceHandler) updateModelConfig(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, 500, "Failed to retrieve model config")
 		return
 	}
-	if err := h.configStore.ExecuteTransaction(ctx, func(tx *gorm.DB) error {
-		// Track rate-limit ID to delete after updating the model config (to avoid FK constraint).
-		var rateLimitIDToDelete string
+	revision, err := commitConfigMutation(ctx, h.configStore, prepared, func(mutationCtx context.Context) error {
+		return h.configStore.ExecuteTransaction(mutationCtx, func(tx *gorm.DB) error {
+			// Track rate-limit ID to delete after updating the model config (to avoid FK constraint).
+			var rateLimitIDToDelete string
 
-		// Update fields if provided
-		if req.ModelName != nil {
-			mc.ModelName = *req.ModelName
-		}
-		// Update provider if provided in request
-		if req.Provider != nil {
-			mc.Provider = req.Provider
-		}
-		// Handle budget updates: req.Budgets is the full desired set. A non-nil empty
-		// slice removes all budgets; omitting the field leaves them unchanged. Budgets
-		// are owned via ModelConfigID, so no model-config FK juggling is needed.
-		if req.Budgets != nil {
-			if err := h.reconcileModelConfigBudgets(ctx, tx, mc, req.Budgets); err != nil {
+			// Update fields if provided
+			if req.ModelName != nil {
+				mc.ModelName = *req.ModelName
+			}
+			// Update provider if provided in request
+			if req.Provider != nil {
+				mc.Provider = req.Provider
+			}
+			// Handle budget updates: req.Budgets is the full desired set. A non-nil empty
+			// slice removes all budgets; omitting the field leaves them unchanged. Budgets
+			// are owned via ModelConfigID, so no model-config FK juggling is needed.
+			if req.Budgets != nil {
+				if err := h.reconcileModelConfigBudgets(mutationCtx, tx, mc, req.Budgets); err != nil {
+					return err
+				}
+			}
+			// Handle rate limit updates
+			if req.RateLimit != nil {
+				// Check if rate limit values are empty - means remove rate limit (reset durations don't matter)
+				rateLimitIsEmpty := req.RateLimit.TokenMaxLimit == nil && req.RateLimit.RequestMaxLimit == nil
+				if rateLimitIsEmpty {
+					// Mark rate limit for deletion after FK is removed
+					if mc.RateLimitID != nil {
+						rateLimitIDToDelete = *mc.RateLimitID
+						mc.RateLimitID = nil
+						mc.RateLimit = nil
+					}
+				} else if mc.RateLimitID != nil {
+					// Update existing rate limit - set ALL fields from request (nil means clear)
+					rateLimit := configstoreTables.TableRateLimit{}
+					if err := tx.First(&rateLimit, "id = ?", *mc.RateLimitID).Error; err != nil {
+						return err
+					}
+					// Set all fields from request - nil values will clear the field
+					rateLimit.TokenMaxLimit = req.RateLimit.TokenMaxLimit
+					rateLimit.TokenResetDuration = req.RateLimit.TokenResetDuration
+					rateLimit.RequestMaxLimit = req.RateLimit.RequestMaxLimit
+					rateLimit.RequestResetDuration = req.RateLimit.RequestResetDuration
+					if err := validateRateLimit(&rateLimit); err != nil {
+						return err
+					}
+					if err := h.configStore.UpdateRateLimit(mutationCtx, &rateLimit, tx); err != nil {
+						return err
+					}
+					mc.RateLimit = &rateLimit
+				} else {
+					// Create new rate limit
+					rateLimit := configstoreTables.TableRateLimit{
+						ID:                   uuid.NewString(),
+						TokenMaxLimit:        req.RateLimit.TokenMaxLimit,
+						TokenResetDuration:   req.RateLimit.TokenResetDuration,
+						RequestMaxLimit:      req.RateLimit.RequestMaxLimit,
+						RequestResetDuration: req.RateLimit.RequestResetDuration,
+						TokenLastReset:       time.Now(),
+						RequestLastReset:     time.Now(),
+					}
+					if err := validateRateLimit(&rateLimit); err != nil {
+						return err
+					}
+					if err := h.configStore.CreateRateLimit(mutationCtx, &rateLimit, tx); err != nil {
+						return err
+					}
+					mc.RateLimitID = &rateLimit.ID
+					mc.RateLimit = &rateLimit
+				}
+			}
+			mc.UpdatedAt = time.Now()
+			if err := h.configStore.UpdateModelConfig(mutationCtx, mc, tx); err != nil {
 				return err
 			}
-		}
-		// Handle rate limit updates
-		if req.RateLimit != nil {
-			// Check if rate limit values are empty - means remove rate limit (reset durations don't matter)
-			rateLimitIsEmpty := req.RateLimit.TokenMaxLimit == nil && req.RateLimit.RequestMaxLimit == nil
-			if rateLimitIsEmpty {
-				// Mark rate limit for deletion after FK is removed
-				if mc.RateLimitID != nil {
-					rateLimitIDToDelete = *mc.RateLimitID
-					mc.RateLimitID = nil
-					mc.RateLimit = nil
-				}
-			} else if mc.RateLimitID != nil {
-				// Update existing rate limit - set ALL fields from request (nil means clear)
-				rateLimit := configstoreTables.TableRateLimit{}
-				if err := tx.First(&rateLimit, "id = ?", *mc.RateLimitID).Error; err != nil {
-					return err
-				}
-				// Set all fields from request - nil values will clear the field
-				rateLimit.TokenMaxLimit = req.RateLimit.TokenMaxLimit
-				rateLimit.TokenResetDuration = req.RateLimit.TokenResetDuration
-				rateLimit.RequestMaxLimit = req.RateLimit.RequestMaxLimit
-				rateLimit.RequestResetDuration = req.RateLimit.RequestResetDuration
-				if err := validateRateLimit(&rateLimit); err != nil {
-					return err
-				}
-				if err := h.configStore.UpdateRateLimit(ctx, &rateLimit, tx); err != nil {
-					return err
-				}
-				mc.RateLimit = &rateLimit
-			} else {
-				// Create new rate limit
-				rateLimit := configstoreTables.TableRateLimit{
-					ID:                   uuid.NewString(),
-					TokenMaxLimit:        req.RateLimit.TokenMaxLimit,
-					TokenResetDuration:   req.RateLimit.TokenResetDuration,
-					RequestMaxLimit:      req.RateLimit.RequestMaxLimit,
-					RequestResetDuration: req.RateLimit.RequestResetDuration,
-					TokenLastReset:       time.Now(),
-					RequestLastReset:     time.Now(),
-				}
-				if err := validateRateLimit(&rateLimit); err != nil {
-					return err
-				}
-				if err := h.configStore.CreateRateLimit(ctx, &rateLimit, tx); err != nil {
-					return err
-				}
-				mc.RateLimitID = &rateLimit.ID
-				mc.RateLimit = &rateLimit
-			}
-		}
-		mc.UpdatedAt = time.Now()
-		if err := h.configStore.UpdateModelConfig(ctx, mc, tx); err != nil {
-			return err
-		}
 
-		// Now that the FK reference is removed, delete the orphaned rate limit.
-		if rateLimitIDToDelete != "" {
-			if err := tx.Delete(&configstoreTables.TableRateLimit{}, "id = ?", rateLimitIDToDelete).Error; err != nil {
-				return err
+			// Now that the FK reference is removed, delete the orphaned rate limit.
+			if rateLimitIDToDelete != "" {
+				if err := tx.Delete(&configstoreTables.TableRateLimit{}, "id = ?", rateLimitIDToDelete).Error; err != nil {
+					return err
+				}
 			}
-		}
 
-		return nil
-	}); err != nil {
+			return nil
+		})
+	})
+	if err != nil {
+		if handleConfigMutationError(ctx, err) {
+			return
+		}
 		logger.Error("failed to update model config: %v", err)
 		SendError(ctx, 500, fmt.Sprintf("Failed to update model config: %v", err))
 		return
 	}
-	// Reload model config in memory (also reloads from DB to get full relationships)
 	updatedMC, err := h.governanceManager.ReloadModelConfig(ctx, mc.ID)
 	if err != nil {
 		logger.Error("failed to reload model config in memory: %v", err)
-		updatedMC = mc
+		sendConfigMutationPending(ctx, revision)
+		return
 	}
 	h.resolveModelConfigScopeName(ctx, updatedMC, map[string]string{})
+	if prepared.enabled {
+		setConfigRevisionHeaders(ctx, revision)
+	}
 	SendJSON(ctx, map[string]interface{}{
 		"message":      "Model config updated successfully",
 		"model_config": updatedMC,
@@ -3482,6 +3735,10 @@ func (h *GovernanceHandler) updateModelConfig(ctx *fasthttp.RequestCtx) {
 // deleteModelConfig handles DELETE /api/governance/model-configs/{mc_id} - Delete a model config
 func (h *GovernanceHandler) deleteModelConfig(ctx *fasthttp.RequestCtx) {
 	mcID := ctx.UserValue("mc_id").(string)
+	prepared, ok := prepareConfigMutation(ctx, h.configStore)
+	if !ok {
+		return
+	}
 	// Check if model config exists
 	_, err := h.configStore.GetModelConfigByID(ctx, mcID)
 	if err != nil {
@@ -3492,8 +3749,13 @@ func (h *GovernanceHandler) deleteModelConfig(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, 500, "Failed to retrieve model config")
 		return
 	}
-	// Delete the model config
-	if err := h.configStore.DeleteModelConfig(ctx, mcID); err != nil {
+	revision, err := commitConfigMutation(ctx, h.configStore, prepared, func(mutationCtx context.Context) error {
+		return h.configStore.DeleteModelConfig(mutationCtx, mcID)
+	})
+	if err != nil {
+		if handleConfigMutationError(ctx, err) {
+			return
+		}
 		if errors.Is(err, configstore.ErrNotFound) {
 			SendError(ctx, 404, "Model config not found")
 			return
@@ -3502,10 +3764,13 @@ func (h *GovernanceHandler) deleteModelConfig(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, 500, "Failed to delete model config")
 		return
 	}
-	// Remove model config from in-memory store
 	if err := h.governanceManager.RemoveModelConfig(ctx, mcID); err != nil {
 		logger.Error("failed to remove model config from memory: %v", err)
-		// Continue anyway, the config is deleted from DB
+		sendConfigMutationPending(ctx, revision)
+		return
+	}
+	if prepared.enabled {
+		setConfigRevisionHeaders(ctx, revision)
 	}
 	SendJSON(ctx, map[string]interface{}{
 		"message": "Model config deleted successfully",
@@ -3549,6 +3814,7 @@ func modelConfigToProviderGovernance(mc *configstoreTables.TableModelConfig) (Pr
 // getProviderGovernance handles GET /api/governance/providers - returns provider-level governance,
 // now backed by all-models model configs scoped per provider.
 func (h *GovernanceHandler) getProviderGovernance(ctx *fasthttp.RequestCtx) {
+	setCurrentConfigRevisionHeaders(ctx, h.configStore)
 	fromMemory := string(ctx.QueryArgs().Peek("from_memory")) == "true"
 	var result []ProviderGovernanceResponse
 	if fromMemory {
@@ -3597,7 +3863,11 @@ func (h *GovernanceHandler) updateProviderGovernance(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, 400, "only one of 'budget' or 'budgets' may be set")
 		return
 	}
-	// Validate the provider exists.
+	prepared, ok := prepareConfigMutation(ctx, h.configStore)
+	if !ok {
+		return
+	}
+
 	providers, err := h.configStore.GetProviders(ctx)
 	if err != nil {
 		SendError(ctx, 500, "Failed to retrieve providers")
@@ -3615,8 +3885,14 @@ func (h *GovernanceHandler) updateProviderGovernance(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	existing, err := h.configStore.GetModelConfig(ctx, configstoreTables.ModelConfigScopeGlobal, nil, configstoreTables.ModelConfigAllModels, &providerName)
-	if err != nil && err != configstore.ErrNotFound {
+	existing, err := h.configStore.GetModelConfig(
+		ctx,
+		configstoreTables.ModelConfigScopeGlobal,
+		nil,
+		configstoreTables.ModelConfigAllModels,
+		&providerName,
+	)
+	if err != nil && !errors.Is(err, configstore.ErrNotFound) {
 		logger.Error("failed to load provider governance: %v", err)
 		SendError(ctx, 500, fmt.Sprintf("Failed to load provider governance: %v", err))
 		return
@@ -3633,167 +3909,155 @@ func (h *GovernanceHandler) updateProviderGovernance(ctx *fasthttp.RequestCtx) {
 	if existing != nil {
 		mc = *existing
 	}
-
-	// Existing single owned budget, if any (provider governance is single-budget by API).
 	var existingBudget *configstoreTables.TableBudget
 	if len(mc.Budgets) > 0 {
 		existingBudget = &mc.Budgets[0]
 	}
 
 	deleted := false
-	if err := h.configStore.ExecuteTransaction(ctx, func(tx *gorm.DB) error {
-		var rateLimitIDToDelete string
+	revision, err := commitConfigMutation(ctx, h.configStore, prepared, func(mutationCtx context.Context) error {
+		return h.configStore.ExecuteTransaction(mutationCtx, func(tx *gorm.DB) error {
+			var rateLimitIDToDelete string
+			wasCalendarAligned := mc.CalendarAligned
+			if req.CalendarAligned != nil {
+				mc.CalendarAligned = *req.CalendarAligned
+			}
+			calendarAlignmentJustEnabled := !wasCalendarAligned && mc.CalendarAligned
 
-		// Apply CalendarAligned if provided.
-		wasCalendarAligned := mc.CalendarAligned
-		if req.CalendarAligned != nil {
-			mc.CalendarAligned = *req.CalendarAligned
-		}
-		calendarAlignmentJustEnabled := !wasCalendarAligned && mc.CalendarAligned
-
-		// Rate limit lifecycle (mc references it via RateLimitID, so resolve it before
-		// persisting the model config below).
-		if req.RateLimit != nil {
-			if isRateLimitRemovalRequest(req.RateLimit) {
-				if mc.RateLimitID != nil {
-					rateLimitIDToDelete = *mc.RateLimitID
-					mc.RateLimitID = nil
-					mc.RateLimit = nil
+			if req.RateLimit != nil {
+				if isRateLimitRemovalRequest(req.RateLimit) {
+					if mc.RateLimitID != nil {
+						rateLimitIDToDelete = *mc.RateLimitID
+						mc.RateLimitID = nil
+						mc.RateLimit = nil
+					}
+				} else if mc.RateLimitID != nil {
+					rateLimit := configstoreTables.TableRateLimit{}
+					if err := tx.First(&rateLimit, "id = ?", *mc.RateLimitID).Error; err != nil {
+						return err
+					}
+					rateLimit.TokenMaxLimit = req.RateLimit.TokenMaxLimit
+					rateLimit.TokenResetDuration = req.RateLimit.TokenResetDuration
+					rateLimit.RequestMaxLimit = req.RateLimit.RequestMaxLimit
+					rateLimit.RequestResetDuration = req.RateLimit.RequestResetDuration
+					if err := validateRateLimit(&rateLimit); err != nil {
+						return err
+					}
+					if err := h.configStore.UpdateRateLimit(mutationCtx, &rateLimit, tx); err != nil {
+						return err
+					}
+					mc.RateLimit = &rateLimit
+				} else {
+					rateLimit := configstoreTables.TableRateLimit{
+						ID:                   uuid.NewString(),
+						TokenMaxLimit:        req.RateLimit.TokenMaxLimit,
+						TokenResetDuration:   req.RateLimit.TokenResetDuration,
+						RequestMaxLimit:      req.RateLimit.RequestMaxLimit,
+						RequestResetDuration: req.RateLimit.RequestResetDuration,
+						TokenLastReset:       time.Now(),
+						RequestLastReset:     time.Now(),
+					}
+					if err := validateRateLimit(&rateLimit); err != nil {
+						return err
+					}
+					if err := h.configStore.CreateRateLimit(mutationCtx, &rateLimit, tx); err != nil {
+						return err
+					}
+					mc.RateLimitID = &rateLimit.ID
+					mc.RateLimit = &rateLimit
 				}
-			} else if mc.RateLimitID != nil {
-				rateLimit := configstoreTables.TableRateLimit{}
-				if err := tx.First(&rateLimit, "id = ?", *mc.RateLimitID).Error; err != nil {
+			}
+
+			effectiveBudgets := req.Budgets
+			if effectiveBudgets == nil && req.Budget != nil {
+				if len(mc.Budgets) > 1 {
+					return &badRequestError{err: fmt.Errorf("deprecated 'budget' field cannot be used when multiple budgets already exist; use 'budgets'")}
+				}
+				effectiveBudgets = coerceLegacyBudget(req.Budget, existingBudget)
+				if effectiveBudgets == nil && !isBudgetRemovalRequest(req.Budget) {
+					return &badRequestError{err: fmt.Errorf("both max_limit and reset_duration are required when creating a new budget")}
+				}
+			}
+
+			willHaveBudget := len(mc.Budgets) > 0
+			if effectiveBudgets != nil {
+				willHaveBudget = len(*effectiveBudgets) > 0
+			}
+			hasGovernance := mc.RateLimitID != nil || willHaveBudget
+			switch {
+			case !hasGovernance && isNew:
+				return nil
+			case !hasGovernance:
+				for _, b := range mc.Budgets {
+					if err := tx.Delete(&configstoreTables.TableBudget{}, "id = ?", b.ID).Error; err != nil {
+						return err
+					}
+				}
+				if err := tx.Delete(&configstoreTables.TableModelConfig{}, "id = ?", mc.ID).Error; err != nil {
 					return err
 				}
-				rateLimit.TokenMaxLimit = req.RateLimit.TokenMaxLimit
-				rateLimit.TokenResetDuration = req.RateLimit.TokenResetDuration
-				rateLimit.RequestMaxLimit = req.RateLimit.RequestMaxLimit
-				rateLimit.RequestResetDuration = req.RateLimit.RequestResetDuration
-				if err := validateRateLimit(&rateLimit); err != nil {
+				deleted = true
+			case isNew:
+				if err := h.configStore.CreateModelConfig(mutationCtx, &mc, tx); err != nil {
 					return err
 				}
-				if err := h.configStore.UpdateRateLimit(ctx, &rateLimit, tx); err != nil {
-					return err
-				}
-				mc.RateLimit = &rateLimit
-			} else {
-				rateLimit := configstoreTables.TableRateLimit{
-					ID:                   uuid.NewString(),
-					TokenMaxLimit:        req.RateLimit.TokenMaxLimit,
-					TokenResetDuration:   req.RateLimit.TokenResetDuration,
-					RequestMaxLimit:      req.RateLimit.RequestMaxLimit,
-					RequestResetDuration: req.RateLimit.RequestResetDuration,
-					TokenLastReset:       time.Now(),
-					RequestLastReset:     time.Now(),
-				}
-				if err := validateRateLimit(&rateLimit); err != nil {
-					return err
-				}
-				if err := h.configStore.CreateRateLimit(ctx, &rateLimit, tx); err != nil {
-					return err
-				}
-				mc.RateLimitID = &rateLimit.ID
-				mc.RateLimit = &rateLimit
-			}
-		}
-
-		// Determine effective budgets: budgets field takes priority; budget field is coerced
-		// into a single-element slice for backward compatibility.
-		effectiveBudgets := req.Budgets
-		if effectiveBudgets == nil && req.Budget != nil {
-			if len(mc.Budgets) > 1 {
-				return &badRequestError{err: fmt.Errorf("deprecated 'budget' field cannot be used when multiple budgets already exist; use 'budgets'")}
-			}
-			effectiveBudgets = coerceLegacyBudget(req.Budget, existingBudget)
-			if effectiveBudgets == nil && !isBudgetRemovalRequest(req.Budget) {
-				return &badRequestError{err: fmt.Errorf("both max_limit and reset_duration are required when creating a new budget")}
-			}
-		}
-
-		willHaveBudget := len(mc.Budgets) > 0
-		if effectiveBudgets != nil {
-			willHaveBudget = len(*effectiveBudgets) > 0
-		}
-
-		hasGovernance := mc.RateLimitID != nil || willHaveBudget
-		switch {
-		case !hasGovernance && isNew:
-			// Nothing to persist (removal request on a provider with no governance).
-			return nil
-		case !hasGovernance && !isNew:
-			// All governance removed → delete the model config and its owned budgets.
-			for _, b := range mc.Budgets {
-				if err := tx.Delete(&configstoreTables.TableBudget{}, "id = ?", b.ID).Error; err != nil {
+			default:
+				if err := h.configStore.UpdateModelConfig(mutationCtx, &mc, tx); err != nil {
 					return err
 				}
 			}
-			if err := tx.Delete(&configstoreTables.TableModelConfig{}, "id = ?", mc.ID).Error; err != nil {
-				return err
-			}
-			deleted = true
-		case isNew:
-			// Create the model config first so its budgets can reference it.
-			if err := h.configStore.CreateModelConfig(ctx, &mc, tx); err != nil {
-				return err
-			}
-		default:
-			if err := h.configStore.UpdateModelConfig(ctx, &mc, tx); err != nil {
-				return err
-			}
-		}
 
-		// Budget reconciliation (mc row exists at this point for create cases).
-		if !deleted && effectiveBudgets != nil {
-			if err := h.reconcileModelConfigBudgets(ctx, tx, &mc, *effectiveBudgets); err != nil {
-				return err
-			}
-		}
-
-		// Snap budgets and rate limit to the current calendar period when calendar
-		// alignment transitions false → true. Runs after reconciliation so combined
-		// "toggle + budgets" requests see the final reconciled state.
-		if !deleted && calendarAlignmentJustEnabled {
-			now := time.Now()
-			for i := range mc.Budgets {
-				b := &mc.Budgets[i]
-				if !configstoreTables.IsCalendarAlignableDuration(b.ResetDuration) {
-					continue
-				}
-				b.LastReset = configstoreTables.GetCalendarPeriodStart(b.ResetDuration, now)
-				b.CurrentUsage = 0
-				if err := h.configStore.UpdateBudget(ctx, b, tx); err != nil {
-					return fmt.Errorf("failed to snap provider budget %s on calendar-align enable: %w", b.ID, err)
+			if !deleted && effectiveBudgets != nil {
+				if err := h.reconcileModelConfigBudgets(mutationCtx, tx, &mc, *effectiveBudgets); err != nil {
+					return err
 				}
 			}
-			if mc.RateLimit != nil {
-				rl := mc.RateLimit
-				snapped := false
-				if rl.TokenResetDuration != nil && configstoreTables.IsCalendarAlignableDuration(*rl.TokenResetDuration) {
-					rl.TokenLastReset = configstoreTables.GetCalendarPeriodStart(*rl.TokenResetDuration, now)
-					rl.TokenCurrentUsage = 0
-					snapped = true
+			if !deleted && calendarAlignmentJustEnabled {
+				now := time.Now()
+				for i := range mc.Budgets {
+					b := &mc.Budgets[i]
+					if !configstoreTables.IsCalendarAlignableDuration(b.ResetDuration) {
+						continue
+					}
+					b.LastReset = configstoreTables.GetCalendarPeriodStart(b.ResetDuration, now)
+					b.CurrentUsage = 0
+					if err := h.configStore.UpdateBudget(mutationCtx, b, tx); err != nil {
+						return fmt.Errorf("failed to snap provider budget %s on calendar-align enable: %w", b.ID, err)
+					}
 				}
-				if rl.RequestResetDuration != nil && configstoreTables.IsCalendarAlignableDuration(*rl.RequestResetDuration) {
-					rl.RequestLastReset = configstoreTables.GetCalendarPeriodStart(*rl.RequestResetDuration, now)
-					rl.RequestCurrentUsage = 0
-					snapped = true
-				}
-				if snapped {
-					if err := h.configStore.UpdateRateLimit(ctx, rl, tx); err != nil {
-						return fmt.Errorf("failed to snap provider rate limit on calendar-align enable: %w", err)
+				if mc.RateLimit != nil {
+					rl := mc.RateLimit
+					snapped := false
+					if rl.TokenResetDuration != nil && configstoreTables.IsCalendarAlignableDuration(*rl.TokenResetDuration) {
+						rl.TokenLastReset = configstoreTables.GetCalendarPeriodStart(*rl.TokenResetDuration, now)
+						rl.TokenCurrentUsage = 0
+						snapped = true
+					}
+					if rl.RequestResetDuration != nil && configstoreTables.IsCalendarAlignableDuration(*rl.RequestResetDuration) {
+						rl.RequestLastReset = configstoreTables.GetCalendarPeriodStart(*rl.RequestResetDuration, now)
+						rl.RequestCurrentUsage = 0
+						snapped = true
+					}
+					if snapped {
+						if err := h.configStore.UpdateRateLimit(mutationCtx, rl, tx); err != nil {
+							return fmt.Errorf("failed to snap provider rate limit on calendar-align enable: %w", err)
+						}
 					}
 				}
 			}
-		}
 
-		// Delete orphaned rate-limit row if it was unlinked.
-		if rateLimitIDToDelete != "" {
-			if err := tx.Delete(&configstoreTables.TableRateLimit{}, "id = ?", rateLimitIDToDelete).Error; err != nil {
-				return err
+			if rateLimitIDToDelete != "" {
+				if err := tx.Delete(&configstoreTables.TableRateLimit{}, "id = ?", rateLimitIDToDelete).Error; err != nil {
+					return err
+				}
 			}
+			return nil
+		})
+	})
+	if err != nil {
+		if handleConfigMutationError(ctx, err) {
+			return
 		}
-		return nil
-	}); err != nil {
 		var badReqErr *badRequestError
 		if errors.As(err, &badReqErr) {
 			SendError(ctx, 400, err.Error())
@@ -3804,21 +4068,26 @@ func (h *GovernanceHandler) updateProviderGovernance(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	// Sync the in-memory governance store with the change.
 	resp := ProviderGovernanceResponse{Provider: providerName}
 	if deleted {
 		if err := h.governanceManager.RemoveModelConfig(ctx, mc.ID); err != nil {
 			logger.Error("failed to remove provider governance from memory: %v", err)
+			sendConfigMutationPending(ctx, revision)
+			return
 		}
 	} else if len(mc.Budgets) > 0 || mc.RateLimitID != nil {
-		if reloaded, err := h.governanceManager.ReloadModelConfig(ctx, mc.ID); err != nil {
-			logger.Error("failed to reload provider governance in memory: %v", err)
-			if r, ok := modelConfigToProviderGovernance(&mc); ok {
-				resp = r
-			}
-		} else if r, ok := modelConfigToProviderGovernance(reloaded); ok {
+		reloaded, reloadErr := h.governanceManager.ReloadModelConfig(ctx, mc.ID)
+		if reloadErr != nil {
+			logger.Error("failed to reload provider governance in memory: %v", reloadErr)
+			sendConfigMutationPending(ctx, revision)
+			return
+		}
+		if r, ok := modelConfigToProviderGovernance(reloaded); ok {
 			resp = r
 		}
+	}
+	if prepared.enabled {
+		setConfigRevisionHeaders(ctx, revision)
 	}
 	SendJSON(ctx, map[string]interface{}{
 		"message":  "Provider governance updated successfully",
@@ -3834,25 +4103,45 @@ func (h *GovernanceHandler) deleteProviderGovernance(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, 400, "Invalid provider name encoding")
 		return
 	}
-	mc, err := h.configStore.GetModelConfig(ctx, configstoreTables.ModelConfigScopeGlobal, nil, configstoreTables.ModelConfigAllModels, &providerName)
-	if err != nil {
-		if err == configstore.ErrNotFound {
-			// No provider-level governance to remove — treat as success (idempotent).
-			SendJSON(ctx, map[string]interface{}{"message": "Provider governance deleted successfully"})
-			return
-		}
+	prepared, ok := prepareConfigMutation(ctx, h.configStore)
+	if !ok {
+		return
+	}
+	mc, err := h.configStore.GetModelConfig(
+		ctx,
+		configstoreTables.ModelConfigScopeGlobal,
+		nil,
+		configstoreTables.ModelConfigAllModels,
+		&providerName,
+	)
+	if err != nil && !errors.Is(err, configstore.ErrNotFound) {
 		logger.Error("failed to load provider governance: %v", err)
 		SendError(ctx, 500, "Failed to delete provider governance")
 		return
 	}
-	// DeleteModelConfig cascades to the owned budget/rate-limit rows.
-	if err := h.configStore.DeleteModelConfig(ctx, mc.ID); err != nil {
+	revision, err := commitConfigMutation(ctx, h.configStore, prepared, func(mutationCtx context.Context) error {
+		if mc == nil {
+			return nil
+		}
+		return h.configStore.DeleteModelConfig(mutationCtx, mc.ID)
+	})
+	if err != nil {
+		if handleConfigMutationError(ctx, err) {
+			return
+		}
 		logger.Error("failed to delete provider governance: %v", err)
 		SendError(ctx, 500, "Failed to delete provider governance")
 		return
 	}
-	if err := h.governanceManager.RemoveModelConfig(ctx, mc.ID); err != nil {
-		logger.Error("failed to remove provider governance from memory: %v", err)
+	if mc != nil {
+		if err := h.governanceManager.RemoveModelConfig(ctx, mc.ID); err != nil {
+			logger.Error("failed to remove provider governance from memory: %v", err)
+			sendConfigMutationPending(ctx, revision)
+			return
+		}
+	}
+	if prepared.enabled {
+		setConfigRevisionHeaders(ctx, revision)
 	}
 	SendJSON(ctx, map[string]interface{}{
 		"message": "Provider governance deleted successfully",
@@ -3863,6 +4152,7 @@ func (h *GovernanceHandler) deleteProviderGovernance(ctx *fasthttp.RequestCtx) {
 
 // getRoutingRules retrieves all routing rules with optional filtering from database
 func (h *GovernanceHandler) getRoutingRules(ctx *fasthttp.RequestCtx) {
+	setCurrentConfigRevisionHeaders(ctx, h.configStore)
 	// Get query parameters for filtering
 	scope := string(ctx.QueryArgs().Peek("scope"))
 	scopeID := string(ctx.QueryArgs().Peek("scope_id"))
@@ -3958,6 +4248,7 @@ func (h *GovernanceHandler) getRoutingRules(ctx *fasthttp.RequestCtx) {
 
 // getRoutingRule retrieves a single routing rule by ID from database
 func (h *GovernanceHandler) getRoutingRule(ctx *fasthttp.RequestCtx) {
+	setCurrentConfigRevisionHeaders(ctx, h.configStore)
 	ruleID := ctx.UserValue("rule_id").(string)
 
 	rule, err := h.configStore.GetRoutingRule(ctx, ruleID)
@@ -4033,6 +4324,10 @@ func (h *GovernanceHandler) createRoutingRule(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	prepared, ok := prepareConfigMutation(ctx, h.configStore)
+	if !ok {
+		return
+	}
 	// Build targets
 	ruleID := uuid.NewString()
 	targets := make([]configstoreTables.TableRoutingTarget, 0, len(req.Targets))
@@ -4070,18 +4365,25 @@ func (h *GovernanceHandler) createRoutingRule(ctx *fasthttp.RequestCtx) {
 		ParsedQuery:     req.Query,
 	}
 
-	// Create in database
-	if err := h.configStore.CreateRoutingRule(ctx, rule); err != nil {
+	revision, err := commitConfigMutation(ctx, h.configStore, prepared, func(mutationCtx context.Context) error {
+		return h.configStore.CreateRoutingRule(mutationCtx, rule)
+	})
+	if err != nil {
+		if handleConfigMutationError(ctx, err) {
+			return
+		}
 		SendError(ctx, 500, fmt.Sprintf("Failed to create routing rule: %v", err))
 		return
 	}
-
-	// Update in-memory store via manager callback
 	if err := h.governanceManager.ReloadRoutingRule(ctx, rule.ID); err != nil {
-		SendError(ctx, 500, fmt.Sprintf("Failed to reload routing rule in memory: %v, please restart bifrost to sync with the database", err))
+		logger.Error("failed to reload routing rule in memory: %v", err)
+		sendConfigMutationPending(ctx, revision)
 		return
 	}
 
+	if prepared.enabled {
+		setConfigRevisionHeaders(ctx, revision)
+	}
 	SendJSON(ctx, map[string]interface{}{
 		"message": "Routing rule created successfully",
 		"rule":    rule,
@@ -4099,6 +4401,10 @@ func (h *GovernanceHandler) updateRoutingRule(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	prepared, ok := prepareConfigMutation(ctx, h.configStore)
+	if !ok {
+		return
+	}
 	rule, err := h.configStore.GetRoutingRule(ctx, ruleID)
 	if err != nil {
 		if errors.Is(err, configstore.ErrNotFound) {
@@ -4192,18 +4498,25 @@ func (h *GovernanceHandler) updateRoutingRule(ctx *fasthttp.RequestCtx) {
 		}
 	}
 
-	// Update in database
-	if err := h.configStore.UpdateRoutingRule(ctx, rule); err != nil {
+	revision, err := commitConfigMutation(ctx, h.configStore, prepared, func(mutationCtx context.Context) error {
+		return h.configStore.UpdateRoutingRule(mutationCtx, rule)
+	})
+	if err != nil {
+		if handleConfigMutationError(ctx, err) {
+			return
+		}
 		SendError(ctx, 500, fmt.Sprintf("Failed to update routing rule in database: %v", err))
 		return
 	}
-
-	// Update in-memory store via manager callback
 	if err := h.governanceManager.ReloadRoutingRule(ctx, rule.ID); err != nil {
-		SendError(ctx, 500, fmt.Sprintf("Failed to reload routing rule in memory: %v, please restart bifrost to sync with the database", err))
+		logger.Error("failed to reload routing rule in memory: %v", err)
+		sendConfigMutationPending(ctx, revision)
 		return
 	}
 
+	if prepared.enabled {
+		setConfigRevisionHeaders(ctx, revision)
+	}
 	SendJSON(ctx, map[string]interface{}{
 		"message": "Routing rule updated successfully",
 		"rule":    rule,
@@ -4213,9 +4526,17 @@ func (h *GovernanceHandler) updateRoutingRule(ctx *fasthttp.RequestCtx) {
 // deleteRoutingRule deletes a routing rule
 func (h *GovernanceHandler) deleteRoutingRule(ctx *fasthttp.RequestCtx) {
 	ruleID := ctx.UserValue("rule_id").(string)
-
-	// Delete from database
-	if err := h.configStore.DeleteRoutingRule(ctx, ruleID); err != nil {
+	prepared, ok := prepareConfigMutation(ctx, h.configStore)
+	if !ok {
+		return
+	}
+	revision, err := commitConfigMutation(ctx, h.configStore, prepared, func(mutationCtx context.Context) error {
+		return h.configStore.DeleteRoutingRule(mutationCtx, ruleID)
+	})
+	if err != nil {
+		if handleConfigMutationError(ctx, err) {
+			return
+		}
 		if errors.Is(err, configstore.ErrNotFound) {
 			SendError(ctx, 404, "Routing rule not found")
 			return
@@ -4223,12 +4544,14 @@ func (h *GovernanceHandler) deleteRoutingRule(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, 500, fmt.Sprintf("Failed to delete routing rule from database: %v", err))
 		return
 	}
-
-	// Remove from in-memory store via manager callback (non-fatal: DB already updated)
 	if err := h.governanceManager.RemoveRoutingRule(ctx, ruleID); err != nil {
 		logger.Error("failed to remove routing rule from memory: %v", err)
+		sendConfigMutationPending(ctx, revision)
+		return
 	}
-
+	if prepared.enabled {
+		setConfigRevisionHeaders(ctx, revision)
+	}
 	SendJSON(ctx, map[string]interface{}{
 		"message": "Routing rule deleted successfully",
 	})
@@ -4290,6 +4613,7 @@ type UpdatePricingOverrideRequest struct {
 }
 
 func (h *GovernanceHandler) getPricingOverrides(ctx *fasthttp.RequestCtx) {
+	setCurrentConfigRevisionHeaders(ctx, h.configStore)
 	// Parse filter parameters
 	var scopeKind, virtualKeyID, providerID, providerKeyID *string
 	if v := strings.TrimSpace(string(ctx.QueryArgs().Peek("scope_kind"))); v != "" {
@@ -4433,16 +4757,28 @@ func (h *GovernanceHandler) createPricingOverride(ctx *fasthttp.RequestCtx) {
 		UpdatedAt:        now,
 	}
 
-	if err := h.configStore.CreatePricingOverride(ctx, &override); err != nil {
+	prepared, ok := prepareConfigMutation(ctx, h.configStore)
+	if !ok {
+		return
+	}
+	revision, err := commitConfigMutation(ctx, h.configStore, prepared, func(mutationCtx context.Context) error {
+		return h.configStore.CreatePricingOverride(mutationCtx, &override)
+	})
+	if err != nil {
+		if handleConfigMutationError(ctx, err) {
+			return
+		}
 		logger.Error("failed to create pricing override: %v", err)
 		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to create pricing override")
 		return
 	}
-
 	if err := h.governanceManager.UpsertPricingOverride(ctx, &override); err != nil {
 		logger.Error("failed to upsert pricing override: %v", err)
-		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to upsert pricing override")
+		sendConfigMutationPending(ctx, revision)
 		return
+	}
+	if prepared.enabled {
+		setConfigRevisionHeaders(ctx, revision)
 	}
 	SendJSONWithStatus(ctx, map[string]interface{}{
 		"message":          "Pricing override created successfully",
@@ -4459,6 +4795,10 @@ func (h *GovernanceHandler) updatePricingOverride(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	prepared, ok := prepareConfigMutation(ctx, h.configStore)
+	if !ok {
+		return
+	}
 	existing, err := h.configStore.GetPricingOverrideByID(ctx, id)
 	if err != nil {
 		if errors.Is(err, configstore.ErrNotFound) {
@@ -4548,16 +4888,24 @@ func (h *GovernanceHandler) updatePricingOverride(ctx *fasthttp.RequestCtx) {
 		UpdatedAt:        time.Now(),
 	}
 
-	if err := h.configStore.UpdatePricingOverride(ctx, &override); err != nil {
+	revision, err := commitConfigMutation(ctx, h.configStore, prepared, func(mutationCtx context.Context) error {
+		return h.configStore.UpdatePricingOverride(mutationCtx, &override)
+	})
+	if err != nil {
+		if handleConfigMutationError(ctx, err) {
+			return
+		}
 		logger.Error("failed to update pricing override: %v", err)
 		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to update pricing override")
 		return
 	}
-
 	if err := h.governanceManager.UpsertPricingOverride(ctx, &override); err != nil {
 		logger.Error("failed to upsert pricing override: %v", err)
-		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to upsert pricing override")
+		sendConfigMutationPending(ctx, revision)
 		return
+	}
+	if prepared.enabled {
+		setConfigRevisionHeaders(ctx, revision)
 	}
 	SendJSON(ctx, map[string]interface{}{
 		"message":          "Pricing override updated successfully",
@@ -4567,7 +4915,17 @@ func (h *GovernanceHandler) updatePricingOverride(ctx *fasthttp.RequestCtx) {
 
 func (h *GovernanceHandler) deletePricingOverride(ctx *fasthttp.RequestCtx) {
 	id := ctx.UserValue("id").(string)
-	if err := h.configStore.DeletePricingOverride(ctx, id); err != nil {
+	prepared, ok := prepareConfigMutation(ctx, h.configStore)
+	if !ok {
+		return
+	}
+	revision, err := commitConfigMutation(ctx, h.configStore, prepared, func(mutationCtx context.Context) error {
+		return h.configStore.DeletePricingOverride(mutationCtx, id)
+	})
+	if err != nil {
+		if handleConfigMutationError(ctx, err) {
+			return
+		}
 		if errors.Is(err, configstore.ErrNotFound) {
 			SendError(ctx, fasthttp.StatusNotFound, "Pricing override not found")
 			return
@@ -4576,9 +4934,13 @@ func (h *GovernanceHandler) deletePricingOverride(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to delete pricing override")
 		return
 	}
-
 	if err := h.governanceManager.DeletePricingOverride(ctx, id); err != nil {
 		logger.Warn("failed to delete pricing override from memory: %v", err)
+		sendConfigMutationPending(ctx, revision)
+		return
+	}
+	if prepared.enabled {
+		setConfigRevisionHeaders(ctx, revision)
 	}
 	SendJSON(ctx, map[string]interface{}{
 		"message": "Pricing override deleted successfully",

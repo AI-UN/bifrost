@@ -7,6 +7,7 @@ health:
       log store, and vector store if configured.
     tags:
       - Health
+    security: []
     responses:
       '200':
         description: Server is healthy
@@ -16,6 +17,33 @@ health:
               $ref: '../../schemas/management/health.yaml#/HealthResponse'
       '503':
         description: Service unavailable
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/common.yaml#/BifrostError'
+
+ready:
+  get:
+    operationId: getReadiness
+    summary: Readiness check
+    description: Returns ready only after the node has applied its initial shared configuration snapshot. The configuration-sync readiness gate is a fork-specific extension.
+    tags:
+      - Health
+    security: []
+    responses:
+      '200':
+        description: Node is ready to receive traffic
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [status]
+              properties:
+                status:
+                  type: string
+                  example: ok
+      '503':
+        description: Initial configuration synchronization is still pending
         content:
           application/json:
             schema:
