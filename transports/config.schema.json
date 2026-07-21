@@ -457,6 +457,9 @@
         },
         "sarvam": {
           "$ref": "#/$defs/provider"
+        },
+        "siliconflow": {
+          "$ref": "#/$defs/provider"
         }
       },
       "additionalProperties": true
@@ -2399,7 +2402,8 @@
                         "perplexity",
                         "replicate",
                         "sgl",
-                        "huggingface"
+                        "huggingface",
+                        "siliconflow"
                       ]
                     },
                     "embedding_model": {
