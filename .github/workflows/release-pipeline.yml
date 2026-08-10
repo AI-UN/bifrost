@@ -195,6 +195,8 @@ jobs:
             api.perplexity.ai:443
             api.replicate.com:443
             api.x.ai:443
+            api.siliconflow.cn:443
+            api.siliconflow.com:443
             azure.archive.ubuntu.com:80
             esm.ubuntu.com:443
             bifrost-gateway-resource.openai.azure.com:443
@@ -288,6 +290,7 @@ jobs:
           SARVAM_API_KEY: ${{ secrets.SARVAM_API_KEY }}
           COHERE_API_KEY: ${{ secrets.COHERE_API_KEY }}
           FIREWORKS_API_KEY: ${{ secrets.FIREWORKS_API_KEY }}
+          SILICONFLOW_API_KEY: ${{ secrets.SILICONFLOW_API_KEY }}
           VERTEX_CREDENTIALS: ${{ secrets.VERTEX_CREDENTIALS }}
           VERTEX_PROJECT_ID: ${{ secrets.VERTEX_PROJECT_ID }}
           VERTEX_GCS_BUCKET: ${{ secrets.VERTEX_GCS_BUCKET }}
@@ -888,6 +891,7 @@ jobs:
           SARVAM_API_KEY: ${{ secrets.SARVAM_API_KEY }}
           COHERE_API_KEY: ${{ secrets.COHERE_API_KEY }}
           FIREWORKS_API_KEY: ${{ secrets.FIREWORKS_API_KEY }}
+          SILICONFLOW_API_KEY: ${{ secrets.SILICONFLOW_API_KEY }}
           VERTEX_CREDENTIALS: ${{ secrets.VERTEX_CREDENTIALS }}
           VERTEX_PROJECT_ID: ${{ secrets.VERTEX_PROJECT_ID }}
           VERTEX_GCS_BUCKET: ${{ secrets.VERTEX_GCS_BUCKET }}
@@ -996,6 +1000,7 @@ jobs:
           SARVAM_API_KEY: ${{ secrets.SARVAM_API_KEY }}
           COHERE_API_KEY: ${{ secrets.COHERE_API_KEY }}
           FIREWORKS_API_KEY: ${{ secrets.FIREWORKS_API_KEY }}
+          SILICONFLOW_API_KEY: ${{ secrets.SILICONFLOW_API_KEY }}
           VERTEX_CREDENTIALS: ${{ secrets.VERTEX_CREDENTIALS }}
           VERTEX_PROJECT_ID: ${{ secrets.VERTEX_PROJECT_ID }}
           VERTEX_GCS_BUCKET: ${{ secrets.VERTEX_GCS_BUCKET }}
@@ -1209,6 +1214,8 @@ jobs:
             api.perplexity.ai:443
             api.replicate.com:443
             api.x.ai:443
+            api.siliconflow.cn:443
+            api.siliconflow.com:443
             auth.docker.io:443
             bedrock-mantle.us-east-1.api.aws:443
             bedrock.us-east-1.amazonaws.com:443
@@ -1292,6 +1299,7 @@ jobs:
           PARASAIL_API_KEY: ${{ secrets.PARASAIL_API_KEY }}
           ELEVENLABS_API_KEY: ${{ secrets.ELEVENLABS_API_KEY }}
           FIREWORKS_API_KEY: ${{ secrets.FIREWORKS_API_KEY }}
+          SILICONFLOW_API_KEY: ${{ secrets.SILICONFLOW_API_KEY }}
           HUGGING_FACE_API_KEY: ${{ secrets.HUGGING_FACE_API_KEY }}
           XAI_API_KEY: ${{ secrets.XAI_API_KEY }}
           REPLICATE_API_KEY: ${{ secrets.REPLICATE_API_KEY }}
@@ -1507,6 +1515,8 @@ jobs:
             api.perplexity.ai:443
             api.replicate.com:443
             api.x.ai:443
+            api.siliconflow.cn:443
+            api.siliconflow.com:443
             auth.docker.io:443
             bedrock-mantle.us-east-1.api.aws:443
             bedrock.us-east-1.amazonaws.com:443
@@ -1578,6 +1588,7 @@ jobs:
           PARASAIL_API_KEY: ${{ secrets.PARASAIL_API_KEY }}
           ELEVENLABS_API_KEY: ${{ secrets.ELEVENLABS_API_KEY }}
           FIREWORKS_API_KEY: ${{ secrets.FIREWORKS_API_KEY }}
+          SILICONFLOW_API_KEY: ${{ secrets.SILICONFLOW_API_KEY }}
           HUGGING_FACE_API_KEY: ${{ secrets.HUGGING_FACE_API_KEY }}
           XAI_API_KEY: ${{ secrets.XAI_API_KEY }}
           REPLICATE_API_KEY: ${{ secrets.REPLICATE_API_KEY }}
@@ -1635,6 +1646,8 @@ jobs:
             api.perplexity.ai:443
             api.replicate.com:443
             api.x.ai:443
+            api.siliconflow.cn:443
+            api.siliconflow.com:443
             auth.docker.io:443
             bedrock-mantle.us-east-1.api.aws:443
             bedrock.us-east-1.amazonaws.com:443
@@ -1706,6 +1719,7 @@ jobs:
           PARASAIL_API_KEY: ${{ secrets.PARASAIL_API_KEY }}
           ELEVENLABS_API_KEY: ${{ secrets.ELEVENLABS_API_KEY }}
           FIREWORKS_API_KEY: ${{ secrets.FIREWORKS_API_KEY }}
+          SILICONFLOW_API_KEY: ${{ secrets.SILICONFLOW_API_KEY }}
           HUGGING_FACE_API_KEY: ${{ secrets.HUGGING_FACE_API_KEY }}
           XAI_API_KEY: ${{ secrets.XAI_API_KEY }}
           REPLICATE_API_KEY: ${{ secrets.REPLICATE_API_KEY }}
@@ -1819,6 +1833,7 @@ jobs:
           SARVAM_API_KEY: ${{ secrets.SARVAM_API_KEY }}
           COHERE_API_KEY: ${{ secrets.COHERE_API_KEY }}
           FIREWORKS_API_KEY: ${{ secrets.FIREWORKS_API_KEY }}
+          SILICONFLOW_API_KEY: ${{ secrets.SILICONFLOW_API_KEY }}
           VERTEX_CREDENTIALS: ${{ secrets.VERTEX_CREDENTIALS }}
           VERTEX_PROJECT_ID: ${{ secrets.VERTEX_PROJECT_ID }}
           VERTEX_GCS_BUCKET: ${{ secrets.VERTEX_GCS_BUCKET }}
@@ -1935,6 +1950,7 @@ jobs:
           SARVAM_API_KEY: ${{ secrets.SARVAM_API_KEY }}
           COHERE_API_KEY: ${{ secrets.COHERE_API_KEY }}
           FIREWORKS_API_KEY: ${{ secrets.FIREWORKS_API_KEY }}
+          SILICONFLOW_API_KEY: ${{ secrets.SILICONFLOW_API_KEY }}
           VERTEX_CREDENTIALS: ${{ secrets.VERTEX_CREDENTIALS }}
           VERTEX_PROJECT_ID: ${{ secrets.VERTEX_PROJECT_ID }}
           VERTEX_GCS_BUCKET: ${{ secrets.VERTEX_GCS_BUCKET }}
@@ -2067,6 +2083,7 @@ jobs:
           SARVAM_API_KEY: ${{ secrets.SARVAM_API_KEY }}
           COHERE_API_KEY: ${{ secrets.COHERE_API_KEY }}
           FIREWORKS_API_KEY: ${{ secrets.FIREWORKS_API_KEY }}
+          SILICONFLOW_API_KEY: ${{ secrets.SILICONFLOW_API_KEY }}
           VERTEX_CREDENTIALS: ${{ secrets.VERTEX_CREDENTIALS }}
           VERTEX_PROJECT_ID: ${{ secrets.VERTEX_PROJECT_ID }}
           VERTEX_GCS_BUCKET: ${{ secrets.VERTEX_GCS_BUCKET }}
