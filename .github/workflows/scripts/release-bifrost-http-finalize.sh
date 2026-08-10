@@ -13,6 +13,7 @@ fi
 VERSION="$1"
 TAG_NAME="${TRANSPORT_TAG_NAME:-transports/v${VERSION}}"
 UPSTREAM_SOURCE_TAG="${UPSTREAM_SOURCE_TAG:-$TAG_NAME}"
+UPSTREAM_REPO_SLUG="${UPSTREAM_REPO_SLUG:-}"
 SKIP_GIT_TAG_CREATE="${SKIP_GIT_TAG_CREATE:-false}"
 ALLOW_SAME_CHANGELOG="${ALLOW_SAME_CHANGELOG:-false}"
 DOCKER_IMAGE_REFERENCE="${DOCKER_IMAGE_REFERENCE:-maximhq/bifrost}"
@@ -80,12 +81,35 @@ for plugin_name in "${!PLUGIN_VERSIONS[@]}"; do
   echo "     - $plugin_name: ${PLUGIN_VERSIONS[$plugin_name]}"
 done
 
-# Capturing changelog
-CHANGELOG_BODY=$(cat transports/changelog.md)
-# Skip comments from changelog
-CHANGELOG_BODY=$(echo "$CHANGELOG_BODY" | grep -v '^<!--' | grep -v '^-->')
-# If changelog is empty, return error
-if [ -z "$CHANGELOG_BODY" ]; then
+# Remove Markdown comments before validating or publishing changelog content.
+strip_changelog_comments() {
+  sed '/<!--/,/-->/d'
+}
+
+changelog_is_empty() {
+  [[ -z "${1//[[:space:]]/}" ]]
+}
+
+# The fork tag may replay the upstream post-release changelog reset while
+# rebasing fork patches onto the transport tag. Prefer the local changelog, but
+# recover the immutable upstream-tag changelog when that local file is empty.
+CHANGELOG_BODY="$(strip_changelog_comments < transports/changelog.md)"
+if changelog_is_empty "$CHANGELOG_BODY" &&
+  [[ -n "$UPSTREAM_REPO_SLUG" && "$UPSTREAM_SOURCE_TAG" != "$TAG_NAME" ]]; then
+  echo "ℹ️ Local changelog is empty; loading transports/changelog.md from ${UPSTREAM_REPO_SLUG}@${UPSTREAM_SOURCE_TAG}"
+  if UPSTREAM_CHANGELOG_BODY="$(
+    gh api --method GET \
+      -H "Accept: application/vnd.github.raw+json" \
+      "repos/${UPSTREAM_REPO_SLUG}/contents/transports/changelog.md" \
+      -f "ref=${UPSTREAM_SOURCE_TAG}"
+  )"; then
+    CHANGELOG_BODY="$(printf '%s\n' "$UPSTREAM_CHANGELOG_BODY" | strip_changelog_comments)"
+  else
+    echo "❌ Failed to load upstream changelog from ${UPSTREAM_REPO_SLUG}@${UPSTREAM_SOURCE_TAG}" >&2
+    exit 1
+  fi
+fi
+if changelog_is_empty "$CHANGELOG_BODY"; then
   echo "❌ Changelog is empty"
   exit 1
 fi
