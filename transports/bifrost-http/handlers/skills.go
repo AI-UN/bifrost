@@ -337,6 +337,7 @@ func (h *SkillsHandler) getAllSkillsVersion(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusInternalServerError, "failed to get all-skills version")
 		return
 	}
+	setCurrentConfigRevisionHeaders(ctx, h.store)
 	SendJSON(ctx, AllSkillsVersionResponse{Version: version})
 }
 
@@ -346,11 +347,29 @@ func (h *SkillsHandler) bumpAllSkillsVersion(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusBadRequest, "invalid request body")
 		return
 	}
+	prepared, ok := prepareConfigMutation(ctx, h.store)
+	if !ok {
+		return
+	}
 
-	version, err := h.store.BumpAllSkillsVersion(ctx, strings.ToLower(strings.TrimSpace(req.Bump)))
+	var version string
+	revision, err := commitConfigMutation(ctx, h.store, prepared, func(mutationCtx context.Context) error {
+		var mutationErr error
+		version, mutationErr = h.store.BumpAllSkillsVersion(
+			mutationCtx,
+			strings.ToLower(strings.TrimSpace(req.Bump)),
+		)
+		return mutationErr
+	})
 	if err != nil {
+		if handleConfigMutationError(ctx, err) {
+			return
+		}
 		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
 		return
+	}
+	if prepared.enabled {
+		setConfigRevisionHeaders(ctx, revision)
 	}
 	SendJSON(ctx, AllSkillsVersionResponse{Version: version})
 }
@@ -366,14 +385,23 @@ func (h *SkillsHandler) createSkill(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusBadRequest, "invalid request body")
 		return
 	}
-
 	if errs := validateSkillRequest(req.Name, req.Description, req.SkillMDBody, req.Version, req.ExtraFrontmatter, req.Files, true); len(errs) > 0 {
 		SendError(ctx, fasthttp.StatusBadRequest, strings.Join(errs, "; "))
 		return
 	}
-
 	if err := inferLiveFileMimeTypes(ctx, req.Files, "skills api create"); err != nil {
 		logger.Warn("%v", err)
+	}
+	prepared, ok := prepareConfigMutation(ctx, h.store)
+	if !ok {
+		return
+	}
+	if prepared.enabled {
+		if err := h.verifySkillObjectCandidates(ctx, req.Files); err != nil {
+			logger.Error("failed to verify skill file candidate: %v", err)
+			SendError(ctx, fasthttp.StatusBadRequest, "skill file object candidate could not be verified")
+			return
+		}
 	}
 
 	skill := &tables.TableSkill{
@@ -387,14 +415,22 @@ func (h *SkillsHandler) createSkill(ctx *fasthttp.RequestCtx) {
 		AllowedTools:     req.AllowedTools,
 		SkillMDBody:      req.SkillMDBody,
 		LatestVersion:    req.Version,
+		Files:            make([]tables.TableSkillFile, 0, len(req.Files)),
 	}
-
-	// Build file records (SkillVersionID is set by the store).
-	for _, fe := range req.Files {
-		skill.Files = append(skill.Files, fileEntryToTableSkillFile(fe))
+	for _, file := range req.Files {
+		skill.Files = append(skill.Files, fileEntryToTableSkillFile(file))
 	}
-
-	if err := h.store.CreateSkill(ctx, skill, req.Version, h.objectStore); err != nil {
+	mutationObjectStore := h.objectStore
+	if prepared.enabled {
+		mutationObjectStore = nil
+	}
+	revision, err := commitConfigMutation(ctx, h.store, prepared, func(mutationCtx context.Context) error {
+		return h.store.CreateSkill(mutationCtx, skill, req.Version, mutationObjectStore)
+	})
+	if err != nil {
+		if handleConfigMutationError(ctx, err) {
+			return
+		}
 		if errors.Is(err, configstore.ErrAlreadyExists) {
 			SendError(ctx, fasthttp.StatusConflict, "a skill with this name already exists")
 			return
@@ -403,10 +439,10 @@ func (h *SkillsHandler) createSkill(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusInternalServerError, err.Error())
 		return
 	}
-
-	SendJSON(ctx, map[string]any{
-		"skill": skill,
-	})
+	if prepared.enabled {
+		setConfigRevisionHeaders(ctx, revision)
+	}
+	SendJSON(ctx, map[string]any{"skill": skill})
 }
 
 func parseSkillSortParams(ctx *fasthttp.RequestCtx, allowed map[string]struct{}, defaultSortBy, defaultOrder string) (string, string) {
@@ -456,6 +492,7 @@ func (h *SkillsHandler) listSkills(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	setCurrentConfigRevisionHeaders(ctx, h.store)
 	SendJSON(ctx, map[string]any{
 		"skills": skills,
 		"total":  total,
@@ -504,6 +541,7 @@ func (h *SkillsHandler) getSkill(ctx *fasthttp.RequestCtx) {
 		skill.Metadata = fields.Metadata
 		skill.ExtraFrontmatter = fields.ExtraFrontmatter
 		skill.Files = found.Files
+		setCurrentConfigRevisionHeaders(ctx, h.store)
 		SendJSON(ctx, map[string]any{
 			"skill": skill,
 		})
@@ -521,6 +559,7 @@ func (h *SkillsHandler) getSkill(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	setCurrentConfigRevisionHeaders(ctx, h.store)
 	SendJSON(ctx, map[string]any{
 		"skill": skill,
 	})
@@ -560,6 +599,7 @@ func (h *SkillsHandler) listSkillVersions(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	setCurrentConfigRevisionHeaders(ctx, h.store)
 	SendJSON(ctx, map[string]any{
 		"versions": versions,
 		"total":    total,
@@ -574,7 +614,6 @@ func (h *SkillsHandler) shiftVersion(ctx *fasthttp.RequestCtx) {
 	if !ok {
 		return
 	}
-
 	var req struct {
 		Version string `json:"version"`
 	}
@@ -586,8 +625,17 @@ func (h *SkillsHandler) shiftVersion(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusBadRequest, "version is required")
 		return
 	}
-
-	if err := h.store.ShiftSkillVersion(ctx, id, req.Version, h.objectStore); err != nil {
+	prepared, ok := prepareConfigMutation(ctx, h.store)
+	if !ok {
+		return
+	}
+	revision, err := commitConfigMutation(ctx, h.store, prepared, func(mutationCtx context.Context) error {
+		return h.store.ShiftSkillVersion(mutationCtx, id, req.Version, h.objectStore)
+	})
+	if err != nil {
+		if handleConfigMutationError(ctx, err) {
+			return
+		}
 		if errors.Is(err, configstore.ErrNotFound) {
 			SendError(ctx, fasthttp.StatusNotFound, "skill not found")
 			return
@@ -605,13 +653,17 @@ func (h *SkillsHandler) shiftVersion(ctx *fasthttp.RequestCtx) {
 	skill, err := h.store.GetSkill(ctx, id)
 	if err != nil {
 		logger.Error("failed to reload skill after version shift: %v", err)
+		if prepared.enabled {
+			sendConfigMutationPending(ctx, revision)
+			return
+		}
 		SendError(ctx, fasthttp.StatusInternalServerError, "version shifted but failed to reload skill")
 		return
 	}
-
-	SendJSON(ctx, map[string]any{
-		"skill": skill,
-	})
+	if prepared.enabled {
+		setConfigRevisionHeaders(ctx, revision)
+	}
+	SendJSON(ctx, map[string]any{"skill": skill})
 }
 
 // updateSkill handles PUT /api/skills/{id}.
@@ -620,20 +672,28 @@ func (h *SkillsHandler) updateSkill(ctx *fasthttp.RequestCtx) {
 	if !ok {
 		return
 	}
-
 	var req UpdateSkillRequest
 	if err := json.Unmarshal(ctx.PostBody(), &req); err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, "invalid request body")
 		return
 	}
-
 	if errs := validateSkillRequest("", req.Description, req.SkillMDBody, req.Version, req.ExtraFrontmatter, req.Files, false); len(errs) > 0 {
 		SendError(ctx, fasthttp.StatusBadRequest, strings.Join(errs, "; "))
 		return
 	}
-
 	if err := inferLiveFileMimeTypes(ctx, req.Files, "skills api update"); err != nil {
 		logger.Warn("%v", err)
+	}
+	prepared, ok := prepareConfigMutation(ctx, h.store)
+	if !ok {
+		return
+	}
+	if prepared.enabled {
+		if err := h.verifySkillObjectCandidates(ctx, req.Files); err != nil {
+			logger.Error("failed to verify skill file candidate: %v", err)
+			SendError(ctx, fasthttp.StatusBadRequest, "skill file object candidate could not be verified")
+			return
+		}
 	}
 
 	skill, err := h.store.GetSkill(ctx, id)
@@ -646,8 +706,6 @@ func (h *SkillsHandler) updateSkill(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusInternalServerError, err.Error())
 		return
 	}
-
-	// Apply updates (name is immutable after creation).
 	skill.Description = req.Description
 	skill.License = req.License
 	skill.Compatibility = req.Compatibility
@@ -655,16 +713,22 @@ func (h *SkillsHandler) updateSkill(ctx *fasthttp.RequestCtx) {
 	skill.ExtraFrontmatter = tables.SkillJSONMap(req.ExtraFrontmatter)
 	skill.AllowedTools = req.AllowedTools
 	skill.SkillMDBody = req.SkillMDBody
-
-	// Rebuild files from the request (SkillVersionID is set by the store).
-	var files []tables.TableSkillFile
-	for _, fe := range req.Files {
-		files = append(files, fileEntryToTableSkillFile(fe))
+	skill.Files = make([]tables.TableSkillFile, 0, len(req.Files))
+	for _, file := range req.Files {
+		skill.Files = append(skill.Files, fileEntryToTableSkillFile(file))
 	}
-	skill.Files = files
-
-	serve := req.Serve == nil || *req.Serve // default true for backward compat
-	if err := h.store.UpdateSkill(ctx, skill, req.Version, serve, h.objectStore); err != nil {
+	serve := req.Serve == nil || *req.Serve
+	mutationObjectStore := h.objectStore
+	if prepared.enabled {
+		mutationObjectStore = nil
+	}
+	revision, err := commitConfigMutation(ctx, h.store, prepared, func(mutationCtx context.Context) error {
+		return h.store.UpdateSkill(mutationCtx, skill, req.Version, serve, mutationObjectStore)
+	})
+	if err != nil {
+		if handleConfigMutationError(ctx, err) {
+			return
+		}
 		if errors.Is(err, configstore.ErrAlreadyExists) {
 			SendError(ctx, fasthttp.StatusConflict, fmt.Sprintf("version %s already exists for this skill; provide a new version", req.Version))
 			return
@@ -677,13 +741,17 @@ func (h *SkillsHandler) updateSkill(ctx *fasthttp.RequestCtx) {
 	reloadedSkill, err := h.store.GetSkill(ctx, id)
 	if err != nil {
 		logger.Error("failed to reload skill after update: %v", err)
+		if prepared.enabled {
+			sendConfigMutationPending(ctx, revision)
+			return
+		}
 		SendError(ctx, fasthttp.StatusInternalServerError, "skill updated but failed to reload skill")
 		return
 	}
-
-	SendJSON(ctx, map[string]any{
-		"skill": reloadedSkill,
-	})
+	if prepared.enabled {
+		setConfigRevisionHeaders(ctx, revision)
+	}
+	SendJSON(ctx, map[string]any{"skill": reloadedSkill})
 }
 
 // deleteSkill handles DELETE /api/skills/{id}.
@@ -692,8 +760,30 @@ func (h *SkillsHandler) deleteSkill(ctx *fasthttp.RequestCtx) {
 	if !ok {
 		return
 	}
+	prepared, ok := prepareConfigMutation(ctx, h.store)
+	if !ok {
+		return
+	}
 
-	if err := h.store.DeleteSkill(ctx, id, h.objectStore); err != nil {
+	objectKeys := []string{}
+	mutationObjectStore := h.objectStore
+	if prepared.enabled {
+		mutationObjectStore = nil
+		var err error
+		objectKeys, err = h.skillObjectKeys(ctx, id)
+		if err != nil {
+			logger.Error("failed to list skill object keys: %v", err)
+			SendError(ctx, fasthttp.StatusInternalServerError, "failed to prepare skill deletion")
+			return
+		}
+	}
+	revision, err := commitConfigMutation(ctx, h.store, prepared, func(mutationCtx context.Context) error {
+		return h.store.DeleteSkill(mutationCtx, id, mutationObjectStore)
+	})
+	if err != nil {
+		if handleConfigMutationError(ctx, err) {
+			return
+		}
 		if errors.Is(err, configstore.ErrNotFound) {
 			SendError(ctx, fasthttp.StatusNotFound, "skill not found")
 			return
@@ -702,10 +792,17 @@ func (h *SkillsHandler) deleteSkill(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusInternalServerError, err.Error())
 		return
 	}
-
-	SendJSON(ctx, map[string]any{
-		"message": "skill deleted successfully",
-	})
+	if prepared.enabled && h.objectStore != nil && len(objectKeys) > 0 {
+		if err := h.objectStore.DeleteBatch(ctx, objectKeys); err != nil {
+			logger.Error("skill deleted but object cleanup failed: %v", err)
+			sendConfigMutationPending(ctx, revision)
+			return
+		}
+	}
+	if prepared.enabled {
+		setConfigRevisionHeaders(ctx, revision)
+	}
+	SendJSON(ctx, map[string]any{"message": "skill deleted successfully"})
 }
 
 // ============================================================================
@@ -725,6 +822,52 @@ func extractStringParam(ctx *fasthttp.RequestCtx, name string) (string, bool) {
 		return "", false
 	}
 	return s, true
+}
+
+func (h *SkillsHandler) verifySkillObjectCandidates(ctx context.Context, files []SkillFileEntry) error {
+	if h.objectStore == nil {
+		return nil
+	}
+	for _, file := range files {
+		if !skillFileUsesObjectCandidate(file) {
+			continue
+		}
+		key := strings.TrimSpace(*file.StorageKey)
+		if _, err := h.objectStore.Get(ctx, key); err != nil {
+			return fmt.Errorf("verify storage key %q: %w", key, err)
+		}
+	}
+	return nil
+}
+
+func skillFileUsesObjectCandidate(file SkillFileEntry) bool {
+	if file.StorageKey == nil || strings.TrimSpace(*file.StorageKey) == "" {
+		return false
+	}
+	switch file.SourceType {
+	case tables.SkillSourceTypeUpload:
+		return true
+	case tables.SkillSourceTypeText:
+		return file.Content == nil || *file.Content == ""
+	case tables.SkillSourceTypeDataURL:
+		return file.DataURL == nil || strings.TrimSpace(*file.DataURL) == ""
+	default:
+		return false
+	}
+}
+
+func (h *SkillsHandler) skillObjectKeys(ctx context.Context, skillID string) ([]string, error) {
+	keys := []string{}
+	db := h.store.ScopedDB(ctx)
+	err := db.Model(&tables.TableSkillFile{}).
+		Where("skill_version_id IN (?)", db.Model(&tables.TableSkillVersion{}).Select("id").Where("skill_id = ?", skillID)).
+		Where("storage_key IS NOT NULL AND storage_key != ''").
+		Distinct("storage_key").
+		Pluck("storage_key", &keys).Error
+	if err != nil {
+		return nil, fmt.Errorf("list storage keys: %w", err)
+	}
+	return keys, nil
 }
 
 // inferLiveFileMimeTypes infers MIME for live URL references before validation/storage.

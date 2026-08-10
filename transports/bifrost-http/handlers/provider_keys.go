@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/url"
@@ -9,6 +10,7 @@ import (
 	"github.com/google/uuid"
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
 )
@@ -26,9 +28,18 @@ func (h *ProviderHandler) listProviderKeys(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	keys, err := h.inMemoryStore.GetProviderKeysRedacted(provider)
+	var keys []schemas.Key
+	if isConfigSyncEnabled(h.dbStore) {
+		providerConfig, getErr := h.dbStore.GetProviderConfig(ctx, provider)
+		if getErr == nil {
+			keys = providerConfig.Redacted().Keys
+		}
+		err = getErr
+	} else {
+		keys, err = h.inMemoryStore.GetProviderKeysRedacted(provider)
+	}
 	if err != nil {
-		if errors.Is(err, lib.ErrNotFound) {
+		if errors.Is(err, lib.ErrNotFound) || errors.Is(err, configstore.ErrNotFound) {
 			SendError(ctx, fasthttp.StatusNotFound, fmt.Sprintf("Provider not found: %v", err))
 			return
 		}
@@ -36,6 +47,7 @@ func (h *ProviderHandler) listProviderKeys(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	setCurrentConfigRevisionHeaders(ctx, h.dbStore)
 	SendJSON(ctx, ListProviderKeysResponse{Keys: keys, Total: len(keys)})
 }
 
@@ -52,9 +64,19 @@ func (h *ProviderHandler) getProviderKey(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	key, err := h.inMemoryStore.GetProviderKeyRedacted(provider, keyID)
+	var key *schemas.Key
+	if isConfigSyncEnabled(h.dbStore) {
+		rawKey, getErr := h.dbStore.GetProviderKey(ctx, provider, keyID)
+		if getErr == nil {
+			redactedConfig := (&configstore.ProviderConfig{Keys: []schemas.Key{*rawKey}}).Redacted()
+			key = &redactedConfig.Keys[0]
+		}
+		err = getErr
+	} else {
+		key, err = h.inMemoryStore.GetProviderKeyRedacted(provider, keyID)
+	}
 	if err != nil {
-		if errors.Is(err, lib.ErrNotFound) {
+		if errors.Is(err, lib.ErrNotFound) || errors.Is(err, configstore.ErrNotFound) {
 			SendError(ctx, fasthttp.StatusNotFound, fmt.Sprintf("Provider key not found: %v", err))
 			return
 		}
@@ -62,10 +84,16 @@ func (h *ProviderHandler) getProviderKey(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	setCurrentConfigRevisionHeaders(ctx, h.dbStore)
 	SendJSON(ctx, key)
 }
 
 func (h *ProviderHandler) createProviderKey(ctx *fasthttp.RequestCtx) {
+	prepared, ok := prepareConfigMutation(ctx, h.dbStore)
+	if !ok {
+		return
+	}
+
 	provider, err := getProviderFromCtx(ctx)
 	if err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid provider: %v", err))
@@ -78,9 +106,14 @@ func (h *ProviderHandler) createProviderKey(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	providerConfig, err := h.inMemoryStore.GetProviderConfigRaw(provider)
+	var providerConfig *configstore.ProviderConfig
+	if prepared.enabled {
+		providerConfig, err = h.dbStore.GetProviderConfig(ctx, provider)
+	} else {
+		providerConfig, err = h.inMemoryStore.GetProviderConfigRaw(provider)
+	}
 	if err != nil {
-		if errors.Is(err, lib.ErrNotFound) {
+		if errors.Is(err, lib.ErrNotFound) || errors.Is(err, configstore.ErrNotFound) {
 			SendError(ctx, fasthttp.StatusNotFound, fmt.Sprintf("Provider not found: %v", err))
 			return
 		}
@@ -125,13 +158,22 @@ func (h *ProviderHandler) createProviderKey(ctx *fasthttp.RequestCtx) {
 		key.Enabled = bifrost.Ptr(true)
 	}
 
-	if err := h.inMemoryStore.AddProviderKey(ctx, provider, key); err != nil {
+	revision, err := commitConfigMutation(ctx, h.dbStore, prepared, func(mutationCtx context.Context) error {
+		if !prepared.enabled {
+			return h.inMemoryStore.AddProviderKey(mutationCtx, provider, key)
+		}
+		return h.dbStore.CreateProviderKey(mutationCtx, provider, key)
+	})
+	if err != nil {
 		logger.Warn("Failed to create key for provider %s: %v", provider, err)
-		if errors.Is(err, lib.ErrNotFound) {
+		if handleConfigMutationError(ctx, err) {
+			return
+		}
+		if errors.Is(err, lib.ErrNotFound) || errors.Is(err, configstore.ErrNotFound) {
 			SendError(ctx, fasthttp.StatusNotFound, fmt.Sprintf("Provider not found: %v", err))
 			return
 		}
-		if errors.Is(err, lib.ErrAlreadyExists) {
+		if errors.Is(err, lib.ErrAlreadyExists) || errors.Is(err, configstore.ErrAlreadyExists) {
 			SendError(ctx, fasthttp.StatusConflict, "API key names must be unique across providers. Choose a different name")
 			return
 		}
@@ -139,9 +181,28 @@ func (h *ProviderHandler) createProviderKey(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	if prepared.enabled {
+		storedKey, readErr := h.dbStore.GetProviderKey(context.WithoutCancel(ctx), provider, key.ID)
+		if readErr != nil {
+			logger.Warn("Failed to read key %s for provider %s after commit: %v", key.ID, provider, readErr)
+			sendConfigMutationPending(ctx, revision)
+			return
+		}
+		key = *storedKey
+		if applyErr := h.inMemoryStore.AddProviderKey(configApplyContext(ctx), provider, key); applyErr != nil {
+			logger.Warn("Failed to apply key %s for provider %s after commit: %v", key.ID, provider, applyErr)
+			sendConfigMutationPending(ctx, revision)
+			return
+		}
+	}
+
 	if providerConfig.CustomProviderConfig == nil || !providerConfig.CustomProviderConfig.IsKeyLess {
-		if err := h.modelsManager.OnKeyAdded(ctx, provider, key); err != nil {
+		if err := h.modelsManager.OnKeyAdded(context.WithoutCancel(ctx), provider, key); err != nil {
 			logger.Warn("Catalog refresh failed for provider %s after key create: %v", provider, err)
+			if prepared.enabled {
+				sendConfigMutationPending(ctx, revision)
+				return
+			}
 		}
 	}
 
@@ -151,10 +212,18 @@ func (h *ProviderHandler) createProviderKey(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	if prepared.enabled {
+		setConfigRevisionHeaders(ctx, revision)
+	}
 	SendJSON(ctx, redactedKey)
 }
 
 func (h *ProviderHandler) updateProviderKey(ctx *fasthttp.RequestCtx) {
+	prepared, ok := prepareConfigMutation(ctx, h.dbStore)
+	if !ok {
+		return
+	}
+
 	provider, err := getProviderFromCtx(ctx)
 	if err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid provider: %v", err))
@@ -173,9 +242,14 @@ func (h *ProviderHandler) updateProviderKey(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	providerConfig, err := h.inMemoryStore.GetProviderConfigRaw(provider)
+	var providerConfig *configstore.ProviderConfig
+	if prepared.enabled {
+		providerConfig, err = h.dbStore.GetProviderConfig(ctx, provider)
+	} else {
+		providerConfig, err = h.inMemoryStore.GetProviderConfigRaw(provider)
+	}
 	if err != nil {
-		if errors.Is(err, lib.ErrNotFound) {
+		if errors.Is(err, lib.ErrNotFound) || errors.Is(err, configstore.ErrNotFound) {
 			SendError(ctx, fasthttp.StatusNotFound, fmt.Sprintf("Provider not found: %v", err))
 			return
 		}
@@ -188,9 +262,14 @@ func (h *ProviderHandler) updateProviderKey(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	oldRawKey, err := h.inMemoryStore.GetProviderKeyRaw(provider, keyID)
+	var oldRawKey *schemas.Key
+	if prepared.enabled {
+		oldRawKey, err = h.dbStore.GetProviderKey(ctx, provider, keyID)
+	} else {
+		oldRawKey, err = h.inMemoryStore.GetProviderKeyRaw(provider, keyID)
+	}
 	if err != nil {
-		if errors.Is(err, lib.ErrNotFound) {
+		if errors.Is(err, lib.ErrNotFound) || errors.Is(err, configstore.ErrNotFound) {
 			SendError(ctx, fasthttp.StatusNotFound, fmt.Sprintf("Provider key not found: %v", err))
 			return
 		}
@@ -230,13 +309,22 @@ func (h *ProviderHandler) updateProviderKey(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	if err := h.inMemoryStore.UpdateProviderKey(ctx, provider, keyID, mergedKey); err != nil {
+	revision, err := commitConfigMutation(ctx, h.dbStore, prepared, func(mutationCtx context.Context) error {
+		if !prepared.enabled {
+			return h.inMemoryStore.UpdateProviderKey(mutationCtx, provider, keyID, mergedKey)
+		}
+		return h.dbStore.UpdateProviderKey(mutationCtx, provider, keyID, mergedKey)
+	})
+	if err != nil {
 		logger.Warn("Failed to update key %s for provider %s: %v", keyID, provider, err)
-		if errors.Is(err, lib.ErrNotFound) {
+		if handleConfigMutationError(ctx, err) {
+			return
+		}
+		if errors.Is(err, lib.ErrNotFound) || errors.Is(err, configstore.ErrNotFound) {
 			SendError(ctx, fasthttp.StatusNotFound, fmt.Sprintf("Provider key not found: %v", err))
 			return
 		}
-		if errors.Is(err, lib.ErrAlreadyExists) {
+		if errors.Is(err, lib.ErrAlreadyExists) || errors.Is(err, configstore.ErrAlreadyExists) {
 			SendError(ctx, fasthttp.StatusConflict, "API key names must be unique across providers. Choose a different name")
 			return
 		}
@@ -244,9 +332,28 @@ func (h *ProviderHandler) updateProviderKey(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	if prepared.enabled {
+		storedKey, readErr := h.dbStore.GetProviderKey(context.WithoutCancel(ctx), provider, keyID)
+		if readErr != nil {
+			logger.Warn("Failed to read key %s for provider %s after commit: %v", keyID, provider, readErr)
+			sendConfigMutationPending(ctx, revision)
+			return
+		}
+		mergedKey = *storedKey
+		if applyErr := h.inMemoryStore.UpdateProviderKey(configApplyContext(ctx), provider, keyID, mergedKey); applyErr != nil {
+			logger.Warn("Failed to apply key %s for provider %s after commit: %v", keyID, provider, applyErr)
+			sendConfigMutationPending(ctx, revision)
+			return
+		}
+	}
+
 	if providerConfig.CustomProviderConfig == nil || !providerConfig.CustomProviderConfig.IsKeyLess {
-		if err := h.modelsManager.OnKeyUpdated(ctx, provider, mergedKey); err != nil {
+		if err := h.modelsManager.OnKeyUpdated(context.WithoutCancel(ctx), provider, mergedKey); err != nil {
 			logger.Warn("Catalog refresh failed for provider %s after key update: %v", provider, err)
+			if prepared.enabled {
+				sendConfigMutationPending(ctx, revision)
+				return
+			}
 		}
 	}
 
@@ -256,10 +363,18 @@ func (h *ProviderHandler) updateProviderKey(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	if prepared.enabled {
+		setConfigRevisionHeaders(ctx, revision)
+	}
 	SendJSON(ctx, redactedKey)
 }
 
 func (h *ProviderHandler) deleteProviderKey(ctx *fasthttp.RequestCtx) {
+	prepared, ok := prepareConfigMutation(ctx, h.dbStore)
+	if !ok {
+		return
+	}
+
 	provider, err := getProviderFromCtx(ctx)
 	if err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid provider: %v", err))
@@ -272,9 +387,14 @@ func (h *ProviderHandler) deleteProviderKey(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	providerConfig, err := h.inMemoryStore.GetProviderConfigRaw(provider)
+	var providerConfig *configstore.ProviderConfig
+	if prepared.enabled {
+		providerConfig, err = h.dbStore.GetProviderConfig(ctx, provider)
+	} else {
+		providerConfig, err = h.inMemoryStore.GetProviderConfigRaw(provider)
+	}
 	if err != nil {
-		if errors.Is(err, lib.ErrNotFound) {
+		if errors.Is(err, lib.ErrNotFound) || errors.Is(err, configstore.ErrNotFound) {
 			SendError(ctx, fasthttp.StatusNotFound, fmt.Sprintf("Provider not found: %v", err))
 			return
 		}
@@ -287,9 +407,19 @@ func (h *ProviderHandler) deleteProviderKey(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	redactedKey, err := h.inMemoryStore.GetProviderKeyRedacted(provider, keyID)
+	var redactedKey *schemas.Key
+	if prepared.enabled {
+		rawKey, readErr := h.dbStore.GetProviderKey(ctx, provider, keyID)
+		if readErr == nil {
+			redactedConfig := (&configstore.ProviderConfig{Keys: []schemas.Key{*rawKey}}).Redacted()
+			redactedKey = &redactedConfig.Keys[0]
+		}
+		err = readErr
+	} else {
+		redactedKey, err = h.inMemoryStore.GetProviderKeyRedacted(provider, keyID)
+	}
 	if err != nil {
-		if errors.Is(err, lib.ErrNotFound) {
+		if errors.Is(err, lib.ErrNotFound) || errors.Is(err, configstore.ErrNotFound) {
 			SendError(ctx, fasthttp.StatusNotFound, fmt.Sprintf("Provider key not found: %v", err))
 			return
 		}
@@ -297,9 +427,18 @@ func (h *ProviderHandler) deleteProviderKey(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	if err := h.inMemoryStore.RemoveProviderKey(ctx, provider, keyID); err != nil {
+	revision, err := commitConfigMutation(ctx, h.dbStore, prepared, func(mutationCtx context.Context) error {
+		if !prepared.enabled {
+			return h.inMemoryStore.RemoveProviderKey(mutationCtx, provider, keyID)
+		}
+		return h.dbStore.DeleteProviderKey(mutationCtx, provider, keyID)
+	})
+	if err != nil {
 		logger.Warn("Failed to delete key %s for provider %s: %v", keyID, provider, err)
-		if errors.Is(err, lib.ErrNotFound) {
+		if handleConfigMutationError(ctx, err) {
+			return
+		}
+		if errors.Is(err, lib.ErrNotFound) || errors.Is(err, configstore.ErrNotFound) {
 			SendError(ctx, fasthttp.StatusNotFound, fmt.Sprintf("Provider key not found: %v", err))
 			return
 		}
@@ -307,8 +446,23 @@ func (h *ProviderHandler) deleteProviderKey(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	if err := h.modelsManager.OnKeyDeleted(ctx, provider, keyID); err != nil {
+	if prepared.enabled {
+		if applyErr := h.inMemoryStore.RemoveProviderKey(configApplyContext(ctx), provider, keyID); applyErr != nil {
+			logger.Warn("Failed to apply key %s deletion for provider %s after commit: %v", keyID, provider, applyErr)
+			sendConfigMutationPending(ctx, revision)
+			return
+		}
+	}
+
+	if err := h.modelsManager.OnKeyDeleted(context.WithoutCancel(ctx), provider, keyID); err != nil {
 		logger.Warn("Catalog refresh failed for provider %s after key delete: %v", provider, err)
+		if prepared.enabled {
+			sendConfigMutationPending(ctx, revision)
+			return
+		}
+	}
+	if prepared.enabled {
+		setConfigRevisionHeaders(ctx, revision)
 	}
 
 	SendJSON(ctx, redactedKey)
