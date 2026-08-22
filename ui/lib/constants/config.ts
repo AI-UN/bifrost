@@ -66,6 +66,7 @@ export const ModelPlaceholders = {
 	fireworks: "e.g. accounts/fireworks/models/deepseek-v3p2",
 	sarvam: "e.g. sarvam-30b, sarvam-105b",
 	wafer: "e.g. glm-5.2, kimi-k2.6",
+	siliconflow: "deepseek-ai/DeepSeek-V3.2",
 };
 
 export const isKeyRequiredByProvider: Record<ProviderName, boolean> = {
@@ -99,6 +100,7 @@ export const isKeyRequiredByProvider: Record<ProviderName, boolean> = {
 	fireworks: true,
 	sarvam: true,
 	wafer: true,
+	siliconflow: true,
 };
 
 export const DefaultNetworkConfig = {
