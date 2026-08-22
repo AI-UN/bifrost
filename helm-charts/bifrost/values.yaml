@@ -314,6 +314,7 @@ bifrost:
     compat:
       convertTextToChat: false
       convertChatToResponses: false
+      convertResponsesToChat: false
       shouldDropParams: false
       shouldConvertParams: false
     prometheusLabels: []

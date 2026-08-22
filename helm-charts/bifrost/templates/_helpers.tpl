@@ -248,6 +248,9 @@ false
 {{- if hasKey .Values.bifrost.client.compat "convertChatToResponses" }}
 {{- $_ := set $compat "convert_chat_to_responses" .Values.bifrost.client.compat.convertChatToResponses }}
 {{- end }}
+{{- if hasKey .Values.bifrost.client.compat "convertResponsesToChat" }}
+{{- $_ := set $compat "convert_responses_to_chat" .Values.bifrost.client.compat.convertResponsesToChat }}
+{{- end }}
 {{- if hasKey .Values.bifrost.client.compat "shouldDropParams" }}
 {{- $_ := set $compat "should_drop_params" .Values.bifrost.client.compat.shouldDropParams }}
 {{- end }}
