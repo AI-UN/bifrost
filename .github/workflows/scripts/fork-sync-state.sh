@@ -70,14 +70,22 @@ fork_fork_tag_from_upstream_tag() {
   printf 'v%s-oss\n' "$version"
 }
 
+# Stable upstream transport tags only: `transports/vMAJOR.MINOR.PATCH`.
+# Anything carrying a pre-release suffix (`-prerelease3`, `-rc1`, ...) is
+# excluded, matching `fork_source_tag_is_stable`. The previous
+# `grep -Ev -- '-[0-9]+$'` filter only dropped numeric suffixes, so a merged
+# `transports/v1.7.0-prerelease1` would have out-sorted `transports/v1.6.11`
+# under `sort -V` and been released as if it were stable.
+FORK_STABLE_TRANSPORT_TAG_RE='^transports/v[0-9]+\.[0-9]+\.[0-9]+$'
+
 fork_list_upstream_transport_tags() {
-  git tag --list 'transports/v*' | grep -Ev -- '-[0-9]+$' || true
+  git tag --list 'transports/v*' | grep -E -- "$FORK_STABLE_TRANSPORT_TAG_RE" || true
 }
 
 fork_latest_reachable_upstream_transport_tag() {
   local ref_name="${1:-HEAD}"
   git tag --merged "$ref_name" --list 'transports/v*' \
-    | grep -Ev -- '-[0-9]+$' \
+    | grep -E -- "$FORK_STABLE_TRANSPORT_TAG_RE" \
     | sort -V \
     | tail -1 || true
 }
