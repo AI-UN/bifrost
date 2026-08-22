@@ -46,8 +46,58 @@ else
   echo "📋 Building all platforms: ${platforms[*]}"
 fi
 
-# Detect host architecture for native build detection
+# Detect the host platform for native build detection
 HOST_ARCH=$(uname -m)
+HOST_OS=$(uname -s)
+
+# Resolve Go workspace mode.
+# When LOCAL_WORKSPACE_BUILD=true, build against a freshly generated go.work so
+# that local module sources (e.g. core, framework) are used instead of the
+# published module versions pinned in transports/go.mod. This mirrors the Docker
+# build (transports/Dockerfile.local), which compiles against the local
+# workspace. go.work is gitignored and absent from release checkouts, so it must
+# be generated on the fly. Otherwise, disable the workspace and resolve modules
+# from go.mod as before.
+if [[ "${LOCAL_WORKSPACE_BUILD:-}" == "true" ]]; then
+  GOWORK_MODE="$PROJECT_ROOT/go.fork-ci.work"
+  echo "🧩 Local workspace build enabled — generating workspace at $GOWORK_MODE"
+
+  rm -f "$GOWORK_MODE" "${GOWORK_MODE}.sum"
+  GOWORK="$GOWORK_MODE" go work init
+
+  # Local modules to include, mirroring transports/Dockerfile.local. Only
+  # directories that actually contain a go.mod are added, so the list degrades
+  # gracefully if the module layout changes.
+  workspace_modules=(
+    core
+    framework
+    plugins/compat
+    plugins/governance
+    plugins/jsonparser
+    plugins/logging
+    plugins/maxim
+    plugins/mocker
+    plugins/otel
+    plugins/prompts
+    plugins/semanticcache
+    plugins/telemetry
+    transports
+  )
+  for mod in "${workspace_modules[@]}"; do
+    if [[ -f "$PROJECT_ROOT/$mod/go.mod" ]]; then
+      GOWORK="$GOWORK_MODE" go work use "$PROJECT_ROOT/$mod"
+    fi
+  done
+
+  # Align the workspace go directive with the transports module requirement so
+  # the toolchain does not reject modules requiring a newer Go version.
+  GO_DIRECTIVE="$(awk '/^go /{print $2; exit}' "$PROJECT_ROOT/transports/go.mod")"
+  if [[ -n "$GO_DIRECTIVE" ]]; then
+    GOWORK="$GOWORK_MODE" go work edit -go="$GO_DIRECTIVE"
+  fi
+else
+  GOWORK_MODE="off"
+fi
 
 MODULE_PATH="$PROJECT_ROOT/transports/bifrost-http"
 
@@ -89,7 +139,7 @@ for platform in "${platforms[@]}"; do
       CXX_COMPILER="aarch64-linux-musl-g++"
     fi
 
-    env GOWORK=off CGO_ENABLED=1 GOOS="$GOOS" GOARCH="$GOARCH" CC="$CC_COMPILER" CXX="$CXX_COMPILER" \
+    env GOWORK="$GOWORK_MODE" CGO_ENABLED=1 GOOS="$GOOS" GOARCH="$GOARCH" CC="$CC_COMPILER" CXX="$CXX_COMPILER" \
       go build -trimpath -tags "netgo,osusergo,sqlite_static" \
       -ldflags "-s -w -buildid= -extldflags '-static' -X main.Version=v${VERSION}" \
       -o "$PROJECT_ROOT/dist/$PLATFORM_DIR/$GOARCH/$output_name" .
@@ -100,12 +150,18 @@ for platform in "${platforms[@]}"; do
       CXX_COMPILER="x86_64-w64-mingw32-g++"
     fi
 
-    env GOWORK=off CGO_ENABLED=1 GOOS="$GOOS" GOARCH="$GOARCH" CC="$CC_COMPILER" CXX="$CXX_COMPILER" \
+    env GOWORK="$GOWORK_MODE" CGO_ENABLED=1 GOOS="$GOOS" GOARCH="$GOARCH" CC="$CC_COMPILER" CXX="$CXX_COMPILER" \
       go build -trimpath -ldflags "-s -w -buildid= -X main.Version=v${VERSION}" \
       -o "$PROJECT_ROOT/dist/$PLATFORM_DIR/$GOARCH/$output_name" .
 
-   else # Darwin (macOS)
-    if [[ "$GOARCH" = "amd64" ]]; then
+  else # Darwin (macOS)
+    if [[ "$HOST_OS" = "Darwin" ]] && \
+       { [[ "$GOARCH" = "amd64" && "$HOST_ARCH" = "x86_64" ]] || \
+         [[ "$GOARCH" = "arm64" && "$HOST_ARCH" = "arm64" ]]; }; then
+      echo "  🏠 Native Darwin build detected — using system compiler"
+      CC_COMPILER="${CC:-clang}"
+      CXX_COMPILER="${CXX:-clang++}"
+    elif [[ "$GOARCH" = "amd64" ]]; then
       CC_COMPILER="o64-clang"
       CXX_COMPILER="o64-clang++"
     elif [[ "$GOARCH" = "arm64" ]]; then
@@ -113,7 +169,7 @@ for platform in "${platforms[@]}"; do
       CXX_COMPILER="oa64-clang++"
     fi
 
-    env GOWORK=off CGO_ENABLED=1 GOOS="$GOOS" GOARCH="$GOARCH" CC="$CC_COMPILER" CXX="$CXX_COMPILER" \
+    env GOWORK="$GOWORK_MODE" CGO_ENABLED=1 GOOS="$GOOS" GOARCH="$GOARCH" CC="$CC_COMPILER" CXX="$CXX_COMPILER" \
       go build -trimpath -ldflags "-s -w -buildid= -X main.Version=v${VERSION}" \
       -o "$PROJECT_ROOT/dist/$PLATFORM_DIR/$GOARCH/$output_name" .
   fi
