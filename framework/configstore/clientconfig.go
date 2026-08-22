@@ -41,15 +41,17 @@ type EnvKeyInfo struct {
 type CompatConfig struct {
 	ConvertTextToChat      bool `json:"convert_text_to_chat"`
 	ConvertChatToResponses bool `json:"convert_chat_to_responses"`
+	ConvertResponsesToChat bool `json:"convert_responses_to_chat"`
 	ShouldDropParams       bool `json:"should_drop_params"`
 	ShouldConvertParams    bool `json:"should_convert_params"`
 }
 
-// UnmarshalJSON defaults all bool fields to true when absent from JSON.
+// UnmarshalJSON preserves the legacy true defaults while keeping the opt-in responses-to-chat fallback disabled when absent.
 func (c *CompatConfig) UnmarshalJSON(data []byte) error {
 	type compatConfig struct {
 		ConvertTextToChat      *bool `json:"convert_text_to_chat"`
 		ConvertChatToResponses *bool `json:"convert_chat_to_responses"`
+		ConvertResponsesToChat *bool `json:"convert_responses_to_chat"`
 		ShouldDropParams       *bool `json:"should_drop_params"`
 		ShouldConvertParams    *bool `json:"should_convert_params"`
 	}
@@ -59,6 +61,7 @@ func (c *CompatConfig) UnmarshalJSON(data []byte) error {
 	}
 	c.ConvertTextToChat = s.ConvertTextToChat == nil || *s.ConvertTextToChat
 	c.ConvertChatToResponses = s.ConvertChatToResponses == nil || *s.ConvertChatToResponses
+	c.ConvertResponsesToChat = s.ConvertResponsesToChat != nil && *s.ConvertResponsesToChat
 	c.ShouldDropParams = s.ShouldDropParams == nil || *s.ShouldDropParams
 	c.ShouldConvertParams = s.ShouldConvertParams == nil || *s.ShouldConvertParams
 	return nil
@@ -178,6 +181,9 @@ func (c *ClientConfig) GenerateClientConfigHash() (string, error) {
 	}
 	if c.Compat.ConvertChatToResponses {
 		hash.Write([]byte("compatConvertChatToResponses:true"))
+	}
+	if c.Compat.ConvertResponsesToChat {
+		hash.Write([]byte("compatConvertResponsesToChat:true"))
 	}
 	if c.Compat.ShouldDropParams {
 		hash.Write([]byte("compatShouldDropParams:true"))
