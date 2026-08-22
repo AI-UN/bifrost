@@ -144,9 +144,9 @@ postgresql:
     host: postgres.example.internal
     port: "5432"
     database: bifrost
-    username: bifrost
+    user: bifrost
     existingSecret: bifrost-postgres
-    existingSecretPasswordKey: password
+    passwordKey: password
 ```
 
 The chart uses separate probes:
