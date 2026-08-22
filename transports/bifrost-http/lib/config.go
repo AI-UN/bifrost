@@ -108,6 +108,8 @@ const (
 	SourceOfTruthSplit = "split"
 	// SourceOfTruthConfigJSON makes present config.json sections authoritative during startup sync.
 	SourceOfTruthConfigJSON = "config.json"
+	// SourceOfTruthConfigStore makes the config store authoritative for runtime configuration.
+	SourceOfTruthConfigStore = "config_store"
 )
 
 // getWeight safely dereferences a *float64 weight pointer, returning 1.0 as default if nil.
@@ -335,6 +337,8 @@ func normalizeSourceOfTruth(value string) string {
 		return SourceOfTruthSplit
 	case SourceOfTruthConfigJSON:
 		return SourceOfTruthConfigJSON
+	case SourceOfTruthConfigStore:
+		return SourceOfTruthConfigStore
 	default:
 		// Unknown values fall back to split rather than persisting an invalid
 		// mode. Schema validation rejects unknown values upstream; this guards
@@ -350,6 +354,41 @@ func (cd *ConfigData) isConfigJSONSourceOfTruth() bool {
 		return false
 	}
 	return normalizeSourceOfTruth(cd.SourceOfTruth) == SourceOfTruthConfigJSON
+}
+
+// isConfigStoreSourceOfTruth reports whether runtime configuration is owned by the config store.
+func (cd *ConfigData) isConfigStoreSourceOfTruth() bool {
+	if cd == nil {
+		return false
+	}
+	return normalizeSourceOfTruth(cd.SourceOfTruth) == SourceOfTruthConfigStore
+}
+
+// validateSourceOfTruth checks source-specific bootstrap requirements before opening stores.
+func (cd *ConfigData) validateSourceOfTruth() error {
+	if !cd.isConfigStoreSourceOfTruth() {
+		return nil
+	}
+	if cd.ConfigStoreConfig == nil || !cd.ConfigStoreConfig.Enabled {
+		return fmt.Errorf("source_of_truth %q requires an enabled config_store", SourceOfTruthConfigStore)
+	}
+	if cd.ConfigStoreConfig.Type != configstore.ConfigStoreTypePostgres {
+		return fmt.Errorf("source_of_truth %q requires a postgres config_store", SourceOfTruthConfigStore)
+	}
+	return nil
+}
+
+// discardFileRuntimeConfig keeps config.json as bootstrap-only input when the config store is authoritative.
+func (cd *ConfigData) discardFileRuntimeConfig() {
+	cd.Client = nil
+	cd.Providers = nil
+	cd.MCP = nil
+	cd.Governance = nil
+	cd.AuthConfig = nil
+	cd.Plugins = nil
+	cd.FrameworkConfig = nil
+	cd.FeatureFlags = nil
+	cd.SkillsRegistry = nil
 }
 
 // sectionPresent reports whether a top-level config.json section was explicitly provided.
@@ -935,6 +974,13 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 		}
 	}
 
+	if err := configData.validateSourceOfTruth(); err != nil {
+		return nil, err
+	}
+	if configData.isConfigStoreSourceOfTruth() {
+		configData.discardFileRuntimeConfig()
+	}
+
 	// 1. Encryption (before stores so BeforeSave hooks work correctly)
 	if err := initEncryption(&configData); err != nil {
 		return nil, err
@@ -946,6 +992,17 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 	// 2. Stores (config, logs, vector) — creates defaults for absent configs
 	if err := initStores(ctx, config, &configData, configDBPath, logsDBPath); err != nil {
 		return nil, err
+	}
+	if syncMode, ok := config.ConfigStore.(configstore.ConfigSyncMode); ok {
+		syncMode.SetConfigSyncEnabled(configData.isConfigStoreSourceOfTruth())
+	}
+	bootstrapLock, err := acquireConfigBootstrapLock(ctx, config.ConfigStore, logger)
+	if err != nil {
+		return nil, err
+	}
+	defer bootstrapLock.release()
+	if bootstrapLock != nil {
+		ctx = bootstrapLock.context()
 	}
 	// 3. KV store
 	if err := initKVStore(config); err != nil {
@@ -1013,6 +1070,9 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 		config.ServerConfig = &ServerConfig{
 			ReadBufferSize: 1024 * 64,
 		}
+	}
+	if err := bootstrapLock.err(); err != nil {
+		return nil, err
 	}
 	return config, nil
 }
@@ -1371,7 +1431,7 @@ func loadProviders(ctx context.Context, config *Config, configData *ConfigData) 
 					logger.Warn("failed to process provider %s: %v", providerName, err)
 				}
 			}
-		} else if len(providersInConfigStore) == 0 && (!configData.isConfigJSONSourceOfTruth() || providersSectionPresent) {
+		} else if len(providersInConfigStore) == 0 && !configData.isConfigStoreSourceOfTruth() && (!configData.isConfigJSONSourceOfTruth() || providersSectionPresent) {
 			// No providers in file and none in DB — auto-detect from environment
 			config.autoDetectProviders(ctx)
 			maps.Copy(providersInConfigStore, config.Providers)

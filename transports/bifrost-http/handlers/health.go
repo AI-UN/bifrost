@@ -11,24 +11,36 @@ import (
 	"github.com/valyala/fasthttp"
 )
 
-// HealthHandler manages HTTP requests for health checks.
+// HealthHandler manages HTTP requests for liveness and readiness checks.
 type HealthHandler struct {
-	config *lib.Config
+	config  *lib.Config
+	isReady func() bool
 }
 
 // NewHealthHandler creates a new health handler instance.
-func NewHealthHandler(config *lib.Config) *HealthHandler {
+func NewHealthHandler(config *lib.Config, isReady func() bool) *HealthHandler {
 	return &HealthHandler{
-		config: config,
+		config:  config,
+		isReady: isReady,
 	}
 }
 
 // RegisterRoutes registers the health-related routes.
 func (h *HealthHandler) RegisterRoutes(r *router.Router, middlewares ...schemas.BifrostHTTPMiddleware) {
 	r.GET("/health", lib.ChainMiddlewares(h.getHealth, middlewares...))
+	r.GET("/ready", lib.ChainMiddlewares(h.getReady, middlewares...))
 }
 
-// getHealth handles GET /api/health - Get the health status of the server.
+// getReady handles GET /ready and gates traffic until the initial config snapshot is applied.
+func (h *HealthHandler) getReady(ctx *fasthttp.RequestCtx) {
+	if h.isReady != nil && !h.isReady() {
+		SendError(ctx, fasthttp.StatusServiceUnavailable, "server is not ready")
+		return
+	}
+	SendJSON(ctx, map[string]string{"status": "ok"})
+}
+
+// getHealth handles GET /health and reports liveness dependencies.
 func (h *HealthHandler) getHealth(ctx *fasthttp.RequestCtx) {
 	// If DB pings are disabled, just return OK
 	if h.config.ClientConfig.DisableDBPingsInHealth {

@@ -1,7 +1,9 @@
 package handlers
 
 import (
+	"context"
 	"errors"
+	"time"
 
 	"github.com/bytedance/sonic"
 	"github.com/fasthttp/router"
@@ -12,10 +14,8 @@ import (
 	"github.com/valyala/fasthttp"
 )
 
-// FeatureFlagsHandler serves the toggle UI/API. It mediates between the
-// HTTP layer, the in-memory featureflags.Store, and the configstore where
-// overrides are persisted. The store is the source of truth for the
-// effective value; the configstore exists only so toggles survive restarts.
+// FeatureFlagsHandler serves the toggle UI/API. Persisted overrides are the
+// source of truth; the in-memory store is updated only after the DB commit.
 type FeatureFlagsHandler struct {
 	store       *featureflags.Store
 	configStore configstore.ConfigStore
@@ -47,7 +47,9 @@ type featureFlagsListResponse struct {
 }
 
 func (h *FeatureFlagsHandler) listFlags(ctx *fasthttp.RequestCtx) {
-	SendJSON(ctx, featureFlagsListResponse{Flags: h.store.List()})
+	flags := h.store.List()
+	setCurrentConfigRevisionHeaders(ctx, h.configStore)
+	SendJSON(ctx, featureFlagsListResponse{Flags: flags})
 }
 
 type updateFlagRequest struct {
@@ -57,6 +59,11 @@ type updateFlagRequest struct {
 }
 
 func (h *FeatureFlagsHandler) updateFlag(ctx *fasthttp.RequestCtx) {
+	if h.configStore == nil {
+		SendError(ctx, fasthttp.StatusServiceUnavailable, "Config store not available")
+		return
+	}
+
 	id, ok := ctx.UserValue("id").(string)
 	if !ok || id == "" {
 		SendError(ctx, fasthttp.StatusBadRequest, "Invalid flag id")
@@ -72,42 +79,53 @@ func (h *FeatureFlagsHandler) updateFlag(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusBadRequest, "Missing required field: enabled")
 		return
 	}
-	enabled := *req.Enabled
 
-	// Capture prior in-memory state verbatim so a failed DB write below
-	// can be rolled back without corrupting metadata. Snapshot's second
-	// return distinguishes "had an override" from "was at code default";
-	// Restore uses that to delete vs. write-back, preserving the original
-	// source (default / db / file) and timestamps exactly.
-	priorSnap, priorHad := h.store.Snapshot(id)
+	prepared, ok := prepareConfigMutation(ctx, h.configStore)
+	if !ok {
+		return
+	}
 
-	status, err := h.store.Set(ctx, id, enabled)
+	status, err := h.store.Status(id)
 	switch {
-	case errors.Is(err, featureflags.ErrFlagLocked):
-		SendError(ctx, fasthttp.StatusConflict, "Feature flag is locked by config.json / Helm")
-		return
-	case errors.Is(err, featureflags.ErrFlagEnterpriseOnly):
-		SendError(ctx, fasthttp.StatusForbidden, "Feature flag is enterprise-only")
-		return
-	case errors.Is(err, featureflags.ErrFlagUnregistered):
+	case errors.Is(err, featureflags.ErrFlagNotFound):
 		SendError(ctx, fasthttp.StatusNotFound, "Feature flag is not registered")
 		return
 	case err != nil:
-		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to update feature flag: "+err.Error())
+		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to read feature flag: "+err.Error())
+		return
+	case !status.Registered:
+		SendError(ctx, fasthttp.StatusNotFound, "Feature flag is not registered")
+		return
+	case status.EnterpriseOnly && status.Locked:
+		SendError(ctx, fasthttp.StatusForbidden, "Feature flag is enterprise-only")
+		return
+	case status.Locked:
+		SendError(ctx, fasthttp.StatusConflict, "Feature flag is locked by config.json / Helm")
 		return
 	}
 
-	// Persist after the in-memory toggle succeeds. If the DB write fails
-	// we roll back the in-memory change to keep the two layers consistent;
-	// otherwise a subsequent restart would silently revert the operator's
-	// toggle and they would have no way to know.
-	if h.configStore != nil {
-		if err := h.configStore.UpsertFeatureFlag(ctx, id, enabled, status.UpdatedAt); err != nil {
-			h.store.Restore(id, priorSnap, priorHad)
-			SendError(ctx, fasthttp.StatusInternalServerError, "Failed to persist feature flag: "+err.Error())
+	enabled := *req.Enabled
+	writtenAt := time.Now().UnixNano()
+	revision, err := commitConfigMutation(ctx, h.configStore, prepared, func(mutationCtx context.Context) error {
+		return h.configStore.UpsertFeatureFlag(mutationCtx, id, enabled, writtenAt)
+	})
+	if err != nil {
+		if handleConfigMutationError(ctx, err) {
 			return
 		}
+		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to persist feature flag: "+err.Error())
+		return
 	}
 
-	SendJSON(ctx, status)
+	h.store.ApplyRemote(id, enabled, writtenAt)
+	appliedStatus, err := h.store.Status(id)
+	if err != nil || appliedStatus.Enabled != enabled || appliedStatus.UpdatedAt != writtenAt {
+		sendConfigMutationPending(ctx, revision)
+		return
+	}
+
+	if prepared.enabled {
+		setConfigRevisionHeaders(ctx, revision)
+	}
+	SendJSON(ctx, appliedStatus)
 }

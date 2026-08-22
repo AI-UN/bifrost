@@ -469,6 +469,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_needs_session_stickiness_column"}, run: migrationAddNeedsSessionStickinessColumn},
 	{IDs: []string{"add_bedrock_endpoints_columns"}, run: migrationAddBedrockEndpointsColumns},
 	{IDs: []string{"add_cost_per_request_pricing_column"}, run: migrationAddCostPerRequestPricingColumn},
+	{IDs: []string{"add_config_revision_table"}, run: migrationAddConfigRevisionTable},
 }
 
 // quoteSQLiteIdentifier quotes a SQLite identifier, escaping any double quotes.
@@ -11956,4 +11957,33 @@ func migrationAddBedrockEndpointsColumns(ctx context.Context, db *gorm.DB, logge
 		return fmt.Errorf("error while running db migration: %s", err.Error())
 	}
 	return nil
+}
+
+// migrationAddConfigRevisionTable creates and seeds the singleton runtime-configuration revision table.
+func migrationAddConfigRevisionTable(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_config_revision_table"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+
+	return RunSingleMigration(ctx, migrator.DefaultOptions, db, logger, &migrator.Migration{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := tx.AutoMigrate(&tables.TableConfigRevision{}); err != nil {
+				return fmt.Errorf("creating config revision table: %w", err)
+			}
+			row := tables.TableConfigRevision{
+				ID:        tables.ConfigRevisionSingletonID,
+				Revision:  0,
+				UpdatedAt: time.Now().UTC(),
+			}
+			if err := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&row).Error; err != nil {
+				return fmt.Errorf("seeding config revision row: %w", err)
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			return tx.WithContext(ctx).Migrator().DropTable(&tables.TableConfigRevision{})
+		},
+	})
 }
