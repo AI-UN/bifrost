@@ -278,11 +278,10 @@ sync_release_tag() {
     SYNCED_UPSTREAM_TAG="$upstream_tag"
     SYNCED_FORK_TAG="$fork_tag"
     if [[ "$DRY_RUN" == "true" ]]; then
-      echo "Dry run: skipping push and release workflow dispatch for ${fork_tag}"
+      echo "Dry run: skipping tag push for ${fork_tag}"
     else
+      # Both release workflows are triggered by the tag push.
       git push origin "refs/tags/${fork_tag}"
-      gh workflow run fork-release-cli.yml --repo "$GITHUB_REPOSITORY" --ref "$fork_tag" -f "tag=${fork_tag}" -f "upstream_tag=${upstream_tag}"
-      gh workflow run fork-release-docker.yml --repo "$GITHUB_REPOSITORY" --ref "$fork_tag" -f "tag=${fork_tag}" -f "upstream_tag=${upstream_tag}"
     fi
     return 0
   fi
