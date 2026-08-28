@@ -442,6 +442,10 @@
                   "type": "boolean",
                   "description": "Convert chat completion requests to responses for models that only support responses"
                 },
+                "convertResponsesToChat": {
+                  "type": "boolean",
+                  "description": "Convert Responses API requests to chat completions for models that only support chat"
+                },
                 "shouldDropParams": {
                   "type": "boolean",
                   "description": "Drop unsupported parameters based on model catalog allowlist"
@@ -957,7 +961,8 @@
                         "parasail",
                         "perplexity",
                         "sgl",
-                        "huggingface"
+                        "huggingface",
+                        "siliconflow"
                       ]
                     },
                     "embedding_model": {

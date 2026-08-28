@@ -73,6 +73,7 @@ Official Helm charts for deploying [Bifrost](https://github.com/maximhq/bifrost)
 
 - Added `bifrost.sourceOfTruth: config_store` to render `source_of_truth: config_store`, making PostgreSQL authoritative for runtime configuration across this fork's OSS multinode deployments.
 - Changed the default readiness probe from `/health` to `/ready`, so fork deployments receive traffic only after the initial shared configuration snapshot is applied.
+- Exposed `bifrost.client.compat.convertResponsesToChat` as `client.compat.convert_responses_to_chat` and allowed `siliconflow` as the semantic-cache embedding provider.
 
 ### 2.1.29
 

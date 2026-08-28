@@ -59,6 +59,9 @@ ClientConfig:
         convert_chat_to_responses:
           type: boolean
           description: Convert chat completion requests to responses
+        convert_responses_to_chat:
+          type: boolean
+          description: Convert Responses API requests to chat completions
         should_drop_params:
           type: boolean
           description: Drop unsupported parameters based on model catalog

@@ -39293,6 +39293,7 @@
         "tags": [
           "Health"
         ],
+        "security": [],
         "responses": {
           "200": {
             "description": "Server is healthy",
@@ -39306,6 +39307,48 @@
           },
           "503": {
             "description": "Service unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/ready": {
+      "get": {
+        "operationId": "getReadiness",
+        "summary": "Readiness check",
+        "description": "Returns ready only after the node has applied its initial shared configuration snapshot. The configuration-sync readiness gate is a fork-specific extension.",
+        "tags": [
+          "Health"
+        ],
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "Node is ready to receive traffic",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "status"
+                  ],
+                  "properties": {
+                    "status": {
+                      "type": "string",
+                      "example": "ok"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Initial configuration synchronization is still pending",
             "content": {
               "application/json": {
                 "schema": {
@@ -39416,6 +39459,58 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/config/revision": {
+      "get": {
+        "operationId": "getConfigRevision",
+        "summary": "Get the global configuration revision",
+        "description": "Returns the PostgreSQL-backed revision used by this fork's multinode configuration CAS writes. This endpoint is not part of upstream Bifrost OSS.",
+        "tags": [
+          "Configuration"
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Current configuration revision",
+            "headers": {
+              "ETag": {
+                "description": "Quoted configuration revision for use with If-Match.",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "X-Bifrost-Config-Revision": {
+                "description": "Numeric configuration revision.",
+                "schema": {
+                  "type": "integer",
+                  "format": "int64"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "revision"
+                  ],
+                  "properties": {
+                    "revision": {
+                      "type": "integer",
+                      "format": "int64",
+                      "minimum": 0
+                    }
+                  }
                 }
               }
             }
@@ -81448,7 +81543,8 @@
           "nebius",
           "xai",
           "runway",
-          "fireworks"
+          "fireworks",
+          "siliconflow"
         ]
       },
       "Fallback": {
@@ -93119,6 +93215,10 @@
                     "type": "boolean",
                     "description": "Convert chat completion requests to responses"
                   },
+                  "convert_responses_to_chat": {
+                    "type": "boolean",
+                    "description": "Convert Responses API requests to chat completions"
+                  },
                   "should_drop_params": {
                     "type": "boolean",
                     "description": "Drop unsupported parameters based on model catalog"
@@ -93449,6 +93549,10 @@
                   "convert_chat_to_responses": {
                     "type": "boolean",
                     "description": "Convert chat completion requests to responses"
+                  },
+                  "convert_responses_to_chat": {
+                    "type": "boolean",
+                    "description": "Convert Responses API requests to chat completions"
                   },
                   "should_drop_params": {
                     "type": "boolean",

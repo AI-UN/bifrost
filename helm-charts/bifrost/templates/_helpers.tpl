@@ -305,6 +305,9 @@ false
 {{- if hasKey .Values.bifrost.client.compat "convertChatToResponses" }}
 {{- $_ := set $compat "convert_chat_to_responses" .Values.bifrost.client.compat.convertChatToResponses }}
 {{- end }}
+{{- if hasKey .Values.bifrost.client.compat "convertResponsesToChat" }}
+{{- $_ := set $compat "convert_responses_to_chat" .Values.bifrost.client.compat.convertResponsesToChat }}
+{{- end }}
 {{- if hasKey .Values.bifrost.client.compat "shouldDropParams" }}
 {{- $_ := set $compat "should_drop_params" .Values.bifrost.client.compat.shouldDropParams }}
 {{- end }}
@@ -2112,7 +2115,7 @@ Call this template at the beginning of deployment/stateful templates
 {{/* When dimension is 1, direct (hash-based) caching is used — provider and keys are not required. */}}
 {{- if ne (int .Values.bifrost.plugins.semanticCache.config.dimension) 1 }}
 {{- if not .Values.bifrost.plugins.semanticCache.config.provider }}
-{{- fail "ERROR: bifrost.plugins.semanticCache.config.provider is required for semantic caching. Supported providers: openai, anthropic, gemini, bedrock, azure, cohere, mistral, groq, ollama, openrouter, vertex, cerebras, parasail, perplexity, sgl, huggingface. The provider's API keys are inherited from bifrost.providers, so configure that provider there. For direct (hash-based) caching, set dimension: 1." }}
+{{- fail "ERROR: bifrost.plugins.semanticCache.config.provider is required for semantic caching. Supported providers: openai, anthropic, gemini, bedrock, azure, cohere, mistral, groq, ollama, openrouter, vertex, cerebras, parasail, perplexity, sgl, huggingface, siliconflow. The provider's API keys are inherited from bifrost.providers, so configure that provider there. For direct (hash-based) caching, set dimension: 1." }}
 {{- end }}
 {{- end }}
 {{- end }}
