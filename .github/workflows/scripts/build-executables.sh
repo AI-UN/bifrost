@@ -65,27 +65,17 @@ if [[ "${LOCAL_WORKSPACE_BUILD:-}" == "true" ]]; then
   rm -f "$GOWORK_MODE" "${GOWORK_MODE}.sum"
   GOWORK="$GOWORK_MODE" go work init
 
-  # Local modules to include, mirroring transports/Dockerfile.local. Only
-  # directories that actually contain a go.mod are added, so the list degrades
-  # gracefully if the module layout changes.
+  # Include every local plugin module so new upstream plugins are picked up
+  # automatically instead of requiring this release script to be updated.
   workspace_modules=(
-    core
-    framework
-    plugins/compat
-    plugins/governance
-    plugins/jsonparser
-    plugins/logging
-    plugins/maxim
-    plugins/mocker
-    plugins/otel
-    plugins/prompts
-    plugins/semanticcache
-    plugins/telemetry
-    transports
+    "$PROJECT_ROOT/core"
+    "$PROJECT_ROOT/framework"
+    "$PROJECT_ROOT"/plugins/*
+    "$PROJECT_ROOT/transports"
   )
   for mod in "${workspace_modules[@]}"; do
-    if [[ -f "$PROJECT_ROOT/$mod/go.mod" ]]; then
-      GOWORK="$GOWORK_MODE" go work use "$PROJECT_ROOT/$mod"
+    if [[ -f "$mod/go.mod" ]]; then
+      GOWORK="$GOWORK_MODE" go work use "$mod"
     fi
   done
 
