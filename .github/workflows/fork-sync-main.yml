@@ -17,6 +17,9 @@ on:
 
 permissions:
   contents: write
+  # Required by fork-sync-main.sh to dispatch the two release workflows: a tag
+  # pushed with GITHUB_TOKEN never fires their `push: tags: v*-oss` trigger.
+  actions: write
   issues: write
   packages: read
 
