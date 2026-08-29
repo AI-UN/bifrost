@@ -8776,7 +8776,8 @@
             "fireworks",
             "sarvam",
             "wafer",
-            "typesafe"
+            "typesafe",
+            "siliconflow"
           ],
           "description": "Base provider type to extend"
         },
