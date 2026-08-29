@@ -2131,27 +2131,50 @@ func TestMigrationReplaceEnableLiteLLMWithCompatColumns(t *testing.T) {
 	mgr := db.Migrator()
 	assert.True(t, mgr.HasColumn(&tables.TableClientConfig{}, "compat_convert_text_to_chat"))
 	assert.True(t, mgr.HasColumn(&tables.TableClientConfig{}, "compat_convert_chat_to_responses"))
+	assert.True(t, mgr.HasColumn(&tables.TableClientConfig{}, "compat_convert_responses_to_chat"))
 	assert.True(t, mgr.HasColumn(&tables.TableClientConfig{}, "compat_should_drop_params"))
 	assert.True(t, mgr.HasColumn(&tables.TableClientConfig{}, "compat_should_convert_params"))
 
 	// Verify data migration: row 1 had litellm=true → compat_convert_text_to_chat=true
 	type compatRow struct {
-		ID                        uint
-		CompatConvertTextToChat   bool `gorm:"column:compat_convert_text_to_chat"`
-		CompatShouldConvertParams bool `gorm:"column:compat_should_convert_params"`
+		ID                           uint
+		CompatConvertTextToChat      bool `gorm:"column:compat_convert_text_to_chat"`
+		CompatConvertResponsesToChat bool `gorm:"column:compat_convert_responses_to_chat"`
+		CompatShouldConvertParams    bool `gorm:"column:compat_should_convert_params"`
 	}
 	var rows []compatRow
 	err = db.Table("config_client").
-		Select("id, compat_convert_text_to_chat, compat_should_convert_params").
+		Select("id, compat_convert_text_to_chat, compat_convert_responses_to_chat, compat_should_convert_params").
 		Order("id").Find(&rows).Error
 	require.NoError(t, err)
 	require.Len(t, rows, 2)
 
 	assert.True(t, rows[0].CompatConvertTextToChat, "row with litellm=true should have compat_convert_text_to_chat=true")
+	assert.False(t, rows[0].CompatConvertResponsesToChat, "compat_convert_responses_to_chat should default to false")
 	assert.False(t, rows[0].CompatShouldConvertParams, "compat_should_convert_params should default to false")
 
 	assert.False(t, rows[1].CompatConvertTextToChat, "row with litellm=false should have compat_convert_text_to_chat=false")
+	assert.False(t, rows[1].CompatConvertResponsesToChat, "compat_convert_responses_to_chat should default to false")
 	assert.False(t, rows[1].CompatShouldConvertParams, "compat_should_convert_params should default to false")
+}
+
+func TestMigrationAddCompatConvertResponsesToChatColumn(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{
+		Logger: logger.Default.LogMode(logger.Silent),
+	})
+	require.NoError(t, err)
+
+	require.NoError(t, db.Exec(`CREATE TABLE migrations (id VARCHAR(255) PRIMARY KEY)`).Error)
+	require.NoError(t, db.Exec(`CREATE TABLE config_client (id INTEGER PRIMARY KEY)`).Error)
+	require.NoError(t, db.Exec(`INSERT INTO config_client (id) VALUES (1)`).Error)
+
+	err = migrationAddCompatConvertResponsesToChatColumn(context.Background(), db, testMigrationLogger)
+	require.NoError(t, err)
+	assert.True(t, db.Migrator().HasColumn(&tables.TableClientConfig{}, "compat_convert_responses_to_chat"))
+
+	var enabled bool
+	require.NoError(t, db.Table("config_client").Select("compat_convert_responses_to_chat").Where("id = 1").Scan(&enabled).Error)
+	assert.False(t, enabled)
 }
 
 // setupCalendarAlignedPreMigrationDB creates a SQLite DB with governance_virtual_keys,

@@ -4,9 +4,14 @@
 
 Official Helm charts for deploying [Bifrost](https://github.com/maximhq/bifrost) - a high-performance AI gateway with unified interface for multiple providers.
 
-**Latest Version:** 2.1.37
+**Latest Version:** 2.1.38
 
 ## Changelog
+
+### Upcoming
+
+- Added `bifrost.client.compat.convertResponsesToChat` to persist the opt-in Responses-to-Chat fallback through Helm upgrades. Renders into `client.compat.convert_responses_to_chat`.
+
 
 ### 2.1.37
 
