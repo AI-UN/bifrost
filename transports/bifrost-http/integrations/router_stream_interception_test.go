@@ -198,3 +198,22 @@ func Test_handleStreamingPlainInterceptionErrorKeepsFlatFormat(t *testing.T) {
 	assert.Contains(t, body, `{"error":"failed to intercept chunk with plugin test-plugin: plugin exploded"}`)
 	assert.True(t, cancelCalled)
 }
+
+// A mismatched stream chunk must never crash the process after the HTTP response has started.
+// Route configs are intentionally sparse, and request-shape compatibility can make a provider
+// return a different internal chunk type than the route normally expects.
+func Test_handleStreamingMissingConverterDoesNotPanic(t *testing.T) {
+	stream := make(chan *schemas.BifrostStreamChunk, 1)
+	stream <- &schemas.BifrostStreamChunk{
+		BifrostChatResponse: &schemas.BifrostChatResponse{ID: "chatcmpl-test"},
+	}
+	close(stream)
+
+	router := NewGenericRouter(nil, &mockHandlerStore{}, nil, nil, bifrost.NewNoOpLogger())
+	ctx := &fasthttp.RequestCtx{}
+	bifrostCtx := schemas.NewBifrostContext(nil, schemas.NoDeadline)
+	router.handleStreaming(ctx, bifrostCtx, RouteConfig{StreamConfig: &StreamConfig{}}, stream, func() {})
+
+	_, err := io.ReadAll(ctx.Response.BodyStream())
+	require.NoError(t, err)
+}
