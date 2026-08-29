@@ -10,6 +10,46 @@ import (
 	"github.com/valyala/fasthttp"
 )
 
+// Anthropic Messages is represented internally as a Responses request, but compat fallback
+// may execute it through a chat-only custom provider. The transport must therefore accept
+// chat stream chunks as well as Responses stream chunks; otherwise handleStreaming calls a
+// nil converter and panics after the HTTP 200 has already been committed.
+func TestAnthropicMessagesRouteConvertsCompatChatStream(t *testing.T) {
+	routes := createAnthropicMessagesRouteConfig("/anthropic", nil)
+	if len(routes) == 0 || routes[0].StreamConfig == nil {
+		t.Fatal("anthropic messages stream config is missing")
+	}
+	converter := routes[0].StreamConfig.ChatStreamResponseConverter
+	if converter == nil {
+		t.Fatal("anthropic messages route must convert chat chunks from responses-to-chat fallback")
+	}
+
+	content := "hello"
+	eventType, converted, err := converter(nil, &schemas.BifrostChatResponse{
+		ID:    "msg_test",
+		Model: "claude-sonnet-5",
+		Choices: []schemas.BifrostResponseChoice{{
+			Index: 0,
+			ChatStreamResponseChoice: &schemas.ChatStreamResponseChoice{
+				Delta: &schemas.ChatStreamResponseChoiceDelta{Content: &content},
+			},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("chat stream converter returned error: %v", err)
+	}
+	if eventType != "" {
+		t.Fatalf("event type = %q, want empty because converter returns complete SSE", eventType)
+	}
+	wire, ok := converted.(string)
+	if !ok {
+		t.Fatalf("converted response type = %T, want string", converted)
+	}
+	if !strings.Contains(wire, "event: content_block_delta") || !strings.Contains(wire, `"text":"hello"`) {
+		t.Fatalf("unexpected Anthropic SSE: %q", wire)
+	}
+}
+
 // TestMustConvertInPassthrough pins the passthrough routing decision that fixes
 // the Claude Code advisor/server-tool streaming bug: server tools (advisor,
 // web_search, web_fetch, code_execution) expand one Responses item into several

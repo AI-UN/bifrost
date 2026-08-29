@@ -114,6 +114,9 @@ func createAnthropicMessagesRouteConfig(pathPrefix string, logger schemas.Logger
 				return anthropic.ToAnthropicChatCompletionError(err)
 			},
 			StreamConfig: &StreamConfig{
+				ChatStreamResponseConverter: func(_ *schemas.BifrostContext, resp *schemas.BifrostChatResponse) (string, interface{}, error) {
+					return "", anthropic.ToAnthropicChatStreamResponse(resp), nil
+				},
 				ResponsesStreamResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostResponsesStreamResponse) (string, interface{}, error) {
 					soToolName, _ := ctx.Value(schemas.BifrostContextKeyStructuredOutputToolName).(string)
 					if soToolName == "" && shouldUsePassthrough(ctx, resp.ExtraFields.Provider, resp.ExtraFields.OriginalModelRequested, resp.ExtraFields.ResolvedModelUsed) {

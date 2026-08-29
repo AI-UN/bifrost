@@ -198,6 +198,7 @@ type ConfigData struct {
 
 	presentSections           map[string]bool
 	presentGovernanceSections map[string]bool
+	presentClientCompatFields map[string]bool
 	SkillsRegistry            *SkillsRegistryConfig `json:"skills_registry,omitempty"`
 }
 
@@ -419,6 +420,14 @@ func (cd *ConfigData) governanceSectionPresent(name string) bool {
 	}
 }
 
+// clientCompatFieldPresent reports whether a compatibility setting was explicitly provided in config.json.
+func (cd *ConfigData) clientCompatFieldPresent(name string) bool {
+	if cd == nil || cd.presentClientCompatFields == nil {
+		return false
+	}
+	return cd.presentClientCompatFields[name]
+}
+
 // UnmarshalJSON unmarshals the ConfigData from JSON using internal unmarshallers
 // for VectorStoreConfig, ConfigStoreConfig, and LogsStoreConfig to ensure proper
 // type safety and configuration parsing.
@@ -484,6 +493,21 @@ func (cd *ConfigData) UnmarshalJSON(data []byte) error {
 			cd.presentGovernanceSections = make(map[string]bool, len(rawGovernanceFields))
 			for key := range rawGovernanceFields {
 				cd.presentGovernanceSections[key] = true
+			}
+		}
+	}
+	cd.presentClientCompatFields = nil
+	if rawClient, ok := raw["client"]; ok && len(rawClient) > 0 {
+		var rawClientFields map[string]json.RawMessage
+		if err := json.Unmarshal(rawClient, &rawClientFields); err == nil {
+			if rawCompat, ok := rawClientFields["compat"]; ok && len(rawCompat) > 0 {
+				var rawCompatFields map[string]json.RawMessage
+				if err := json.Unmarshal(rawCompat, &rawCompatFields); err == nil {
+					cd.presentClientCompatFields = make(map[string]bool, len(rawCompatFields))
+					for key := range rawCompatFields {
+						cd.presentClientCompatFields[key] = true
+					}
+				}
 			}
 		}
 	}
@@ -1303,10 +1327,15 @@ func loadClientConfig(ctx context.Context, config *Config, configData *ConfigDat
 			}
 		}
 	} else {
-		// Full hash mismatch - file changed, sync from file (file takes precedence)
+		// Full hash mismatch - file changed, sync from file (file takes precedence).
+		// The Responses-to-Chat option remains DB-managed in split mode when omitted from the file.
 		logger.Info("client config was updated in config.json, syncing. Note that: file config takes precedence.")
-		sanitizeMCPExternalOAuthURLs(configData.Client)
-		config.ClientConfig = configData.Client
+		fileClientConfig := *configData.Client
+		if !forceClientSync && !configData.clientCompatFieldPresent("convert_responses_to_chat") {
+			fileClientConfig.Compat.ConvertResponsesToChat = clientConfig.Compat.ConvertResponsesToChat
+		}
+		sanitizeMCPExternalOAuthURLs(&fileClientConfig)
+		config.ClientConfig = &fileClientConfig
 		config.ClientConfig.ConfigHash = fileHash
 		applyClientConfigDefaults(config.ClientConfig)
 		applyToolManagerToClientConfig(config.ClientConfig, toolManagerFromFile)
@@ -4970,22 +4999,22 @@ func ResolveFrameworkPricingConfig(
 	}
 
 	return &configstoreTables.TableFrameworkConfig{
-			ID:                     configID,
-			PricingURL:             resolvedPricingURL,
-			PricingSyncInterval:    resolvedSyncSeconds,
-			ModelParametersURL:     resolvedModelParametersURL,
-			MCPLibraryURL:          resolvedMCPLibraryURL,
-			MCPLibrarySyncInterval: resolvedMCPLibrarySyncInterval,
-			LiveModelsSyncInterval: resolvedLiveModelsSyncInterval,
-			ConfigHash:             persistedHash,
-		}, &modelcatalog.Config{
-			PricingURL:             resolvedPricingURL,
-			PricingSyncInterval:    resolvedSyncSeconds,
-			ModelParametersURL:     resolvedModelParametersURL,
-			MCPLibraryURL:          resolvedMCPLibraryURL,
-			MCPLibrarySyncInterval: resolvedMCPLibrarySyncInterval,
-			LiveModelsSyncInterval: resolvedLiveModelsSyncInterval,
-		}, needsDBUpdate
+		ID:                     configID,
+		PricingURL:             resolvedPricingURL,
+		PricingSyncInterval:    resolvedSyncSeconds,
+		ModelParametersURL:     resolvedModelParametersURL,
+		MCPLibraryURL:          resolvedMCPLibraryURL,
+		MCPLibrarySyncInterval: resolvedMCPLibrarySyncInterval,
+		LiveModelsSyncInterval: resolvedLiveModelsSyncInterval,
+		ConfigHash:             persistedHash,
+	}, &modelcatalog.Config{
+		PricingURL:             resolvedPricingURL,
+		PricingSyncInterval:    resolvedSyncSeconds,
+		ModelParametersURL:     resolvedModelParametersURL,
+		MCPLibraryURL:          resolvedMCPLibraryURL,
+		MCPLibrarySyncInterval: resolvedMCPLibrarySyncInterval,
+		LiveModelsSyncInterval: resolvedLiveModelsSyncInterval,
+	}, needsDBUpdate
 }
 
 // initFrameworkConfig initializes framework config and pricing manager from file

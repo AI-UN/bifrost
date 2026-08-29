@@ -283,6 +283,8 @@ bifrost:
     compat:
       convertTextToChat: false
       convertChatToResponses: false
+      # convertResponsesToChat -- Convert Responses API requests to chat completions only when the provider lacks Responses support.
+      # convertResponsesToChat: false
       shouldDropParams: false
       shouldConvertParams: false
     prometheusLabels: []
