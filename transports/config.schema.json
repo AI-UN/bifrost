@@ -7616,7 +7616,8 @@
             "runware",
             "fireworks",
             "sarvam",
-            "wafer"
+            "wafer",
+            "siliconflow"
           ],
           "description": "Base provider type to extend"
         },
