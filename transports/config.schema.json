@@ -15263,7 +15263,8 @@
             "sarvam",
             "wafer",
             "cloudflare",
-            "typesafe"
+            "typesafe",
+            "siliconflow"
           ],
           "description": "Base provider type to extend"
         },
