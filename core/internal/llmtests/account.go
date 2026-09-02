@@ -192,6 +192,7 @@ func (account *ComprehensiveTestAccount) GetConfiguredProviders() ([]schemas.Mod
 		schemas.Runway,
 		schemas.Runware,
 		schemas.Fireworks,
+		schemas.DeepInfra,
 		schemas.Sarvam,
 		schemas.Wafer,
 		ProviderOpenAICustom,
@@ -566,6 +567,21 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 				Models:         []string{"accounts/fireworks/models/deepseek-v4-pro", "fireworks/qwen3-embedding-8b"},
 				Weight:         1.0,
 				UseForBatchAPI: bifrost.Ptr(true),
+			},
+		}, nil
+	case schemas.DeepInfra:
+		return []schemas.Key{
+			{
+				Value: *schemas.NewSecretVar("env.DEEPINFRA_API_KEY"),
+				Models: []string{
+					"deepseek-ai/DeepSeek-V3.1",
+					"Qwen/Qwen3-Embedding-8B",
+					"Qwen/Qwen3-Reranker-8B",
+					"openai/whisper-large-v3",
+					"hexgrad/Kokoro-82M",
+					"stabilityai/sdxl-turbo",
+				},
+				Weight: 1.0,
 			},
 		}, nil
 	case schemas.Ollama:
@@ -1016,6 +1032,19 @@ func (account *ComprehensiveTestAccount) GetConfigForProvider(providerKey schema
 				BufferSize:  10,
 			},
 		}, nil
+	case schemas.DeepInfra:
+		return &schemas.ProviderConfig{
+			NetworkConfig: schemas.NetworkConfig{
+				DefaultRequestTimeoutInSeconds: 120,
+				MaxRetries:                     10,
+				RetryBackoffInitial:            1 * time.Second,
+				RetryBackoffMax:                12 * time.Second,
+			},
+			ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{
+				Concurrency: Concurrency,
+				BufferSize:  10,
+			},
+		}, nil
 	default:
 		return nil, fmt.Errorf("unsupported provider: %s", providerKey)
 	}
@@ -1453,6 +1482,37 @@ var AllProviderConfigs = []ComprehensiveTestConfig{
 			Transcription:         false,
 			SpeechSynthesis:       false,
 			PromptCaching:         false,
+		},
+	},
+	{
+		Provider:             schemas.DeepInfra,
+		ChatModel:            "deepseek-ai/DeepSeek-V3.1",
+		TextModel:            "deepseek-ai/DeepSeek-V3.1",
+		EmbeddingModel:       "Qwen/Qwen3-Embedding-8B",
+		RerankModel:          "Qwen/Qwen3-Reranker-8B",
+		TranscriptionModel:   "openai/whisper-large-v3",
+		SpeechSynthesisModel: "hexgrad/Kokoro-82M",
+		ImageGenerationModel: "stabilityai/sdxl-turbo",
+		Scenarios: TestScenarios{
+			TextCompletion:        true,
+			TextCompletionStream:  true,
+			SimpleChat:            true,
+			CompletionStream:      true,
+			MultiTurnConversation: true,
+			ToolCalls:             true,
+			ToolCallsStreaming:    true,
+			CompleteEnd2End:       true,
+			Embedding:             true,
+			ListModels:            true,
+			Rerank:                true,
+			Transcription:         true,
+			SpeechSynthesis:       true,
+			// Streaming TTS runs against the native ElevenLabs-compatible endpoint,
+			// the only DeepInfra path that emits audio incrementally.
+			SpeechSynthesisStream: true,
+			ImageGeneration:       true,
+			// DeepInfra publishes no streaming transcription or image endpoints, and no
+			// /v1/responses, so reasoning, batch, file and container scenarios stay off.
 		},
 	},
 	{

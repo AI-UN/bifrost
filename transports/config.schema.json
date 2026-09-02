@@ -439,6 +439,9 @@
         "deepseek": {
           "$ref": "#/$defs/provider_with_deepseek_config"
         },
+        "deepinfra": {
+          "$ref": "#/$defs/provider"
+        },
         "wafer": {
           "$ref": "#/$defs/provider"
         },
@@ -7600,6 +7603,7 @@
             "perplexity",
             "cerebras",
             "deepseek",
+            "deepinfra",
             "gemini",
             "openrouter",
             "elevenlabs",
