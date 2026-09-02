@@ -126,6 +126,7 @@ var standardProviders = map[string]bool{
 	"bedrock_mantle": true,
 	"cerebras":       true,
 	"cohere":         true,
+	"deepinfra":      true,
 	"deepseek":       true,
 	"elevenlabs":     true,
 	"fireworks":      true,
