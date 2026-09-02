@@ -6,8 +6,26 @@ import (
 	"strings"
 )
 
-var ErrNotFound = errors.New("not found")
-var ErrAlreadyExists = errors.New("already exists")
+var (
+	ErrNotFound               = errors.New("not found")
+	ErrAlreadyExists          = errors.New("already exists")
+	ErrConfigRevisionConflict = errors.New("config revision conflict")
+)
+
+// ConfigRevisionConflictError reports a stale configuration mutation.
+type ConfigRevisionConflictError struct {
+	Expected int64
+	Actual   int64
+}
+
+func (e *ConfigRevisionConflictError) Error() string {
+	return fmt.Sprintf("%v: expected %d, current %d", ErrConfigRevisionConflict, e.Expected, e.Actual)
+}
+
+// Unwrap supports errors.Is with ErrConfigRevisionConflict.
+func (e *ConfigRevisionConflictError) Unwrap() error {
+	return ErrConfigRevisionConflict
+}
 
 // ErrConfigUnreadable marks a stored configuration value that could not be
 // decoded or that failed validation — the value is present but this version
