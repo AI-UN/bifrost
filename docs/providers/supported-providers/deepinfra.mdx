@@ -1,0 +1,238 @@
+---
+title: "DeepInfra"
+description: "DeepInfra API conversion guide covering its OpenAI-compatible and native chat, responses, completions, embeddings, images, audio, rerank, and video endpoints"
+icon: "cloud"
+---
+
+## Overview
+
+DeepInfra is a **hybrid OpenAI-compatible and native provider** in Bifrost. Bifrost talks to DeepInfra's OpenAI-compatible surface under `https://api.deepinfra.com/v1` for chat, text completions, embeddings, images, and audio. It uses DeepInfra's native endpoints for the three operations that surface cannot express: streaming text-to-speech at `/v1/text-to-speech/{voice_id}/stream`, rerank at `/v1/inference/{model}`, and video generation at `/v1/videos`.
+
+DeepInfra support includes:
+- **Chat Completions and Text Completions**, with streaming
+- **Responses API**, translated to Chat Completions with streaming support
+- **Embeddings**
+- **Image generation, editing, and variations**
+- **Text-to-speech**, including native raw-audio streaming
+- **Transcription**
+- **Rerank**
+- **Video generation, retrieval, and download**
+
+Unless noted below, DeepInfra's OpenAI-compatible endpoints follow the standard request and response behavior described in [OpenAI](./openai).
+
+### Supported Operations
+
+| Operation | Non-Streaming | Streaming | Upstream Endpoint |
+|-----------|---------------|-----------|-------------------|
+| Chat Completions | ✅ | ✅ | `/v1/chat/completions` |
+| Responses API | ✅ | ✅ | `/v1/chat/completions` (translated) |
+| Text Completions | ✅ | ✅ | `/v1/completions` |
+| Embeddings | ✅ | ❌ | `/v1/embeddings` |
+| List Models | ✅ | - | `/v1/models` |
+| Image Generation | ✅ | ❌ | `/v1/images/generations` |
+| Image Edit | ✅ | ❌ | `/v1/images/edits` |
+| Image Variation | ✅ | ❌ | `/v1/images/variations` |
+| Speech (TTS) | ✅ | ✅ | `/v1/audio/speech`; `/v1/text-to-speech/{voice_id}/stream` |
+| Transcription (STT) | ✅ | ❌ | `/v1/audio/transcriptions` |
+| Rerank | ✅ | ❌ | `/v1/inference/{model}` |
+| Video Generation | ✅ | ❌ | `/v1/videos` |
+| Video Retrieve | ✅ | - | `/v1/videos/{id}` |
+| Video Download | ✅ | - | `/v1/videos/{id}/content` |
+| Files | ❌ | ❌ | - |
+| Batch | ❌ | ❌ | - |
+| Count Tokens | ❌ | ❌ | - |
+| OCR | ❌ | ❌ | - |
+| Containers | ❌ | ❌ | - |
+| Passthrough | ❌ | ❌ | - |
+
+<Note>
+DeepInfra publishes no `/v1/responses` endpoint. Bifrost serves both non-streaming and streaming Responses API requests by translating them to Chat Completions and converting the results back to Responses API shapes.
+</Note>
+
+## Setup & Configuration
+
+Configure DeepInfra as a provider.
+
+<Tabs>
+<Tab title="Web UI">
+
+1. Navigate to **Models** > **Model Providers**. Look for **DeepInfra** under **Configured Providers**. If it is missing, click **Add New Provider** and select **DeepInfra**.
+2. Click **Add Key** or edit an existing key.
+3. Set a name for your key.
+4. Paste your API key directly or use an environment variable (for example, `env.DEEPINFRA_API_KEY`).
+5. Set **Allowed Models** to **All Models** (default) or the specific model allowlist you want this key to serve.
+6. Save the provider configuration.
+
+</Tab>
+<Tab title="config.json">
+
+```json
+{
+  "providers": {
+    "deepinfra": {
+      "keys": [
+        {
+          "name": "deepinfra-key-1",
+          "value": "env.DEEPINFRA_API_KEY",
+          "models": [
+            "*"
+          ],
+          "weight": 1.0
+        }
+      ]
+    }
+  }
+}
+```
+
+</Tab>
+<Tab title="API">
+Refer to the API documentation for [Provider Keys Management](https://docs.getbifrost.ai/api-reference/providers/create-a-key-for-a-provider).
+</Tab>
+<Tab title="Go SDK">
+
+```go
+case schemas.DeepInfra:
+    return []schemas.Key{{
+        Name:   "deepinfra-key-1",
+        Value:  *schemas.NewSecretVar("env.DEEPINFRA_API_KEY"),
+        Models: []string{"*"},
+        Weight: 1.0,
+    }}, nil
+```
+
+</Tab>
+</Tabs>
+
+### Representative Models
+
+| Use Case | Model |
+|----------|-------|
+| Chat and text completions | `deepseek-ai/DeepSeek-V3.1` |
+| Embeddings | `Qwen/Qwen3-Embedding-8B` |
+| Rerank | `Qwen/Qwen3-Reranker-8B` |
+| Transcription | `openai/whisper-large-v3` |
+| Speech | `hexgrad/Kokoro-82M` |
+| Images | `stabilityai/sdxl-turbo` |
+
+---
+
+# 1. Chat Completions
+
+DeepInfra chat completions use the OpenAI-compatible `/v1/chat/completions` endpoint. Standard non-streaming and streaming chat requests, including tool calls supported by the selected model, use the shared OpenAI-compatible conversion path.
+
+## Example
+
+```bash
+curl -X POST http://localhost:8080/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "deepinfra/deepseek-ai/DeepSeek-V3.1",
+    "messages": [
+      {"role": "user", "content": "Reply with exactly: deepinfra ok"}
+    ]
+  }'
+```
+
+---
+
+# 2. Responses API
+
+DeepInfra publishes no native `/v1/responses` endpoint. Bifrost translates the request and response internally:
+
+```text
+ResponsesRequest → ChatRequest → /v1/chat/completions → ChatCompletion → ResponsesResponse
+```
+
+Streaming Responses requests follow the same route and are converted into Responses-shaped stream events.
+
+## Example
+
+```bash
+curl -X POST http://localhost:8080/v1/responses \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "deepinfra/deepseek-ai/DeepSeek-V3.1",
+    "input": "Reply with exactly: responses ok"
+  }'
+```
+
+---
+
+# 3. Text Completions
+
+DeepInfra text completions use the OpenAI-compatible `/v1/completions` endpoint for both non-streaming and streaming requests.
+
+## Example
+
+```bash
+curl -X POST http://localhost:8080/v1/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "deepinfra/deepseek-ai/DeepSeek-V3.1",
+    "prompt": "In fruits, A is for apple and B is for"
+  }'
+```
+
+---
+
+# 4. Embeddings
+
+DeepInfra embeddings use the OpenAI-compatible `/v1/embeddings` endpoint.
+
+## Example
+
+```bash
+curl -X POST http://localhost:8080/v1/embeddings \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "deepinfra/Qwen/Qwen3-Embedding-8B",
+    "input": "embedding test"
+  }'
+```
+
+Image generation, image editing, image variations, non-streaming speech, and transcription also use DeepInfra's OpenAI-compatible endpoints. Rerank, streaming speech, and video operations use the native routes listed in the support table.
+
+---
+
+# 5. Unsupported Features
+
+The following operations are unsupported by the DeepInfra provider in Bifrost and return an unsupported-operation error:
+
+- `transcription_stream`
+- `image_generation_stream`
+- `image_edit_stream`
+- `count_tokens`
+- `ocr`
+- `compaction`
+- all `batch_*` operations
+- all `file_*` operations
+- all `container_*` operations
+- all `cached_content_*` operations
+- `passthrough` and `passthrough_stream`
+- `video_edit`
+- `video_delete`
+- `video_list`
+- `video_remix`
+
+---
+
+# 6. Caveats
+
+<Accordion title="Hybrid Endpoint Routing">
+Bifrost uses `https://api.deepinfra.com/v1` for the OpenAI-compatible operations. Streaming text-to-speech, rerank, and video generation use DeepInfra's native endpoints because the OpenAI-compatible surface cannot express those operations.
+
+The configurable `network_config.base_url` is the **host root** (`https://api.deepinfra.com`), not the `/v1` prefix, because the native routes live in sibling subtrees of the same host. Override it only to point at a compatible gateway that mirrors DeepInfra's full path layout.
+</Accordion>
+
+<Accordion title="Responses Translation">
+DeepInfra has no `/v1/responses` endpoint. Responses-only fields without a Chat Completions equivalent cannot be preserved by the translation; requests are handled using the semantics available through `/v1/chat/completions`.
+</Accordion>
+
+<Accordion title="Streaming Text-to-Speech">
+DeepInfra's `/v1/audio/speech` endpoint is non-streaming and returns the completed clip in one response. Streaming TTS therefore uses the native, ElevenLabs-compatible `/v1/text-to-speech/{voice_id}/stream` endpoint and returns raw audio chunks. The streaming voice comes from the request's `voice` parameter and is placed in the URL path, while the requested model is sent in the body as `model_id`.
+</Accordion>
+
+<Accordion title="Native Rerank and Video APIs">
+Rerank sends `queries` and `documents` to `/v1/inference/{model}` and converts the returned positional `scores` into Bifrost's ranked result format. Video generation starts an asynchronous job with `POST /v1/videos`; use the supported retrieve and download operations to inspect the job and fetch its content.
+</Accordion>
