@@ -183,6 +183,24 @@ export const ProviderIcons = {
 		);
 	},
 
+	deepinfra: ({ size = "md", className = "" }: IconProps) => {
+		const resolvedSize = resolveSize(size);
+
+		return (
+			<svg
+				width={resolvedSize}
+				height={resolvedSize}
+				viewBox="0 0 24 24"
+				fill="none"
+				xmlns="http://www.w3.org/2000/svg"
+				className={className}
+			>
+				<title>DeepInfra</title>
+				<path d="M3 3H21V9H15V15H21V21H3V15H9V9H3V3Z" fill="#1D4ED8" />
+			</svg>
+		);
+	},
+
 	cohere: ({ size = "md", className = "" }: IconProps) => {
 		const resolvedSize = resolveSize(size);
 		return (
