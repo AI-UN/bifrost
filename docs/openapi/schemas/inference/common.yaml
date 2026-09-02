@@ -29,6 +29,7 @@ ModelProvider:
     - runway
     - fireworks
     - siliconflow
+    - deepinfra
 
 Fallback:
   type: object

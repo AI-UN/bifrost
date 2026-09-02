@@ -71,6 +71,7 @@ const (
 	Runway        ModelProvider = "runway"
 	Runware       ModelProvider = "runware"
 	Fireworks     ModelProvider = "fireworks"
+	DeepInfra     ModelProvider = "deepinfra"
 	Sarvam        ModelProvider = "sarvam"
 	Wafer         ModelProvider = "wafer"
 	SiliconFlow   ModelProvider = "siliconflow"
@@ -117,6 +118,7 @@ var StandardProviders = []ModelProvider{
 	Runway,
 	Runware,
 	Fireworks,
+	DeepInfra,
 	Sarvam,
 	Wafer,
 	SiliconFlow,
