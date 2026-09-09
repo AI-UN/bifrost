@@ -14,16 +14,26 @@ import (
 	configtables "github.com/maximhq/bifrost/framework/configstore/tables"
 )
 
-// stubConfigManager is a no-op ConfigManager for exercising updateConfig's
-// persistence path without a live runtime behind it.
-type stubConfigManager struct{}
+// stubConfigManager applies the committed client config to the test runtime while
+// leaving unrelated ConfigManager operations inert.
+type stubConfigManager struct {
+	store  configstore.ConfigStore
+	target *configstore.ClientConfig
+}
 
-func (stubConfigManager) UpdateAuthConfig(context.Context, *configstore.AuthConfig) error { return nil }
-func (stubConfigManager) ValidateSetupToken(string) bool                                  { return true }
-func (stubConfigManager) ReloadClientConfigFromConfigStore(context.Context) error         { return nil }
-func (stubConfigManager) UpdateSyncConfig(context.Context) error                          { return nil }
-func (stubConfigManager) ForceReloadPricing(context.Context) error                        { return nil }
-func (stubConfigManager) UpdateDropExcessRequests(context.Context, bool)                  {}
+func (stubConfigManager) ApplyAuthConfig(context.Context, *configstore.AuthConfig) error { return nil }
+func (stubConfigManager) ValidateSetupToken(string) bool                                 { return true }
+func (m stubConfigManager) ReloadClientConfigFromConfigStore(ctx context.Context) error {
+	config, err := m.store.GetClientConfig(ctx)
+	if err != nil {
+		return err
+	}
+	*m.target = *config
+	return nil
+}
+func (stubConfigManager) UpdateSyncConfig(context.Context) error         { return nil }
+func (stubConfigManager) ForceReloadPricing(context.Context) error       { return nil }
+func (stubConfigManager) UpdateDropExcessRequests(context.Context, bool) {}
 func (stubConfigManager) UpdateMCPToolManagerConfig(context.Context, int, int, string, bool) error {
 	return nil
 }
@@ -46,7 +56,13 @@ func TestUpdateConfig_PersistsVKRotationCooldown(t *testing.T) {
 	SetLogger(&mockLogger{})
 	store := newRealOAuth2Store(t)
 	cfg := newTestOAuth2Config(store, configtables.MCPServerAuthModeHeaders, false)
-	h := &ConfigHandler{store: cfg, configManager: stubConfigManager{}}
+	h := &ConfigHandler{
+		store: cfg,
+		configManager: stubConfigManager{
+			store:  store,
+			target: cfg.ClientConfig,
+		},
+	}
 
 	save := func(t *testing.T, cooldownJSON string) {
 		t.Helper()

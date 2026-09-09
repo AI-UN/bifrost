@@ -576,16 +576,16 @@ func (r *configSnapshotReconciler) applyGovernanceUpdates(ctx context.Context, o
 		store.UpdateModelConfigInMemory(ctx, v)
 	})
 
-	oldVKs := virtualKeyMap(old.VirtualKeys)
+	virtualKeysChanged := false
 	applyChangedValues(old.VirtualKeys, next.VirtualKeys, func(v tables.TableVirtualKey) string { return v.ID }, func(v *tables.TableVirtualKey) {
-		if previous := oldVKs[v.ID]; previous != nil && previous.Value.IsSet() && v.Value.IsSet() && previous.Value.GetValue() != v.Value.GetValue() && r.server.MCPServerHandler != nil {
-			r.server.MCPServerHandler.DeleteVKMCPServer(previous.Value.GetValue())
-		}
+		virtualKeysChanged = true
 		store.UpdateVirtualKeyInMemory(ctx, v, nil, nil, nil)
-		if r.server.MCPServerHandler != nil {
-			r.server.MCPServerHandler.SyncVKMCPServer(v)
-		}
 	})
+	if virtualKeysChanged && r.server.MCPServerHandler != nil {
+		if err := r.server.MCPServerHandler.SyncMCPServer(ctx); err != nil {
+			return fmt.Errorf("sync MCP server after virtual key update: %w", err)
+		}
+	}
 
 	// Routing rules live in the routing plugin's own rule cache, not the
 	// governance store. When the plugin is not loaded there is no runtime to
@@ -698,13 +698,16 @@ func (r *configSnapshotReconciler) applyGovernanceDeletes(ctx context.Context, o
 			_ = ruleStore.DeleteRule(ctx, id)
 		}
 	})
-	oldVKs := virtualKeyMap(old.VirtualKeys)
+	virtualKeysDeleted := false
 	deleteMissing(old.VirtualKeys, next.VirtualKeys, func(v tables.TableVirtualKey) string { return v.ID }, func(id string) {
+		virtualKeysDeleted = true
 		store.DeleteVirtualKeyInMemory(ctx, id)
-		if previous := oldVKs[id]; previous != nil && previous.Value.IsSet() && r.server.MCPServerHandler != nil {
-			r.server.MCPServerHandler.DeleteVKMCPServer(previous.Value.GetValue())
-		}
 	})
+	if virtualKeysDeleted && r.server.MCPServerHandler != nil {
+		if err := r.server.MCPServerHandler.SyncMCPServer(ctx); err != nil {
+			return fmt.Errorf("sync MCP server after virtual key delete: %w", err)
+		}
+	}
 	deleteMissing(old.ModelConfigs, next.ModelConfigs, func(v tables.TableModelConfig) string { return v.ID }, func(id string) {
 		store.DeleteModelConfigInMemory(ctx, id)
 	})
