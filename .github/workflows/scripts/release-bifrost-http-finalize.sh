@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Finalize bifrost-http release: changelog, tagging, GitHub release, R2 latest copy
+# Finalize bifrost-http release: changelog, tagging, GitHub release, optional release assets, optional R2 latest copy
 # Usage: ./release-bifrost-http-finalize.sh <version>
 
 # Validate input argument
@@ -11,9 +11,37 @@ if [ "${1:-}" = "" ]; then
 fi
 
 VERSION="$1"
-TAG_NAME="transports/v${VERSION}"
+TAG_NAME="${TRANSPORT_TAG_NAME:-transports/v${VERSION}}"
+UPSTREAM_SOURCE_TAG="${UPSTREAM_SOURCE_TAG:-$TAG_NAME}"
+UPSTREAM_REPO_SLUG="${UPSTREAM_REPO_SLUG:-}"
+SKIP_GIT_TAG_CREATE="${SKIP_GIT_TAG_CREATE:-false}"
+ALLOW_SAME_CHANGELOG="${ALLOW_SAME_CHANGELOG:-false}"
+DOCKER_IMAGE_REFERENCE="${DOCKER_IMAGE_REFERENCE:-maximhq/bifrost}"
+RELEASE_ASSET_DIR="${RELEASE_ASSET_DIR:-}"
+RELEASE_TITLE_OVERRIDE="${RELEASE_TITLE_OVERRIDE:-}"
 
 echo "🏷️ Finalizing bifrost-http v$VERSION release..."
+
+release_assets=()
+if [[ -n "$RELEASE_ASSET_DIR" ]]; then
+  if [[ ! -d "$RELEASE_ASSET_DIR" ]]; then
+    echo "❌ Release asset directory not found: $RELEASE_ASSET_DIR" >&2
+    exit 1
+  fi
+
+  shopt -s nullglob
+  for asset_path in "$RELEASE_ASSET_DIR"/*; do
+    if [[ -f "$asset_path" ]]; then
+      release_assets+=("$asset_path")
+    fi
+  done
+  shopt -u nullglob
+
+  if [[ ${#release_assets[@]} -eq 0 ]]; then
+    echo "❌ Release asset directory is empty: $RELEASE_ASSET_DIR" >&2
+    exit 1
+  fi
+fi
 
 # Get core and framework versions from version files
 CORE_VERSION="v$(tr -d '\n\r' < core/version)"
@@ -53,12 +81,35 @@ for plugin_name in "${!PLUGIN_VERSIONS[@]}"; do
   echo "     - $plugin_name: ${PLUGIN_VERSIONS[$plugin_name]}"
 done
 
-# Capturing changelog
-CHANGELOG_BODY=$(cat transports/changelog.md)
-# Skip comments from changelog
-CHANGELOG_BODY=$(echo "$CHANGELOG_BODY" | grep -v '^<!--' | grep -v '^-->')
-# If changelog is empty, return error
-if [ -z "$CHANGELOG_BODY" ]; then
+# Remove Markdown comments before validating or publishing changelog content.
+strip_changelog_comments() {
+  sed '/<!--/,/-->/d'
+}
+
+changelog_is_empty() {
+  [[ -z "${1//[[:space:]]/}" ]]
+}
+
+# The fork tag may replay the upstream post-release changelog reset while
+# rebasing fork patches onto the transport tag. Prefer the local changelog, but
+# recover the immutable upstream-tag changelog when that local file is empty.
+CHANGELOG_BODY="$(strip_changelog_comments < transports/changelog.md)"
+if changelog_is_empty "$CHANGELOG_BODY" &&
+  [[ -n "$UPSTREAM_REPO_SLUG" && "$UPSTREAM_SOURCE_TAG" != "$TAG_NAME" ]]; then
+  echo "ℹ️ Local changelog is empty; loading transports/changelog.md from ${UPSTREAM_REPO_SLUG}@${UPSTREAM_SOURCE_TAG}"
+  if UPSTREAM_CHANGELOG_BODY="$(
+    gh api --method GET \
+      -H "Accept: application/vnd.github.raw+json" \
+      "repos/${UPSTREAM_REPO_SLUG}/contents/transports/changelog.md" \
+      -f "ref=${UPSTREAM_SOURCE_TAG}"
+  )"; then
+    CHANGELOG_BODY="$(printf '%s\n' "$UPSTREAM_CHANGELOG_BODY" | strip_changelog_comments)"
+  else
+    echo "❌ Failed to load upstream changelog from ${UPSTREAM_REPO_SLUG}@${UPSTREAM_SOURCE_TAG}" >&2
+    exit 1
+  fi
+fi
+if changelog_is_empty "$CHANGELOG_BODY"; then
   echo "❌ Changelog is empty"
   exit 1
 fi
@@ -66,9 +117,17 @@ echo "📝 New changelog: $CHANGELOG_BODY"
 
 # Finding previous tag
 echo "🔍 Finding previous tag..."
-PREV_TAG=$(git tag -l "transports/v*" | sort -V | tail -1)
+if [[ "$TAG_NAME" == v*-oss ]]; then
+  PREV_TAG=$(git tag -l "v*-oss" | sort -V | tail -1)
+else
+  PREV_TAG=$(git tag -l "transports/v*" | sort -V | tail -1)
+fi
 if [[ "$PREV_TAG" == "$TAG_NAME" ]]; then
-  PREV_TAG=$(git tag -l "transports/v*" | sort -V | tail -2 | head -1)
+  if [[ "$TAG_NAME" == v*-oss ]]; then
+    PREV_TAG=$(git tag -l "v*-oss" | sort -V | tail -2 | head -1)
+  else
+    PREV_TAG=$(git tag -l "transports/v*" | sort -V | tail -2 | head -1)
+  fi
 fi
 echo "🔍 Previous tag: $PREV_TAG"
 
@@ -78,29 +137,45 @@ PREV_CHANGELOG=$(git tag -l --format='%(contents)' "$PREV_TAG")
 echo "📝 Previous changelog body: $PREV_CHANGELOG"
 
 # Checking if tag message is the same as the changelog
-if [[ "$PREV_CHANGELOG" == "$CHANGELOG_BODY" ]]; then
+if [[ "$ALLOW_SAME_CHANGELOG" != "true" && "$PREV_CHANGELOG" == "$CHANGELOG_BODY" ]]; then
   echo "❌ Changelog is the same as the previous changelog"
   exit 1
 fi
 
-# Create and push tag
-echo "🏷️ Creating tag: $TAG_NAME"
+# Create and push tag unless it was created by the fork sync workflow.
 git config user.name "github-actions[bot]"
 git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-git tag "$TAG_NAME" -m "Release transports v$VERSION" -m "$CHANGELOG_BODY"
-git push origin "$TAG_NAME"
+if [[ "$SKIP_GIT_TAG_CREATE" == "true" ]]; then
+  if ! git rev-parse "$TAG_NAME" >/dev/null 2>&1; then
+    echo "❌ Expected existing tag not found: $TAG_NAME"
+    exit 1
+  fi
+  echo "🏷️ Reusing existing tag: $TAG_NAME"
+else
+  echo "🏷️ Creating tag: $TAG_NAME"
+  git tag "$TAG_NAME" -m "Release transports v$VERSION" -m "$CHANGELOG_BODY"
+  git push origin "$TAG_NAME"
+fi
 
 # Create GitHub release
-TITLE="Bifrost HTTP v$VERSION"
+TITLE="${RELEASE_TITLE_OVERRIDE:-Bifrost HTTP v$VERSION}"
+
+SOURCE_VERSION="${UPSTREAM_SOURCE_TAG#transports/v}"
+if [[ "$SOURCE_VERSION" == "$UPSTREAM_SOURCE_TAG" ]]; then
+  SOURCE_VERSION="${UPSTREAM_SOURCE_TAG#v}"
+fi
+if [[ "$SOURCE_VERSION" == "$UPSTREAM_SOURCE_TAG" ]]; then
+  SOURCE_VERSION="${VERSION%-oss}"
+fi
 
 # Mark prereleases when version contains a hyphen
 PRERELEASE_FLAG=""
-if [[ "$VERSION" == *-* ]]; then
+if [[ "$SOURCE_VERSION" == *-* ]]; then
   PRERELEASE_FLAG="--prerelease"
 fi
 
 LATEST_FLAG=""
-if [[ "$VERSION" != *-* ]]; then
+if [[ "$SOURCE_VERSION" != *-* ]]; then
   LATEST_FLAG="--latest"
 fi
 
@@ -134,13 +209,16 @@ fi
 
 BODY="## Bifrost HTTP Transport Release v$VERSION
 
+### Source Upstream Release
+- Source tag: \`$UPSTREAM_SOURCE_TAG\`
+
 $CHANGELOG_BODY
 
 ### Installation
 
 #### Docker
 \`\`\`bash
-docker run -p 8080:8080 maximhq/bifrost:v$VERSION
+docker run -p 8080:8080 ${DOCKER_IMAGE_REFERENCE}:v$VERSION
 \`\`\`
 
 #### Binary Download
@@ -149,8 +227,8 @@ npx @maximhq/bifrost --transport-version v$VERSION
 \`\`\`
 
 ### Docker Images
-- **\`maximhq/bifrost:v$VERSION\`** - This specific version
-- **\`maximhq/bifrost:latest\`** - Latest version (updated with this release)
+- **\`${DOCKER_IMAGE_REFERENCE}:v$VERSION\`** - This specific version
+- **\`${DOCKER_IMAGE_REFERENCE}:latest\`** - Latest stable version when the source upstream tag is stable
 
 ---
 _This release was automatically created with dependencies: core \`$CORE_VERSION\`, framework \`$FRAMEWORK_VERSION\`. All plugins have been validated and updated._"
@@ -161,15 +239,29 @@ if [ -z "${GH_TOKEN:-}" ] && [ -z "${GITHUB_TOKEN:-}" ]; then
 fi
 
 echo "🎉 Creating GitHub release for $TITLE..."
-gh release create "$TAG_NAME" \
-  --title "$TITLE" \
-  --notes "$BODY" \
-  ${PRERELEASE_FLAG} ${LATEST_FLAG}
+if gh release view "$TAG_NAME" >/dev/null 2>&1; then
+  echo "ℹ️ GitHub release already exists for $TAG_NAME"
+else
+  release_command=(gh release create "$TAG_NAME" --title "$TITLE" --notes "$BODY")
+  if [[ -n "$PRERELEASE_FLAG" ]]; then
+    release_command+=("$PRERELEASE_FLAG")
+  fi
+  if [[ -n "$LATEST_FLAG" ]]; then
+    release_command+=("$LATEST_FLAG")
+  fi
+  "${release_command[@]}"
+fi
+
+if [[ ${#release_assets[@]} -gt 0 ]]; then
+  echo "📦 Uploading ${#release_assets[@]} release assets..."
+  gh release upload "$TAG_NAME" --clobber "${release_assets[@]}"
+  echo "✅ Release assets uploaded"
+fi
 
 echo "✅ Bifrost HTTP released successfully"
 
 # Copy versioned R2 path to latest/ for stable releases
-if [[ "$VERSION" != *-* ]]; then
+if [[ "$SOURCE_VERSION" != *-* ]]; then
   if [ -n "${R2_ENDPOINT:-}" ] && [ -n "${R2_BUCKET:-}" ]; then
     echo "📤 Copying versioned binaries to latest/ on R2..."
     R2_ENDPOINT="$(echo "$R2_ENDPOINT" | tr -d '[:space:]')"
@@ -186,6 +278,7 @@ fi
 echo ""
 echo "📋 Release Summary:"
 echo "   🏷️  Tag: $TAG_NAME"
+echo "   🧭 Source tag: $UPSTREAM_SOURCE_TAG"
 echo "   🔧 Core version: $CORE_VERSION"
 echo "   🔧 Framework version: $FRAMEWORK_VERSION"
 echo "   📦 Transport: Updated"
@@ -196,4 +289,6 @@ else
 fi
 echo "   🎉 GitHub release: Created"
 
-echo "success=true" >> "$GITHUB_OUTPUT"
+if [[ -n "${GITHUB_OUTPUT:-}" ]]; then
+  echo "success=true" >> "$GITHUB_OUTPUT"
+fi
