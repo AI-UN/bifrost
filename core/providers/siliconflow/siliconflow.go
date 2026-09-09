@@ -228,6 +228,7 @@ func (provider *SiliconFlowProvider) Embedding(ctx *schemas.BifrostContext, key 
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 		nil,
+		nil,
 		provider.logger,
 	)
 }
@@ -457,19 +458,6 @@ func (provider *SiliconFlowProvider) SpeechStream(ctx *schemas.BifrostContext, p
 				return
 			}
 			n, err := reader.Read(buffer)
-			if err != nil {
-				if ctx.Err() != nil {
-					return
-				}
-				if err == io.EOF {
-					break
-				}
-				ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
-				provider.logger.Warn("Error reading SiliconFlow speech stream: %v", err)
-				providerUtils.ProcessAndSendError(ctx, postHookRunner, err, responseChan, provider.logger, postHookSpanFinalizer)
-				return
-			}
-
 			if n > 0 {
 				chunkIndex++
 				audioChunk := make([]byte, n)
@@ -490,6 +478,18 @@ func (provider *SiliconFlowProvider) SpeechStream(ctx *schemas.BifrostContext, p
 				}
 
 				providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, nil, response, nil, nil), responseChan, postHookSpanFinalizer)
+			}
+			if err != nil {
+				if ctx.Err() != nil {
+					return
+				}
+				if err == io.EOF {
+					break
+				}
+				ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+				provider.logger.Warn("Error reading SiliconFlow speech stream: %v", err)
+				providerUtils.ProcessAndSendError(ctx, postHookRunner, err, responseChan, provider.logger, postHookSpanFinalizer)
+				return
 			}
 		}
 
