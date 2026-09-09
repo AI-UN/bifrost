@@ -209,7 +209,7 @@ func Test_handleStreamingMissingConverterDoesNotPanic(t *testing.T) {
 	}
 	close(stream)
 
-	router := NewGenericRouter(nil, &mockHandlerStore{}, nil, nil, bifrost.NewNoOpLogger())
+	router := NewGenericRouter(nil, &mockHandlerStore{}, nil, nil, nil, bifrost.NewNoOpLogger())
 	ctx := &fasthttp.RequestCtx{}
 	bifrostCtx := schemas.NewBifrostContext(nil, schemas.NoDeadline)
 	router.handleStreaming(ctx, bifrostCtx, RouteConfig{StreamConfig: &StreamConfig{}}, stream, func() {})
