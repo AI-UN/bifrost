@@ -61,8 +61,12 @@ create_or_update_issue() {
 
   issue_number="$(issue_number_by_title "$title" 2>/dev/null || true)"
   if [[ -n "$issue_number" ]]; then
-    gh issue comment "$issue_number" "${repo_args[@]}" --body "$body" >/dev/null || true
-    echo "Updated existing issue #${issue_number}: ${title}"
+    if gh issue edit "$issue_number" "${repo_args[@]}" --body "$body" >/dev/null; then
+      echo "Updated existing issue #${issue_number}: ${title}"
+    else
+      echo "Failed to edit existing issue #${issue_number}; adding a comment instead." >&2
+      gh issue comment "$issue_number" "${repo_args[@]}" --body "$body" >/dev/null || true
+    fi
     return 0
   fi
 
@@ -70,6 +74,86 @@ create_or_update_issue() {
   gh issue create "${repo_args[@]}" --title "$title" --body "$body" --label automated --label conflict >/dev/null \
     || gh issue create "${repo_args[@]}" --title "$title" --body "$body" >/dev/null \
     || echo "Failed to create issue: ${title}" >&2
+}
+
+rebase_stopped_sha() {
+  local state_path=""
+
+  for state_path in \
+    "$(git rev-parse --git-path rebase-merge/stopped-sha)" \
+    "$(git rev-parse --git-path rebase-apply/stopped-sha)"; do
+    if [[ -f "$state_path" ]]; then
+      cat "$state_path"
+      return 0
+    fi
+  done
+
+  git rev-parse --verify REBASE_HEAD 2>/dev/null || true
+}
+
+rebase_conflict_details() {
+  local target_ref="$1"
+  local patch_source_ref="origin/${PATCH_BRANCH}"
+  local patch_source_head=""
+  local target_head=""
+  local merge_base=""
+  local target_only_count=""
+  local stopped_sha=""
+  local stopped_subject=""
+  local status_output=""
+
+  patch_source_head="$(git rev-parse "$patch_source_ref" 2>/dev/null || true)"
+  target_head="$(git rev-parse "$target_ref" 2>/dev/null || true)"
+  if [[ -n "$patch_source_head" && -n "$target_head" ]]; then
+    merge_base="$(git merge-base "$patch_source_head" "$target_head" 2>/dev/null || true)"
+    target_only_count="$(git rev-list --count "${patch_source_head}..${target_head}" 2>/dev/null || true)"
+  fi
+  stopped_sha="$(rebase_stopped_sha)"
+  if [[ -n "$stopped_sha" ]]; then
+    stopped_subject="$(git show -s --format='%s' "$stopped_sha" 2>/dev/null || true)"
+  fi
+  status_output="$(git status --short || true)"
+
+  cat <<EOF
+### Rebase diagnostics
+
+- Patch-source head (\`${patch_source_ref}\`): \`${patch_source_head:-unavailable}\`
+- Target head (\`${target_ref}\`): \`${target_head:-unavailable}\`
+- Merge base: \`${merge_base:-unavailable}\`
+- Target commits absent from patch source: \`${target_only_count:-unavailable}\`
+- Stopped commit: \`${stopped_sha:-unavailable}\` ${stopped_subject:-"(subject unavailable)"}
+
+### Git status
+
+~~~text
+${status_output}
+~~~
+EOF
+}
+
+build_rebase_conflict_body() {
+  local heading="$1"
+  local context="$2"
+  local target_ref="$3"
+  local run=""
+
+  run="$(run_url)"
+  cat <<EOF
+## ${heading}
+
+${context}
+- Run: ${run:-unavailable}
+
+### Durable resolution
+
+Each run resets generated branches from \`origin/${PATCH_BRANCH}\`, so manual
+resolutions on \`${GENERATED_BRANCH}\` or temporary release branches are
+discarded. The durable fix is to rebase every patch branch onto
+\`${target_ref}\`, resolve conflicts there, then rebuild and push
+\`${PATCH_BRANCH}\`.
+
+$(rebase_conflict_details "$target_ref")
+EOF
 }
 
 close_issue_if_open() {
@@ -175,8 +259,7 @@ rebase_patch_source() {
 
 sync_generated_branch() {
   local conflict_body=""
-  local status_output=""
-  local run=""
+  local conflict_context=""
 
   if [[ "$GENERATED_BRANCH" == "$PATCH_BRANCH" ]]; then
     echo "Generated branch must differ from patch source branch: ${GENERATED_BRANCH}" >&2
@@ -202,25 +285,15 @@ sync_generated_branch() {
     return 0
   fi
 
-  status_output="$(git status --short || true)"
-  run="$(run_url)"
-  conflict_body="$(cat <<EOF
-## ${GENERATED_BRANCH} sync conflict
-
+  conflict_context="$(cat <<EOF
 The fork sync workflow could not rebase ${PATCH_BRANCH} onto upstream/${UPSTREAM_BRANCH}.
 
 - Patch source: ${PATCH_BRANCH}
 - Generated branch: ${GENERATED_BRANCH}
 - Upstream target: upstream/${UPSTREAM_BRANCH}
-- Run: ${run:-unavailable}
-
-### Git status
-
-~~~text
-${status_output}
-~~~
 EOF
 )"
+  conflict_body="$(build_rebase_conflict_body "${GENERATED_BRANCH} sync conflict" "$conflict_context" "upstream/${UPSTREAM_BRANCH}")"
   git rebase --abort || true
   create_or_update_issue "$SYNC_CONFLICT_TITLE" "$conflict_body"
   return 1
@@ -247,8 +320,7 @@ sync_release_tag() {
   local release_branch=""
   local title=""
   local body=""
-  local status_output=""
-  local run=""
+  local conflict_context=""
 
   if [[ -z "$upstream_tag" ]]; then
     echo "No upstream transport tag found; skipping release tag sync."
@@ -293,25 +365,15 @@ sync_release_tag() {
     return 0
   fi
 
-  status_output="$(git status --short || true)"
-  run="$(run_url)"
-  body="$(cat <<EOF
-## Fork release tag conflict
-
+  conflict_context="$(cat <<EOF
 The fork sync workflow could not rebase ${PATCH_BRANCH} onto upstream tag ${upstream_tag} to create ${fork_tag}.
 
 - Patch source: ${PATCH_BRANCH}
 - Upstream tag: ${upstream_tag}
 - Fork tag: ${fork_tag}
-- Run: ${run:-unavailable}
-
-### Git status
-
-~~~text
-${status_output}
-~~~
 EOF
 )"
+  body="$(build_rebase_conflict_body "Fork release tag conflict" "$conflict_context" "$upstream_tag")"
   git rebase --abort || true
   create_or_update_issue "$title" "$body"
   return 1
