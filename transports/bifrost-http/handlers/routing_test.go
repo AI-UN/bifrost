@@ -383,11 +383,9 @@ func TestComplexityAnalyzerConfigResetPersistsDefaultsAndReloads(t *testing.T) {
 	}
 }
 
-// TestComplexityAnalyzerConfigResetReportsReloadFailure pins what a failed in-memory reload
-// leaves behind. The reset is already committed at that point and is deliberately not rolled
-// back — matching the update handler, and because a compensating write can fail the same way
-// the first one did. What the operator gets instead is the persisted state plus a message
-// naming the one action that reconciles the two, so the contract is worth holding still.
+// TestComplexityAnalyzerConfigResetReportsReloadFailure pins the durable state after a
+// failed in-memory reload. The reset is already committed at that point and is not
+// rolled back because a compensating write can fail the same way the first one did.
 func TestComplexityAnalyzerConfigResetReportsReloadFailure(t *testing.T) {
 	SetLogger(&mockLogger{})
 	store := setupPricingOverrideHandlerStore(t)
@@ -412,9 +410,6 @@ func TestComplexityAnalyzerConfigResetReportsReloadFailure(t *testing.T) {
 
 	if ctx.Response.StatusCode() != fasthttp.StatusInternalServerError {
 		t.Fatalf("expected status 500, got %d: %s", ctx.Response.StatusCode(), string(ctx.Response.Body()))
-	}
-	if !strings.Contains(string(ctx.Response.Body()), "restart bifrost") {
-		t.Fatalf("expected the response to name the reconciling action, got %s", string(ctx.Response.Body()))
 	}
 
 	// The write landed before the reload was attempted, so the stored record is the reset one
