@@ -128,6 +128,7 @@ func TestAzureDeepSeekResponsesRoutingDisabled(t *testing.T) {
 		Config{ShouldDropParams: true, AzureDeepseek: false},
 		bifrost.NewNoOpLogger(),
 		modelcatalog.NewTestCatalogWithDatasheet(ds),
+		nil,
 	)
 	if err != nil {
 		t.Fatalf("Init: %v", err)
@@ -164,6 +165,7 @@ func TestAzureDeepSeekResponsesRoutingHeaderOverride(t *testing.T) {
 		Config{ShouldDropParams: true, AzureDeepseek: false},
 		bifrost.NewNoOpLogger(),
 		modelcatalog.NewTestCatalogWithDatasheet(ds),
+		nil,
 	)
 	if err != nil {
 		t.Fatalf("Init: %v", err)
