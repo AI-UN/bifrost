@@ -252,8 +252,13 @@ write_sync_state_snapshot() {
 rebase_patch_source() {
   local target_ref="$1"
   local work_branch="$2"
+  local skip_if_ancestor="${3:-false}"
 
   git checkout -B "$work_branch" "origin/${PATCH_BRANCH}"
+  if [[ "$skip_if_ancestor" == "true" ]] && git merge-base --is-ancestor "$target_ref" "HEAD"; then
+    echo "${target_ref} is already an ancestor of origin/${PATCH_BRANCH}; no rebase needed."
+    return 0
+  fi
   git rebase --rebase-merges "$target_ref"
 }
 
@@ -267,7 +272,7 @@ sync_generated_branch() {
   fi
 
   echo "Rebasing ${PATCH_BRANCH} onto upstream/${UPSTREAM_BRANCH} for ${GENERATED_BRANCH}"
-  if rebase_patch_source "upstream/${UPSTREAM_BRANCH}" "$GENERATED_BRANCH"; then
+  if rebase_patch_source "upstream/${UPSTREAM_BRANCH}" "$GENERATED_BRANCH" true; then
     close_issue_if_open "$SYNC_CONFLICT_TITLE" "Resolved by successful run: $(run_url)"
     install_automation_files
     write_sync_state_snapshot "${SYNCED_UPSTREAM_TAG}" "${SYNCED_FORK_TAG}"
