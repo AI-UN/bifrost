@@ -2876,7 +2876,7 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 			ToolSyncInterval:       toolSyncInterval,
 			ToolExecutionTimeout:   resolvedToolExecutionTimeout,
 			ToolPricing:            toolPricing,
-			AllowOnAllVirtualKeys:  allowOnAllVKs,
+			AllowByDefault:         allowByDefault,
 			Disabled:               disabled,
 			PerUserHeaderKeys:      perUserHeaderKeys,
 			TokenExchange:          tokenExchange,
@@ -2959,7 +2959,7 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 				logger.Error(fmt.Sprintf("failed to flip per-user header credentials to needs_update for client %s: %v", existingConfig.ID, err))
 			}
 		}
-		shouldReconcile := req.VKConfigs != nil || allowOnAllVKs != existingAllowOnAllVirtualKeys
+		shouldReconcile := req.VKConfigs != nil || allowByDefault != existingAllowByDefault
 		if shouldReconcile {
 			if err := h.store.ConfigStore.ReconcileOauthAfterMCPChange(ctx, id); err != nil {
 				logger.Error(fmt.Sprintf("reconcile OAuth credentials after MCP %s update failed: %v", id, err))
@@ -2967,6 +2967,8 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 			if err := h.store.ConfigStore.ReconcileMCPHeadersAfterMCPChange(ctx, id); err != nil {
 				logger.Error(fmt.Sprintf("reconcile per-user-headers credentials after MCP %s update failed: %v", id, err))
 			}
+			h.mcpCredentialCacheManager.EvictOauthTokenCacheByMCPClient(ctx, id)
+			h.mcpCredentialCacheManager.EvictMCPHeaderCredentialCacheByMCPClient(ctx, id)
 		}
 
 		if err := h.mcpManager.UpdateMCPClient(ctx, id, schemasConfig); err != nil {
