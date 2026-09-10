@@ -1,0 +1,115 @@
+---
+title: "Zhipu AI"
+description: "Zhipu AI mainland-China provider configuration and API support"
+icon: "z"
+---
+
+## Overview
+
+Zhipu AI is the mainland-China Zhipu-hosted API service. Bifrost sends chat requests to its OpenAI-shaped API with native handling for reasoning, user, and legacy token fields.
+
+- **Endpoint:** `https://open.bigmodel.cn/api/paas/v4`
+- **Authentication:** `Authorization: Bearer <key>`
+- **Chat path:** `/chat/completions`
+- **Responses API:** mapped through Chat Completions because Zhipu AI does not publish a native Responses endpoint
+- **Regional identity:** use `zhipu` for mainland China; use [`zai`](./zai) for the international Z.AI service
+
+### Supported operations
+
+| Operation | Non-streaming | Streaming | Endpoint |
+| --- | --- | --- | --- |
+| Chat Completions | ✅ | ✅ | `/chat/completions` |
+| Responses API | 🟡 | 🟡 | Chat Completions fallback mapping |
+| Count tokens | ✅ | - | `/tokenizer` |
+| Embeddings | ✅ | - | `/embeddings` |
+| Rerank | ✅ | - | `/rerank` |
+| Image generation | ✅ | - | `/images/generations` |
+| Audio, video, files, batch | ❌ | ❌ | Not exposed by this provider integration |
+
+## Setup & configuration
+
+<Tabs>
+<Tab title="Web UI">
+
+1. Open **Models** > **Model Providers**.
+2. Select **Zhipu AI** and add a key.
+3. Enter the key directly or use `env.ZHIPU_API_KEY`.
+4. Set **Allowed Models** to `*` or an explicit model allowlist.
+5. Save the provider.
+
+</Tab>
+<Tab title="config.json">
+
+```json
+{
+  "providers": {
+    "zhipu": {
+      "keys": [
+        {
+          "name": "zhipu-key-1",
+          "value": "env.ZHIPU_API_KEY",
+          "models": ["*"],
+          "weight": 1
+        }
+      ]
+    }
+  }
+}
+```
+
+</Tab>
+<Tab title="API">
+
+Use the [Provider Keys Management API](https://docs.getbifrost.ai/api-reference/providers/create-a-key-for-a-provider) to create and manage Zhipu AI keys.
+
+</Tab>
+<Tab title="Go SDK">
+
+```go
+case schemas.Zhipu:
+    return []schemas.Key{{
+        Name:   "zhipu-key-1",
+        Value:  *schemas.NewSecretVar("env.ZHIPU_API_KEY"),
+        Models: []string{"*"},
+        Weight: 1,
+    }}, nil
+```
+
+</Tab>
+</Tabs>
+
+## Chat Completions
+
+Requests use `/chat/completions`. Bifrost maps `max_completion_tokens` to `max_tokens`, `user` to `user_id`, and generic reasoning parameters to Zhipu AI's `thinking` and `reasoning_effort` fields.
+
+Zhipu AI documents `tool_choice: "auto"` only. Forced or named tool choices are rejected rather than silently translated. JSON response formats are limited to `text` and `json_object`.
+
+Provider-native fields can be passed through `params.extra_params`, including `do_sample`, `tool_stream`, `clear_thinking`, and `request_id`.
+
+### Streaming
+
+Streaming uses Server-Sent Events. Reasoning deltas, content deltas, tool-call fragments, final usage, and `[DONE]` are preserved.
+
+## Count tokens
+
+Bifrost maps Count Tokens requests to `/tokenizer` and returns provider-reported prompt and total token counts.
+
+## Embeddings
+
+Embedding requests use `/embeddings`. The provider controls model availability and supported dimensions; Bifrost forwards the configured dimensions and returns the provider's vectors and usage.
+
+## Rerank
+
+Rerank requests use `/rerank`. Bifrost forwards the query, documents, `top_n`, and document-return preference, then maps relevance scores and original document identity into the common rerank response.
+
+## Image generation
+
+Image generation uses `/images/generations` and returns the temporary image URLs supplied by Zhipu AI. The documented China models include `glm-image`, `cogview-4`, and `cogview-3-flash`; international-only `cogview-4-250304` is rejected by the `zhipu` profile. Unlike `zai`, the China profile accepts the documented `watermark_enabled` extra parameter. Image-model availability and URL expiration are provider-controlled.
+
+## File content blocks
+
+Zhipu AI file content blocks preserve `file_url`, `file_id`, and `file_data` in the native chat request. Bifrost does not fetch or inline HTTP file URLs for this provider; the configured Zhipu endpoint is responsible for retrieving supported URLs.
+
+## Unsupported operations
+
+Operations not listed as supported return `UnsupportedOperationError`. Chat video content is not added to Bifrost's neutral chat schema by this integration; use dedicated media operations only when a future Bifrost operation maps their contract explicitly.

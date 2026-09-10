@@ -2,7 +2,9 @@
 
 ModelProvider:
   type: string
-  description: AI model provider identifier
+  description: |
+    AI model provider identifier. `zai` selects Z.AI's international service;
+    `zhipu` selects Zhipu AI's mainland China service.
   enum:
     - anthropic
     - azure
@@ -35,6 +37,8 @@ ModelProvider:
     - sarvam
     - wafer
     - databricks
+    - zai
+    - zhipu
 
 Fallback:
   type: object
