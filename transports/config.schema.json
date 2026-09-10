@@ -753,6 +753,12 @@
         },
         "github-copilot": {
           "$ref": "#/$defs/provider_with_github_copilot_config"
+        },
+        "zai": {
+          "$ref": "#/$defs/provider"
+        },
+        "zhipu": {
+          "$ref": "#/$defs/provider"
         }
       },
       "additionalProperties": true
@@ -4530,7 +4536,8 @@
                         "huggingface",
                         "databricks",
                         "cloudflare",
-                        "byteplus"
+                        "byteplus",
+                        "zhipu"
                       ]
                     },
                     "embedding_model": {

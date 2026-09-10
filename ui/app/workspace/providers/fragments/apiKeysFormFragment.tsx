@@ -17,6 +17,10 @@ import { useEffect, useState } from "react";
 import { Control, UseFormReturn } from "react-hook-form";
 import { DeploymentsTable } from "./deploymentsTable";
 import { GithubCopilotSignIn } from "./githubCopilotSignIn";
+const PROVIDER_API_KEY_PLACEHOLDERS: Record<string, string> = {
+	zai: "API Key or env.ZAI_API_KEY",
+	zhipu: "API Key or env.ZHIPU_API_KEY",
+};
 
 // Providers that support batch APIs
 // Vertex authentication methods offered by the key form. The backend picks the mode from which
@@ -177,6 +181,7 @@ export function ApiKeyFormFragment({ control, providerName, baseProviderType, fo
 	const isOpenAICompatible = effectiveProvider === "openai";
 	const isKeylessProvider = isOllama || isSGL;
 	const supportsBatchAPI = BATCH_SUPPORTED_PROVIDERS.includes(effectiveProvider);
+	const apiKeyPlaceholder = PROVIDER_API_KEY_PLACEHOLDERS[effectiveProvider] ?? "API Key or env.MY_KEY";
 
 	// Auth type state for Azure: 'api_key', 'entra_id', or 'default_credential'
 	const [azureAuthType, setAzureAuthType] = useState<"api_key" | "entra_id" | "default_credential">("api_key");
@@ -420,7 +425,7 @@ export function ApiKeyFormFragment({ control, providerName, baseProviderType, fo
 							<FormItem className="px-0.5">
 								<FormLabel>API Key {isVLLM ? "(Optional)" : ""}</FormLabel>
 								<FormControl>
-									<SecretVarInput placeholder="API Key or env.MY_KEY" type="text" {...field} />
+									<SecretVarInput placeholder={apiKeyPlaceholder} type="text" {...field} />
 								</FormControl>
 								<FormMessage />
 							</FormItem>
