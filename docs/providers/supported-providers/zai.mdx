@@ -1,0 +1,107 @@
+---
+title: "Z.AI"
+description: "Z.AI international provider configuration and API support"
+icon: "z"
+---
+
+## Overview
+
+Z.AI is the international Zhipu-hosted API service. Bifrost sends chat requests to the Z.AI OpenAI-shaped API with native handling for Z.AI reasoning, user, and legacy token fields.
+
+- **Endpoint:** `https://api.z.ai/api/paas/v4`
+- **Authentication:** `Authorization: Bearer <key>`
+- **Chat path:** `/chat/completions`
+- **Responses API:** mapped through Chat Completions because Z.AI does not publish a native Responses endpoint
+- **Regional identity:** use `zai` for Z.AI international; use [`zhipu`](./zhipu) for the mainland-China service
+
+### Supported operations
+
+| Operation | Non-streaming | Streaming | Notes |
+| --- | --- | --- | --- |
+| Chat Completions | ✅ | ✅ | Native reasoning and provider extra parameters |
+| Responses API | 🟡 | 🟡 | Bifrost fallback mapping to Chat Completions |
+| Count tokens | ✅ | - | Native `/tokenizer` endpoint |
+| Image generation | ✅ | - | `/images/generations` |
+| Embeddings | ❌ | - | Not published for this regional service |
+| Rerank | ❌ | - | Not published for this regional service |
+| Audio, video, files, batch | ❌ | ❌ | Not exposed by this provider integration |
+
+## Setup & configuration
+
+<Tabs>
+<Tab title="Web UI">
+
+1. Open **Models** > **Model Providers**.
+2. Select **Z.AI** and add a key.
+3. Enter the key directly or use `env.ZAI_API_KEY`.
+4. Set **Allowed Models** to `*` or an explicit model allowlist.
+5. Save the provider.
+
+</Tab>
+<Tab title="config.json">
+
+```json
+{
+  "providers": {
+    "zai": {
+      "keys": [
+        {
+          "name": "zai-key-1",
+          "value": "env.ZAI_API_KEY",
+          "models": ["*"],
+          "weight": 1
+        }
+      ]
+    }
+  }
+}
+```
+
+</Tab>
+<Tab title="API">
+
+Use the [Provider Keys Management API](https://docs.getbifrost.ai/api-reference/providers/create-a-key-for-a-provider) to create and manage Z.AI keys.
+
+</Tab>
+<Tab title="Go SDK">
+
+```go
+case schemas.ZAI:
+    return []schemas.Key{{
+        Name:   "zai-key-1",
+        Value:  *schemas.NewSecretVar("env.ZAI_API_KEY"),
+        Models: []string{"*"},
+        Weight: 1,
+    }}, nil
+```
+
+</Tab>
+</Tabs>
+
+## Chat Completions
+
+Requests use the provider's `/chat/completions` endpoint. Bifrost maps `max_completion_tokens` to Z.AI's `max_tokens`, `user` to `user_id`, and generic reasoning parameters to Z.AI's `thinking` and `reasoning_effort` fields.
+
+Z.AI documents `tool_choice: "auto"` only. Forced or named tool choices are rejected rather than silently translated. JSON response formats are limited to `text` and `json_object`; `json_schema` is not sent as a native Z.AI feature.
+
+Provider-native fields can be passed through `params.extra_params`, including `do_sample`, `tool_stream`, `clear_thinking`, and `request_id`.
+
+### Streaming
+
+Streaming uses Server-Sent Events. Reasoning deltas, content deltas, tool-call fragments, the final usage object, and the terminal `[DONE]` event are preserved.
+
+## Count tokens
+
+Bifrost maps Count Tokens requests to Z.AI's `/tokenizer` endpoint. The response exposes the provider-reported prompt and total token counts. Tokenizer model availability is controlled by Z.AI and can change independently of Bifrost.
+
+## Image generation
+
+Image generation uses Z.AI's `/images/generations` endpoint and returns the temporary image URLs supplied by Z.AI. The documented international models are `glm-image` and `cogview-4-250304`; China-only image models are rejected by the `zai` profile. `watermark_enabled` is not sent by `zai`, because it is documented only by the China service. Image-model availability, output limits, and URL expiration are provider-controlled.
+
+## File content blocks
+
+Z.AI file content blocks preserve `file_url`, `file_id`, and `file_data` in the native chat request. Bifrost does not fetch or inline HTTP file URLs for this provider; the configured Z.AI endpoint is responsible for retrieving supported URLs.
+
+## Unsupported operations
+
+Operations not listed as supported return `UnsupportedOperationError`. Chat video content is not added to Bifrost's neutral chat schema by this integration; use the provider's dedicated media APIs only when a future Bifrost operation maps their contract explicitly.
