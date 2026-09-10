@@ -162,6 +162,8 @@ const PROVIDER_KEYWORDS = {
   replicate: ["replicate", "/replicate", "flux", "black-forest-labs"],
   runware: ["runware", "runware/"],
   typesafe: ["typesafe", "/typesafe", "jev-"],
+  zai: ["zai/", "z.ai"],
+  zhipu: ["zhipu", "bigmodel.cn"],
 };
 
 // Haystack = item JSON + ancestor folder names. Folder names encode the harness
@@ -313,6 +315,14 @@ const itemMatchesProvider = (item, ancestorNames, provider = PROVIDER) => {
   const isMantle = haystack.includes("bedrock_mantle") || haystack.includes("bedrock-mantle");
   if (provider === "bedrock_mantle") return isMantle;
   if (isMantle) return false;
+  // Z.AI and Zhipu share the GLM model family; keep their regional endpoint rows exclusive
+  // so ZAI rows carrying Zhipu documentation terms do not enter the Zhipu provider shard.
+  const isZhipu = haystack.includes("zhipu") || haystack.includes("bigmodel.cn");
+  if (provider === "zhipu") return isZhipu;
+  if (isZhipu) return false;
+  const isZAI = haystack.includes("zai/") || haystack.includes("z.ai");
+  if (provider === "zai") return isZAI;
+  if (isZAI) return false;
   // Vertex rows run Gemini models (model "vertex/gemini-..."), so they'd otherwise be claimed
   // by the gemini partition too - same collision class as openrouter/bedrock_mantle above.
   // Route them exclusively to vertex.
