@@ -68,6 +68,8 @@ jobs:
       GITHUB_COPILOT_PRIVATE_KEY: ${{ secrets.GITHUB_COPILOT_PRIVATE_KEY }}
       COHERE_API_KEY: ${{ secrets.COHERE_API_KEY }}
       FIREWORKS_API_KEY: ${{ secrets.FIREWORKS_API_KEY }}
+      ZAI_API_KEY: ${{ secrets.ZAI_API_KEY }}
+      ZHIPU_API_KEY: ${{ secrets.ZHIPU_API_KEY }}
       VERTEX_CREDENTIALS: ${{ secrets.VERTEX_CREDENTIALS }}
       VERTEX_PROJECT_ID: ${{ secrets.VERTEX_PROJECT_ID }}
       VERTEX_GCS_BUCKET: ${{ secrets.VERTEX_GCS_BUCKET }}
@@ -100,6 +102,8 @@ jobs:
             api.deepseek.com:443
             api.elevenlabs.io:443
             api.fireworks.ai:443
+            api.z.ai:443
+            open.bigmodel.cn:443
             api.github.com:443
             api.githubcopilot.com:443
             api.business.githubcopilot.com:443

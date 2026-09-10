@@ -37,6 +37,8 @@ Ensure the Bifrost server is running and the chosen provider(s) are configured (
 - **Cohere** – Requires a valid Cohere API key in Bifrost provider config. Key format and auth may differ from other providers; 401 is expected if the key is missing or invalid.
 - **Vertex** – Requires `region` in the key config for embeddings and other operations. Set this in Bifrost provider config (project, region, credentials). Embeddings typically require a supported region such as `us-central1`.
 - **Replicate** – Set `replicate_owner` (e.g. via environment or Postman env) when running Replicate tests; otherwise API calls may fail.
+- **Z.AI** – Uses the `ZAI_API_KEY` environment-backed provider key and defaults to `https://api.z.ai/api/paas/v4`; the Postman environment carries chat/response model placeholders only.
+- **Zhipu AI** – Uses the `ZHIPU_API_KEY` environment-backed provider key and defaults to `https://open.bigmodel.cn/api/paas/v4`; `embedding_model` is set to `embedding-3` because Zhipu also exposes embeddings and rerank.
 
 ## Files
 
@@ -60,5 +62,7 @@ All Bifrost providers are included except **sgl** and **ollama** (excluded in `r
 - `bifrost-v1-replicate.postman_environment.json`
 - `bifrost-v1-vertex.postman_environment.json`
 - `bifrost-v1-xai.postman_environment.json`
+- `bifrost-v1-zai.postman_environment.json`
+- `bifrost-v1-zhipu.postman_environment.json`
 
 To add a provider, copy an existing env file, rename it to `bifrost-v1-<provider>.postman_environment.json`, and set the `provider` and model values for that provider.
