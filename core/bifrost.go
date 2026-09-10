@@ -53,6 +53,8 @@ import (
 	"github.com/maximhq/bifrost/core/providers/vllm"
 	"github.com/maximhq/bifrost/core/providers/wafer"
 	"github.com/maximhq/bifrost/core/providers/xai"
+	"github.com/maximhq/bifrost/core/providers/zai"
+	"github.com/maximhq/bifrost/core/providers/zhipu"
 	schemas "github.com/maximhq/bifrost/core/schemas"
 	"github.com/valyala/fasthttp"
 )
@@ -4553,6 +4555,10 @@ func (bifrost *Bifrost) createBaseProvider(providerKey schemas.ModelProvider, co
 		return sarvam.NewSarvamProvider(config, bifrost.logger)
 	case schemas.Databricks:
 		return databricks.NewDatabricksProvider(config, bifrost.logger)
+	case schemas.ZAI:
+		return zai.NewZAIProvider(config, bifrost.logger)
+	case schemas.Zhipu:
+		return zhipu.NewProvider(config, bifrost.logger)
 	default:
 		return nil, fmt.Errorf("unsupported provider: %s", targetProviderKey)
 	}
