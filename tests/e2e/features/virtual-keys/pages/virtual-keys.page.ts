@@ -30,6 +30,8 @@ const PROVIDER_DISPLAY_NAMES: Record<string, string> = {
   sgl: "SGLang",
   nebius: "Nebius Token Factory",
   xai: "xAI",
+  zai: "Z.AI",
+  zhipu: "Zhipu AI",
 };
 
 /**
