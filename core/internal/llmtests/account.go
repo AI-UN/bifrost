@@ -187,6 +187,8 @@ func (account *ComprehensiveTestAccount) GetConfiguredProviders() ([]schemas.Mod
 		schemas.HuggingFace,
 		schemas.Nebius,
 		schemas.XAI,
+		schemas.ZAI,
+		schemas.Zhipu,
 		schemas.Replicate,
 		schemas.VLLM,
 		schemas.Runway,
@@ -570,6 +572,24 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 				Models:         []string{"*"},
 				Weight:         1.0,
 				UseForBatchAPI: bifrost.Ptr(true),
+			},
+		}, nil
+	case schemas.ZAI:
+		return []schemas.Key{
+			{
+				Value:          *schemas.NewSecretVar("env.ZAI_API_KEY"),
+				Models:         []string{"*"},
+				Weight:         1.0,
+				UseForBatchAPI: bifrost.Ptr(false),
+			},
+		}, nil
+	case schemas.Zhipu:
+		return []schemas.Key{
+			{
+				Value:          *schemas.NewSecretVar("env.ZHIPU_API_KEY"),
+				Models:         []string{"*"},
+				Weight:         1.0,
+				UseForBatchAPI: bifrost.Ptr(false),
 			},
 		}, nil
 	case schemas.Replicate:
@@ -1013,6 +1033,34 @@ func (account *ComprehensiveTestAccount) GetConfigForProvider(providerKey schema
 	case schemas.XAI:
 		return &schemas.ProviderConfig{
 			NetworkConfig: schemas.NetworkConfig{
+				DefaultRequestTimeoutInSeconds: 120,
+				MaxRetries:                     10,
+				RetryBackoffInitial:            1 * time.Second,
+				RetryBackoffMax:                12 * time.Second,
+			},
+			ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{
+				Concurrency: Concurrency,
+				BufferSize:  10,
+			},
+		}, nil
+	case schemas.ZAI:
+		return &schemas.ProviderConfig{
+			NetworkConfig: schemas.NetworkConfig{
+				BaseURL:                        os.Getenv("ZAI_BASE_URL"),
+				DefaultRequestTimeoutInSeconds: 120,
+				MaxRetries:                     10,
+				RetryBackoffInitial:            1 * time.Second,
+				RetryBackoffMax:                12 * time.Second,
+			},
+			ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{
+				Concurrency: Concurrency,
+				BufferSize:  10,
+			},
+		}, nil
+	case schemas.Zhipu:
+		return &schemas.ProviderConfig{
+			NetworkConfig: schemas.NetworkConfig{
+				BaseURL:                        os.Getenv("ZHIPU_BASE_URL"),
 				DefaultRequestTimeoutInSeconds: 120,
 				MaxRetries:                     10,
 				RetryBackoffInitial:            1 * time.Second,

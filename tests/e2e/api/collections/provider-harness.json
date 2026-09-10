@@ -239,7 +239,9 @@
           "    __u.indexOf('https://api.anthropic.com/') === 0 ||",
           "    __u.indexOf('https://generativelanguage.googleapis.com/') === 0 ||",
           "    __u.indexOf('-aiplatform.googleapis.com/') !== -1 ||",
-          "    __u.indexOf('https://bedrock-runtime.') === 0;",
+          "    __u.indexOf('https://bedrock-runtime.') === 0 ||",
+          "    __u.indexOf('https://api.z.ai/') === 0 ||",
+          "    __u.indexOf('https://open.bigmodel.cn/') === 0;",
           "  if (__isDirectProvider) { return; }",
           "  var __required = [",
           "    'x-bifrost-request-type',",
@@ -270,6 +272,51 @@
     {
       "key": "openaiKey",
       "value": "sk-replace-me",
+      "type": "string"
+    },
+    {
+      "key": "zaiBaseUrl",
+      "value": "https://api.z.ai/api/paas/v4",
+      "type": "string"
+    },
+    {
+      "key": "zaiKey",
+      "value": "sk-zai-replace-me",
+      "type": "string"
+    },
+    {
+      "key": "zaiModel",
+      "value": "glm-5",
+      "type": "string"
+    },
+    {
+      "key": "zaiImageModel",
+      "value": "glm-image",
+      "type": "string"
+    },
+    {
+      "key": "zhipuRerankModel",
+      "value": "rerank",
+      "type": "string"
+    },
+    {
+      "key": "zhipuEmbeddingModel",
+      "value": "embedding-3",
+      "type": "string"
+    },
+    {
+      "key": "zhipuBaseUrl",
+      "value": "https://open.bigmodel.cn/api/paas/v4",
+      "type": "string"
+    },
+    {
+      "key": "zhipuKey",
+      "value": "sk-zhipu-replace-me",
+      "type": "string"
+    },
+    {
+      "key": "zhipuModel",
+      "value": "glm-5",
       "type": "string"
     },
     {
@@ -145275,6 +145322,785 @@
                 "v1",
                 "files",
                 "{{attachmentsAnthropicFileId}}"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "76. Regional Native Chat Completions",
+      "description": "Native direct probes for regional OpenAI-compatible APIs. Requests use each provider base URL plus /chat/completions and assert native legacy max_tokens, thinking, reasoning_effort, user_id, SSE framing, and [DONE]. Placeholder keys skip paid probes; configure the provider-specific environment variables before running.",
+      "item": [
+        {
+          "name": "Z.AI",
+          "description": "Z.AI international endpoint (https://api.z.ai/api/paas/v4).",
+          "item": [
+            {
+              "name": "Z.AI native /chat/completions non-streaming",
+              "event": [
+                {
+                  "listen": "prerequest",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "var key = pm.variables.replaceIn('{{zaiKey}}') || '';",
+                      "if (!key || key.indexOf('replace-me') !== -1) { pm.execution.skipRequest(); }"
+                    ]
+                  }
+                },
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('Z.AI native status is successful', function () { pm.expect(pm.response.code, pm.response.text()).to.be.within(200, 299); });",
+                      "if (pm.response.code < 200 || pm.response.code >= 300) { return; }",
+                      "pm.test('Z.AI native response carries reasoning or content', function () { var j = pm.response.json(); var message = j.choices && j.choices[0] && j.choices[0].message; pm.expect(message, 'missing choices[0].message').to.exist; pm.expect(message.content || message.reasoning_content, 'expected content or reasoning_content').to.be.ok; });"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "Authorization",
+                    "value": "Bearer {{zaiKey}}"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"model\": \"{{zaiModel}}\",\n  \"messages\": [{ \"role\": \"user\", \"content\": \"Think briefly, then answer with one short sentence.\" }],\n  \"max_tokens\": 64,\n  \"thinking\": { \"type\": \"enabled\" },\n  \"reasoning_effort\": \"high\",\n  \"user_id\": \"harness-user-123\",\n  \"stream\": false\n}"
+                },
+                "url": {
+                  "raw": "{{zaiBaseUrl}}/chat/completions",
+                  "host": [
+                    "{{zaiBaseUrl}}"
+                  ],
+                  "path": [
+                    "chat",
+                    "completions"
+                  ]
+                }
+              }
+            },
+            {
+              "name": "Z.AI native /chat/completions streaming",
+              "event": [
+                {
+                  "listen": "prerequest",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "var key = pm.variables.replaceIn('{{zaiKey}}') || '';",
+                      "if (!key || key.indexOf('replace-me') !== -1) { pm.execution.skipRequest(); }"
+                    ]
+                  }
+                },
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('Z.AI native stream status is successful', function () { pm.expect(pm.response.code, pm.response.text()).to.be.within(200, 299); });",
+                      "if (pm.response.code < 200 || pm.response.code >= 300) { return; }",
+                      "pm.test('Z.AI stream uses SSE', function () { pm.expect((pm.response.headers.get('content-type') || '').toLowerCase(), 'expected text/event-stream').to.include('text/event-stream'); });",
+                      "pm.test('Z.AI stream preserves reasoning and content deltas', function () { var body = pm.response.text() || ''; pm.expect(body, 'missing reasoning_content delta').to.include('reasoning_content'); pm.expect(body, 'missing content delta').to.include('\\\"content\\\"'); pm.expect(body, 'missing [DONE] terminator').to.include('[DONE]'); });"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "Authorization",
+                    "value": "Bearer {{zaiKey}}"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"model\": \"{{zaiModel}}\",\n  \"messages\": [{ \"role\": \"user\", \"content\": \"Think briefly, then answer with one short sentence.\" }],\n  \"max_tokens\": 64,\n  \"thinking\": { \"type\": \"enabled\" },\n  \"reasoning_effort\": \"high\",\n  \"user_id\": \"harness-user-123\",\n  \"stream\": true\n}"
+                },
+                "url": {
+                  "raw": "{{zaiBaseUrl}}/chat/completions",
+                  "host": [
+                    "{{zaiBaseUrl}}"
+                  ],
+                  "path": [
+                    "chat",
+                    "completions"
+                  ]
+                }
+              }
+            }
+          ]
+        },
+        {
+          "name": "Zhipu AI",
+          "description": "Zhipu China endpoint (https://open.bigmodel.cn/api/paas/v4).",
+          "item": [
+            {
+              "name": "Zhipu AI native /chat/completions non-streaming",
+              "event": [
+                {
+                  "listen": "prerequest",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "var key = pm.variables.replaceIn('{{zhipuKey}}') || '';",
+                      "if (!key || key.indexOf('replace-me') !== -1) { pm.execution.skipRequest(); }"
+                    ]
+                  }
+                },
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('Zhipu AI native status is successful', function () { pm.expect(pm.response.code, pm.response.text()).to.be.within(200, 299); });",
+                      "if (pm.response.code < 200 || pm.response.code >= 300) { return; }",
+                      "pm.test('Zhipu AI native response carries reasoning or content', function () { var j = pm.response.json(); var message = j.choices && j.choices[0] && j.choices[0].message; pm.expect(message, 'missing choices[0].message').to.exist; pm.expect(message.content || message.reasoning_content, 'expected content or reasoning_content').to.be.ok; });"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "Authorization",
+                    "value": "Bearer {{zhipuKey}}"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"model\": \"{{zhipuModel}}\",\n  \"messages\": [{ \"role\": \"user\", \"content\": \"Think briefly, then answer with one short sentence.\" }],\n  \"max_tokens\": 64,\n  \"thinking\": { \"type\": \"enabled\" },\n  \"reasoning_effort\": \"high\",\n  \"user_id\": \"harness-user-123\",\n  \"stream\": false\n}"
+                },
+                "url": {
+                  "raw": "{{zhipuBaseUrl}}/chat/completions",
+                  "host": [
+                    "{{zhipuBaseUrl}}"
+                  ],
+                  "path": [
+                    "chat",
+                    "completions"
+                  ]
+                }
+              }
+            },
+            {
+              "name": "Zhipu AI native /chat/completions streaming",
+              "event": [
+                {
+                  "listen": "prerequest",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "var key = pm.variables.replaceIn('{{zhipuKey}}') || '';",
+                      "if (!key || key.indexOf('replace-me') !== -1) { pm.execution.skipRequest(); }"
+                    ]
+                  }
+                },
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('Zhipu AI native stream status is successful', function () { pm.expect(pm.response.code, pm.response.text()).to.be.within(200, 299); });",
+                      "if (pm.response.code < 200 || pm.response.code >= 300) { return; }",
+                      "pm.test('Zhipu AI stream uses SSE', function () { pm.expect((pm.response.headers.get('content-type') || '').toLowerCase(), 'expected text/event-stream').to.include('text/event-stream'); });",
+                      "pm.test('Zhipu AI stream preserves reasoning and content deltas', function () { var body = pm.response.text() || ''; pm.expect(body, 'missing reasoning_content delta').to.include('reasoning_content'); pm.expect(body, 'missing content delta').to.include('\\\"content\\\"'); pm.expect(body, 'missing [DONE] terminator').to.include('[DONE]'); });"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "Authorization",
+                    "value": "Bearer {{zhipuKey}}"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"model\": \"{{zhipuModel}}\",\n  \"messages\": [{ \"role\": \"user\", \"content\": \"Think briefly, then answer with one short sentence.\" }],\n  \"max_tokens\": 64,\n  \"thinking\": { \"type\": \"enabled\" },\n  \"reasoning_effort\": \"high\",\n  \"user_id\": \"harness-user-123\",\n  \"stream\": true\n}"
+                },
+                "url": {
+                  "raw": "{{zhipuBaseUrl}}/chat/completions",
+                  "host": [
+                    "{{zhipuBaseUrl}}"
+                  ],
+                  "path": [
+                    "chat",
+                    "completions"
+                  ]
+                }
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Regional Bifrost gateway routing",
+      "description": "End-to-end gateway cases. The provider prefix is parsed by Bifrost and dispatched to the configured native provider.",
+      "item": [
+        {
+          "name": "POST /v1/chat/completions — zai native conversion",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var key = pm.variables.replaceIn('{{zaiKey}}') || '';",
+                  "if (!key || key.indexOf('replace-me') !== -1) { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Z.AI gateway request succeeds', function () { pm.expect(pm.response.code, pm.response.text()).to.be.within(200, 299); });",
+                  "if (pm.response.code < 200 || pm.response.code >= 300) { return; }",
+                  "var j = pm.response.json();",
+                  "pm.test('Z.AI gateway returns choices', function () { pm.expect(j.choices && j.choices.length).to.be.above(0); });",
+                  "var raw = (j.extra_fields || {}).raw_request; if (typeof raw === 'string') { raw = JSON.parse(raw); }",
+                  "pm.test('Z.AI gateway emits the native wire shape', function () { pm.expect(raw).to.be.an('object'); pm.expect(raw.max_tokens).to.equal(64); pm.expect(raw.thinking).to.eql({type:'enabled'}); pm.expect(raw.user_id).to.equal('harness-user-123'); pm.expect(raw).to.not.have.property('max_completion_tokens'); pm.expect(raw).to.not.have.property('user'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"zai/{{zaiModel}}\",\n  \"messages\": [{ \"role\": \"user\", \"content\": \"Reply with one short sentence.\" }],\n  \"max_completion_tokens\": 64,\n  \"reasoning\": { \"enabled\": true, \"effort\": \"high\" },\n  \"user\": \"harness-user-123\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "POST /v1/chat/completions — zhipu native conversion",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var key = pm.variables.replaceIn('{{zhipuKey}}') || '';",
+                  "if (!key || key.indexOf('replace-me') !== -1) { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Zhipu gateway request succeeds', function () { pm.expect(pm.response.code, pm.response.text()).to.be.within(200, 299); });",
+                  "if (pm.response.code < 200 || pm.response.code >= 300) { return; }",
+                  "var j = pm.response.json();",
+                  "pm.test('Zhipu gateway returns choices', function () { pm.expect(j.choices && j.choices.length).to.be.above(0); });",
+                  "var raw = (j.extra_fields || {}).raw_request; if (typeof raw === 'string') { raw = JSON.parse(raw); }",
+                  "pm.test('Zhipu gateway emits the native wire shape', function () { pm.expect(raw).to.be.an('object'); pm.expect(raw.max_tokens).to.equal(64); pm.expect(raw.thinking).to.eql({type:'enabled'}); pm.expect(raw.user_id).to.equal('harness-user-123'); pm.expect(raw).to.not.have.property('max_completion_tokens'); pm.expect(raw).to.not.have.property('user'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"zhipu/{{zhipuModel}}\",\n  \"messages\": [{ \"role\": \"user\", \"content\": \"Reply with one short sentence.\" }],\n  \"max_completion_tokens\": 64,\n  \"reasoning\": { \"enabled\": true, \"effort\": \"high\" },\n  \"user\": \"harness-user-123\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "POST /v1/chat/completions — zai native streaming conversion",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var key = pm.variables.replaceIn('{{zaiKey}}') || '';",
+                  "if (!key || key.indexOf('replace-me') !== -1) { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Z.AI gateway stream succeeds', function () { pm.expect(pm.response.code, pm.response.text()).to.be.within(200, 299); });",
+                  "if (pm.response.code < 200 || pm.response.code >= 300) { return; }",
+                  "pm.test('Z.AI gateway stream uses SSE', function () { pm.expect((pm.response.headers.get('content-type') || '').toLowerCase()).to.include('text/event-stream'); });",
+                  "pm.test('Z.AI gateway stream carries deltas and terminates', function () { var body = pm.response.text() || ''; pm.expect(body).to.include('data:'); pm.expect(body).to.match(/reasoning_content|\\\"content\\\"/); pm.expect(body).to.include('[DONE]'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"zai/{{zaiModel}}\",\n  \"messages\": [{ \"role\": \"user\", \"content\": \"Think briefly, then reply with one short sentence.\" }],\n  \"max_completion_tokens\": 64,\n  \"reasoning\": { \"enabled\": true, \"effort\": \"high\" },\n  \"user\": \"harness-user-123\",\n  \"stream\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "POST /v1/chat/completions — zhipu native streaming conversion",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var key = pm.variables.replaceIn('{{zhipuKey}}') || '';",
+                  "if (!key || key.indexOf('replace-me') !== -1) { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Zhipu gateway stream succeeds', function () { pm.expect(pm.response.code, pm.response.text()).to.be.within(200, 299); });",
+                  "if (pm.response.code < 200 || pm.response.code >= 300) { return; }",
+                  "pm.test('Zhipu gateway stream uses SSE', function () { pm.expect((pm.response.headers.get('content-type') || '').toLowerCase()).to.include('text/event-stream'); });",
+                  "pm.test('Zhipu gateway stream carries deltas and terminates', function () { var body = pm.response.text() || ''; pm.expect(body).to.include('data:'); pm.expect(body).to.match(/reasoning_content|\\\"content\\\"/); pm.expect(body).to.include('[DONE]'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"zhipu/{{zhipuModel}}\",\n  \"messages\": [{ \"role\": \"user\", \"content\": \"Think briefly, then reply with one short sentence.\" }],\n  \"max_completion_tokens\": 64,\n  \"reasoning\": { \"enabled\": true, \"effort\": \"high\" },\n  \"user\": \"harness-user-123\",\n  \"stream\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "POST /v1/responses — zai Responses entrypoint dispatch",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var key = pm.variables.replaceIn('{{zaiKey}}') || '';",
+                  "if (!key || key.indexOf('replace-me') !== -1) { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Z.AI Responses entrypoint dispatches successfully', function () { pm.expect(pm.response.code, pm.response.text()).to.be.within(200, 299); });",
+                  "if (pm.response.code < 200 || pm.response.code >= 300) { return; }",
+                  "var j = pm.response.json();",
+                  "pm.test('Z.AI Responses returns a response payload', function () { pm.expect(j.output_text || (j.output && j.output.length) || (j.choices && j.choices.length), 'missing Responses payload').to.exist; });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"zai/{{zaiModel}}\",\n  \"input\": \"Reply with one short sentence.\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "POST /v1/rerank — zhipu data serialization and raw capture",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var key = pm.variables.replaceIn('{{zhipuKey}}') || '';",
+                  "if (!key || key.indexOf('replace-me') !== -1) { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Zhipu rerank succeeds', function () { pm.expect(pm.response.code, pm.response.text()).to.be.within(200, 299); });",
+                  "if (pm.response.code < 200 || pm.response.code >= 300) { return; }",
+                  "var j = pm.response.json();",
+                  "var raw = (j.extra_fields || {}).raw_request; if (typeof raw === 'string') { raw = JSON.parse(raw); }",
+                  "var rawResponse = (j.extra_fields || {}).raw_response; if (typeof rawResponse === 'string') { rawResponse = JSON.parse(rawResponse); }",
+                  "pm.test('Zhipu rerank preserves deterministic data text and extras', function () { pm.expect(raw).to.be.an('object'); pm.expect(raw.documents[0]).to.equal('{\"a\":\"first\",\"z\":1}'); pm.expect(raw.return_raw_scores).to.equal(true); pm.expect(rawResponse).to.be.an('object'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              },
+              {
+                "key": "x-bf-send-back-raw-response",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"zhipu/{{zhipuRerankModel}}\",\n  \"query\": \"first\",\n  \"documents\": [{ \"data\": { \"z\": 1, \"a\": \"first\" } }],\n  \"return_documents\": false,\n  \"return_raw_scores\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/rerank",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "rerank"
+              ]
+            }
+          }
+        },
+        {
+          "name": "POST /v1/responses/input_tokens — zai raw capture",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var key = pm.variables.replaceIn('{{zaiKey}}') || '';",
+                  "if (!key || key.indexOf('replace-me') !== -1) { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Z.AI tokenizer succeeds', function () { pm.expect(pm.response.code, pm.response.text()).to.be.within(200, 299); });",
+                  "if (pm.response.code < 200 || pm.response.code >= 300) { return; }",
+                  "var j = pm.response.json();",
+                  "var raw = (j.extra_fields || {}).raw_request; if (typeof raw === 'string') { raw = JSON.parse(raw); }",
+                  "var rawResponse = (j.extra_fields || {}).raw_response; if (typeof rawResponse === 'string') { rawResponse = JSON.parse(rawResponse); }",
+                  "pm.test('Z.AI tokenizer preserves raw request and response', function () { pm.expect(raw).to.be.an('object'); pm.expect(raw.model).to.equal('{{zaiModel}}'); pm.expect(raw.messages).to.be.an('array'); pm.expect(rawResponse).to.be.an('object'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              },
+              {
+                "key": "x-bf-send-back-raw-response",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"zai/{{zaiModel}}\",\n  \"input\": \"Count tokens for this sentence.\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses/input_tokens",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses",
+                "input_tokens"
+              ]
+            }
+          }
+        },
+        {
+          "name": "POST /v1/responses — zai Responses streaming entrypoint dispatch",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var key = pm.variables.replaceIn('{{zaiKey}}') || '';",
+                  "if (!key || key.indexOf('replace-me') !== -1) { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Z.AI Responses streaming entrypoint dispatches successfully', function () { pm.expect(pm.response.code, pm.response.text()).to.be.within(200, 299); });",
+                  "if (pm.response.code < 200 || pm.response.code >= 300) { return; }",
+                  "pm.test('Z.AI Responses streaming uses SSE and terminates', function () { var body = pm.response.text() || ''; pm.expect((pm.response.headers.get('content-type') || '').toLowerCase()).to.include('text/event-stream'); pm.expect(body).to.include('data:'); pm.expect(body).to.include('[DONE]'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"zai/{{zaiModel}}\",\n  \"input\": \"Reply with one short sentence.\",\n  \"stream\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "POST /v1/embeddings — zhipu native embedding",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var key = pm.variables.replaceIn('{{zhipuKey}}') || '';",
+                  "if (!key || key.indexOf('replace-me') !== -1) { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Zhipu embedding succeeds', function () { pm.expect(pm.response.code, pm.response.text()).to.be.within(200, 299); });",
+                  "if (pm.response.code < 200 || pm.response.code >= 300) { return; }",
+                  "var j = pm.response.json();",
+                  "pm.test('Zhipu embedding returns vectors', function () { pm.expect(j.data).to.be.an('array').and.not.empty; pm.expect(j.data[0].embedding).to.be.an('array').and.not.empty; });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"zhipu/{{zhipuEmbeddingModel}}\",\n  \"input\": \"Embed this sentence.\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/embeddings",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "embeddings"
+              ]
+            }
+          }
+        },
+        {
+          "name": "POST /v1/images/generations — zai native image conversion",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var key = pm.variables.replaceIn('{{zaiKey}}') || '';",
+                  "if (!key || key.indexOf('replace-me') !== -1) { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Z.AI image generation succeeds', function () { pm.expect(pm.response.code, pm.response.text()).to.be.within(200, 299); });",
+                  "if (pm.response.code < 200 || pm.response.code >= 300) { return; }",
+                  "var j = pm.response.json();",
+                  "pm.test('Z.AI image generation returns image data', function () { pm.expect(j.data).to.be.an('array').and.not.empty; });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"zai/{{zaiImageModel}}\",\n  \"prompt\": \"A simple blue circle on a white background\",\n  \"quality\": \"standard\",\n  \"size\": \"1024x1024\",\n  \"user\": \"harness-user-123\",\n  \"watermark_enabled\": false\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/images/generations",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "images",
+                "generations"
               ]
             }
           }
