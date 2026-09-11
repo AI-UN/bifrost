@@ -12820,7 +12820,8 @@
             "sarvam",
             "wafer",
             "cloudflare",
-            "typesafe"
+            "typesafe",
+            "cpa"
           ],
           "description": "Base provider type to extend"
         },
