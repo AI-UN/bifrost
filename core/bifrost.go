@@ -7482,13 +7482,14 @@ func (bifrost *Bifrost) handleProviderRequest(provider schemas.Provider, config 
 		if changeType, ok := req.Context.Value(schemas.BifrostContextKeyChangeRequestType).(schemas.RequestType); ok && changeType == schemas.ChatCompletionRequest {
 			chatRequest := req.BifrostRequest.ResponsesRequest.ToChatRequest()
 			if chatRequest != nil {
-				chatCompletionResponse, bifrostError := provider.ChatCompletion(req.Context, key, chatRequest)
+				chatResponse, bifrostError := provider.ChatCompletion(req.Context, key, chatRequest)
 				if bifrostError != nil {
 					return nil, bifrostError
 				}
-				responsesResponse := chatCompletionResponse.ToBifrostResponsesResponse()
-				responsesResponse.BackfillParams(req.BifrostRequest.ResponsesRequest)
-				response.ResponsesResponse = responsesResponse
+				response.ResponsesResponse = chatResponse.ToBifrostResponsesResponse()
+				if response.ResponsesResponse != nil {
+					response.ResponsesResponse.BackfillParams(req.BifrostRequest.ResponsesRequest)
+				}
 				break
 			}
 		}
