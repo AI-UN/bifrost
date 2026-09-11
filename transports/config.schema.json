@@ -1044,6 +1044,9 @@
         },
         "siliconflow": {
           "$ref": "#/$defs/provider"
+        },
+        "siliconflow-cn": {
+          "$ref": "#/$defs/provider"
         }
       },
       "additionalProperties": true
@@ -4859,7 +4862,8 @@
                         "byteplus",
                         "baseten",
                         "kimchi",
-                        "siliconflow"
+                        "siliconflow",
+                        "siliconflow-cn"
                       ]
                     },
                     "embedding_model": {
@@ -15613,7 +15617,8 @@
             "wafer",
             "cloudflare",
             "typesafe",
-            "siliconflow"
+            "siliconflow",
+            "siliconflow-cn"
           ],
           "description": "Base provider type to extend"
         },
