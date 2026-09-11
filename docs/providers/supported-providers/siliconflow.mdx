@@ -1,6 +1,6 @@
 ---
 title: "SiliconFlow"
-description: "Configure SiliconFlow's OpenAI-compatible multimodal API for chat, embeddings, rerank, audio, images, video, files, and batch workloads"
+description: "Configure SiliconFlow's international OpenAI-compatible multimodal API for chat, embeddings, rerank, audio, images, video, files, and batch workloads"
 icon: "s"
 ---
 
@@ -8,7 +8,11 @@ icon: "s"
 
 SiliconFlow is a first-party Bifrost provider for SiliconFlow's OpenAI-compatible multimodal API. It supports language, embedding, reranking, audio, image, asynchronous video, file, and batch workflows through Bifrost's unified request and response schemas.
 
-The default API origin is the international service at `https://api.siliconflow.com`. Deployments using the China service can override the provider base URL with `https://api.siliconflow.cn`.
+This page covers the **international** service at `https://api.siliconflow.com`, whose keys are issued at [cloud.siliconflow.com](https://cloud.siliconflow.com). The mainland China service is a separate control plane with its own accounts, keys and model catalogue, and is configured as the independent [`siliconflow-cn`](/providers/supported-providers/siliconflow-cn) provider.
+
+<Note>
+Do not point this provider at `https://api.siliconflow.cn` via `network_config.base_url`. `base_url` exists for proxies, private gateways and compatible deployments; it never changes which regional service a provider represents. Use the `siliconflow-cn` provider instead, so logs, cost attribution and capability gating name the service you are actually calling.
+</Note>
 
 ### Supported operations
 
@@ -131,7 +135,7 @@ response, err := client.ChatCompletionRequest(
 
 ---
 
-## Regions and base URLs
+## Base URL
 
 Bifrost defaults to SiliconFlow's international API origin:
 
@@ -139,27 +143,7 @@ Bifrost defaults to SiliconFlow's international API origin:
 https://api.siliconflow.com
 ```
 
-No `network_config.base_url` is required for the international service. To use the China service, configure the origin explicitly:
-
-```json
-{
-  "providers": {
-    "siliconflow": {
-      "keys": [
-        {
-          "name": "siliconflow-cn-key",
-          "value": "env.SILICONFLOW_API_KEY",
-          "models": ["*"],
-          "weight": 1.0
-        }
-      ],
-      "network_config": {
-        "base_url": "https://api.siliconflow.cn"
-      }
-    }
-  }
-}
-```
+No `network_config.base_url` is required. Set it only to route through a proxy, private gateway or compatible deployment.
 
 <Warning>
 Set `base_url` to the API origin only. Do not append `/v1`; the provider adds the versioned endpoint path for each operation.
@@ -281,4 +265,4 @@ The SiliconFlow provider returns an unsupported-operation error for:
 ## Official documentation
 
 - [SiliconFlow international documentation](https://docs.siliconflow.com)
-- [SiliconFlow China documentation](https://docs.siliconflow.cn)
+- [SiliconFlow CN documentation](https://docs.siliconflow.cn)
