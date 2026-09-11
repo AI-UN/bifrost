@@ -69,6 +69,7 @@ export const ModelPlaceholders = {
 	databricks: "e.g. databricks-claude-sonnet-4-5, system.ai.claude-sonnet-4-5",
 	"github-copilot": "e.g. gpt-5.5, claude-sonnet-4-6",
 	siliconflow: "deepseek-ai/DeepSeek-V3.2",
+	"siliconflow-cn": "deepseek-ai/DeepSeek-V3.2",
 };
 
 export const isKeyRequiredByProvider: Record<ProviderName, boolean> = {
@@ -105,6 +106,7 @@ export const isKeyRequiredByProvider: Record<ProviderName, boolean> = {
 	databricks: false,
 	"github-copilot": false,
 	siliconflow: true,
+	"siliconflow-cn": true,
 };
 
 export const DefaultNetworkConfig = {
