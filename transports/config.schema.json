@@ -508,6 +508,9 @@
         },
         "zhipu": {
           "$ref": "#/$defs/provider"
+        },
+        "cpa": {
+          "$ref": "#/$defs/provider"
         }
       },
       "additionalProperties": true

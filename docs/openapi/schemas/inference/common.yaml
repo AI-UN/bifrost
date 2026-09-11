@@ -48,6 +48,7 @@ ModelProvider:
     - siliconflow-cn
     - zai
     - zhipu
+    - cpa
 
 Fallback:
   type: object

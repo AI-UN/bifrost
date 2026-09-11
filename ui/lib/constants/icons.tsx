@@ -922,6 +922,11 @@ export const ProviderIcons = {
 			/>
 		);
 	},
+	cpa: ({ size = "md", className = "" }: IconProps) => {
+		const resolvedSize = resolveSize(size);
+
+		return <img src="/images/cpa.webp" alt="cpa" width={resolvedSize} height={resolvedSize} className={className} />;
+	},
 } as const;
 
 // Routing Engine Icons
