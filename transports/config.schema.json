@@ -13935,7 +13935,9 @@
             "sarvam",
             "wafer",
             "cloudflare",
-            "typesafe"
+            "typesafe",
+            "zai",
+            "zhipu"
           ],
           "description": "Base provider type to extend"
         },
