@@ -2,7 +2,14 @@
 
 ModelProvider:
   type: string
-  description: AI model provider identifier
+  description: |
+    AI model provider identifier.
+
+    Regional services are modelled as independent providers: `siliconflow`
+    selects SiliconFlow's international service (api.siliconflow.com) and
+    `siliconflow-cn` selects the mainland China service
+    (api.siliconflow.cn). They have separate accounts, keys and model
+    catalogues.
   enum:
     - anthropic
     - azure
@@ -36,6 +43,7 @@ ModelProvider:
     - wafer
     - databricks
     - siliconflow
+    - siliconflow-cn
 
 Fallback:
   type: object
