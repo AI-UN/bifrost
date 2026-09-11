@@ -350,6 +350,30 @@
       "key": "vertexLocation",
       "value": "us-central1",
       "type": "string"
+    },
+    {
+      "key": "cpaChatModel",
+      "value": "gpt-5.6-sol"
+    },
+    {
+      "key": "cpaClaudeModel",
+      "value": "claude-opus-4-8"
+    },
+    {
+      "key": "cpaGeminiModel",
+      "value": "gemini-3-pro"
+    },
+    {
+      "key": "cpaImageModel",
+      "value": "gpt-image-2"
+    },
+    {
+      "key": "cpaGeminiImageModel",
+      "value": "gemini-3-pro-image"
+    },
+    {
+      "key": "cpaImagenModel",
+      "value": "imagen-4.0-generate-001"
     }
   ],
   "item": [
@@ -145275,6 +145299,571 @@
                 "v1",
                 "files",
                 "{{attachmentsAnthropicFileId}}"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "76. CLI Proxy API dialect dispatch (cpa-dialect-dispatch)",
+      "description": "CLI Proxy API (cpa) is one Bifrost provider fronting a self-hosted gateway that speaks the Anthropic, OpenAI and Gemini dialects at once (core/providers/cpa).\n\nTwo dispatch rules are pinned here, and they are deliberately different:\n\n1. Conversational surfaces follow the INBOUND protocol. All three CPA dialect endpoints accept any model and CPA itself translates into whatever protocol the model's upstream account speaks, so a Claude Code request for a GPT model must still leave Bifrost as /v1/messages, and a Codex request for a Claude model must still leave as /v1/responses. Choosing the endpoint from the model name instead would duplicate - and eventually contradict - CPA's own registry/alias/executor decision.\n\n2. Image surfaces follow the MODEL FAMILY. CPA's image endpoints accept disjoint model sets: /v1/images/{generations,edits} is allowlisted to gpt-image-*, grok-imagine-* and openai-compatibility image models, while Google AI image models only produce images through /v1beta/models/{model}:generateContent. Routing images by inbound protocol would send a Gemini image model to an endpoint that rejects it.\n\nImagen is the hazard case: it publishes only :predict, and CPA's Gemini route dispatches generateContent/streamGenerateContent/countTokens with no default branch, so a forwarded :predict returns an empty 200. The provider must reject it locally instead.\n\nModels are referenced through {{cpa*Model}} variables so a claude-/gpt- literal cannot pull these rows into the anthropic or openai PROVIDER selection.\n\nRequires a reachable CPA instance configured as the cpa provider (network_config.base_url).",
+      "item": [
+        {
+          "name": "cpa/{{cpaClaudeModel}} /anthropic messages keeps the Anthropic dialect - cpa-dialect-dispatch",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('request succeeded', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "pm.test('anthropic message shape', function () {",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.role, 'body: ' + pm.response.text()).to.eql('assistant');",
+                  "  pm.expect(j.content, 'body: ' + pm.response.text()).to.be.an('array').that.is.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"cpa/{{cpaClaudeModel}}\",\n  \"max_tokens\": 64,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with exactly: ok\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "cpa/{{cpaChatModel}} /anthropic messages cross-family (CPA translates) - cpa-dialect-dispatch",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('request succeeded', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "pm.test('anthropic message shape', function () {",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.role, 'body: ' + pm.response.text()).to.eql('assistant');",
+                  "  pm.expect(j.content, 'body: ' + pm.response.text()).to.be.an('array').that.is.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"cpa/{{cpaChatModel}}\",\n  \"max_tokens\": 64,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with exactly: ok\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "cpa/{{cpaClaudeModel}} /anthropic messages streaming - cpa-dialect-dispatch",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('stream succeeded', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "pm.test('anthropic SSE events present', function () {",
+                  "  var body = pm.response.text();",
+                  "  pm.expect(body, 'body: ' + body.slice(0, 400)).to.include('content_block_delta');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"cpa/{{cpaClaudeModel}}\",\n  \"max_tokens\": 64,\n  \"stream\": true,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with exactly: ok\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "cpa/{{cpaChatModel}} native /v1/responses - cpa-dialect-dispatch",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('request succeeded', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "pm.test('responses output present', function () {",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.output, 'body: ' + pm.response.text()).to.be.an('array').that.is.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"cpa/{{cpaChatModel}}\",\n  \"input\": \"Reply with exactly: ok\",\n  \"max_output_tokens\": 64\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "cpa/{{cpaClaudeModel}} native /v1/responses cross-family streaming - cpa-dialect-dispatch",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('stream succeeded', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "pm.test('responses SSE events present', function () {",
+                  "  var body = pm.response.text();",
+                  "  pm.expect(body, 'body: ' + body.slice(0, 400)).to.include('response.');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"cpa/{{cpaClaudeModel}}\",\n  \"input\": \"Reply with exactly: ok\",\n  \"max_output_tokens\": 64,\n  \"stream\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "cpa/{{cpaChatModel}} native /v1/chat/completions - cpa-dialect-dispatch",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('request succeeded', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "pm.test('chat choice present', function () {",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.choices, 'body: ' + pm.response.text()).to.be.an('array').that.is.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"cpa/{{cpaChatModel}}\",\n  \"max_tokens\": 64,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with exactly: ok\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "cpa/{{cpaGeminiModel}} /genai generateContent - cpa-dialect-dispatch",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('request succeeded', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "pm.test('gemini candidate present', function () {",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.candidates, 'body: ' + pm.response.text()).to.be.an('array').that.is.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"contents\": [\n    {\n      \"role\": \"user\",\n      \"parts\": [\n        {\n          \"text\": \"Reply with exactly: ok\"\n        }\n      ]\n    }\n  ],\n  \"generationConfig\": {\n    \"maxOutputTokens\": 64\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/genai/v1beta/models/cpa/{{cpaGeminiModel}}:generateContent",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai",
+                "v1beta",
+                "models",
+                "cpa",
+                "{{cpaGeminiModel}}:generateContent"
+              ]
+            }
+          }
+        },
+        {
+          "name": "cpa/{{cpaImageModel}} /v1/images/generations (Codex image tool) - cpa-dialect-dispatch",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('request succeeded', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "pm.test('image payload present', function () {",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.data, 'body: ' + pm.response.text()).to.be.an('array').that.is.not.empty;",
+                  "  var first = j.data[0] || {};",
+                  "  pm.expect(Boolean(first.b64_json || first.url), 'body: ' + pm.response.text().slice(0, 300)).to.be.true;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"cpa/{{cpaImageModel}}\",\n  \"prompt\": \"a small solid red circle centered on a plain white background\",\n  \"n\": 1\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/images/generations",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "images",
+                "generations"
+              ]
+            }
+          }
+        },
+        {
+          "name": "cpa/{{cpaGeminiImageModel}} /v1/images/generations routes to the Gemini dialect - cpa-dialect-dispatch",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('request succeeded', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "pm.test('image payload present', function () {",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.data, 'body: ' + pm.response.text()).to.be.an('array').that.is.not.empty;",
+                  "  var first = j.data[0] || {};",
+                  "  pm.expect(Boolean(first.b64_json || first.url), 'body: ' + pm.response.text().slice(0, 300)).to.be.true;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"cpa/{{cpaGeminiImageModel}}\",\n  \"prompt\": \"a small solid red circle centered on a plain white background\",\n  \"n\": 1\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/images/generations",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "images",
+                "generations"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-4XX] cpa/{{cpaImagenModel}} image generation is rejected, never an empty 200 - cpa-dialect-dispatch",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// No infra guard on 4xx here: the rejection IS the contract. CPA's Gemini route",
+                  "// has no :predict branch and would answer an empty 200, so Bifrost must fail the",
+                  "// request itself with unsupported_operation.",
+                  "pm.test('imagen is rejected locally with unsupported_operation', function () {",
+                  "  pm.expect(pm.response.code, 'body: ' + pm.response.text().slice(0, 300)).to.be.within(400, 499);",
+                  "  pm.expect(pm.response.text()).to.include('unsupported_operation');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"cpa/{{cpaImagenModel}}\",\n  \"prompt\": \"a small solid red circle centered on a plain white background\",\n  \"n\": 1\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/images/generations",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "images",
+                "generations"
+              ]
+            }
+          }
+        },
+        {
+          "name": "cpa/{{cpaChatModel}} /v1/responses/compact (Codex remote compaction) - cpa-dialect-dispatch",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('request succeeded', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"cpa/{{cpaChatModel}}\",\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"What is the capital of France?\"\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": \"The capital of France is Paris.\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"What is the population of Paris?\"\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": \"Paris has a population of approximately 2.1 million in the city proper, and around 12 million in the greater metropolitan area.\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"Summarize this conversation.\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses/compact",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses",
+                "compact"
+              ]
+            }
+          }
+        },
+        {
+          "name": "cpa/* model catalog lists each model once - cpa-dialect-dispatch",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('model list succeeded', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "var data = (pm.response.json() || {}).data || [];",
+                  "var cpaIds = data.map(function (m) { return m && m.id; }).filter(function (id) {",
+                  "  return typeof id === 'string' && id.indexOf('cpa/') === 0;",
+                  "});",
+                  "// No cpa rows at all means the provider is not configured for this run; the",
+                  "// dedup assertion below would be vacuous, so skip rather than pretend to pass.",
+                  "if (cpaIds.length === 0) { return; }",
+                  "pm.test('no duplicate cpa model ids (one provider identity, not one per dialect)', function () {",
+                  "  var seen = {};",
+                  "  var dupes = [];",
+                  "  cpaIds.forEach(function (id) {",
+                  "    if (seen[id]) { dupes.push(id); }",
+                  "    seen[id] = true;",
+                  "  });",
+                  "  pm.expect(dupes, 'duplicated cpa model ids: ' + dupes.join(', ')).to.be.an('array').that.is.empty;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/v1/models?provider=cpa",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "models"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "cpa"
+                }
               ]
             }
           }

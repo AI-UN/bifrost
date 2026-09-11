@@ -152,6 +152,7 @@ const PROVIDER_KEYWORDS = {
   xai: ["xai", "grok"],
   replicate: ["replicate", "/replicate", "flux", "black-forest-labs"],
   runware: ["runware", "runware/"],
+  cpa: ["cpa/", "cliproxy"],
 };
 
 // Haystack = item JSON + ancestor folder names. Folder names encode the harness
@@ -297,6 +298,14 @@ const itemMatchesProvider = (item, ancestorNames, provider = PROVIDER) => {
   const isRunware = haystack.includes("runware");
   if (provider === "runware") return isRunware;
   if (isRunware) return false;
+  // CPA rows front one self-hosted gateway that speaks all three dialects at once, so they
+  // carry "/anthropic" and "/genai" route substrings and Gemini model names, and would
+  // otherwise be claimed by the anthropic and gemini partitions too - same collision class as
+  // openrouter/bedrock_mantle/vertex/runware above. Route them exclusively to cpa, so an
+  // anthropic- or gemini-filtered run does not try to reach a CLI Proxy API instance.
+  const isCPA = PROVIDER_KEYWORDS.cpa.some((k) => haystack.includes(k));
+  if (provider === "cpa") return isCPA;
+  if (isCPA) return false;
   // bedrock_openai rows (token-parity-matrix.mjs's "one more model per provider" addition -
   // gpt-oss-family models on Bedrock) contain "openai" in the backend key/model, so they'd
   // otherwise be claimed by the openai partition too - same collision class as above. Route
