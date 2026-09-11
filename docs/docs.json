@@ -165,6 +165,7 @@
                   "providers/supported-providers/runway",
                   "providers/supported-providers/sarvam",
                   "providers/supported-providers/siliconflow",
+                  "providers/supported-providers/siliconflow-cn",
                   "providers/supported-providers/sgl",
                   "providers/supported-providers/vertex",
                   "providers/supported-providers/vllm",

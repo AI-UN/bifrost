@@ -1,17 +1,17 @@
 ---
-title: "SiliconFlow"
-description: "Configure SiliconFlow's international OpenAI-compatible multimodal API for chat, embeddings, rerank, audio, images, video, files, and batch workloads"
+title: "SiliconFlow CN"
+description: "Configure the mainland China SiliconFlow API for chat, embeddings, rerank, audio, images, video, files, and batch workloads"
 icon: "s"
 ---
 
 ## Overview
 
-SiliconFlow is a first-party Bifrost provider for SiliconFlow's OpenAI-compatible multimodal API. It supports language, embedding, reranking, audio, image, asynchronous video, file, and batch workflows through Bifrost's unified request and response schemas.
+`siliconflow-cn` is a first-party Bifrost provider for SiliconFlow's mainland China service. It supports language, embedding, reranking, audio, image, asynchronous video, file, and batch workflows through Bifrost's unified request and response schemas.
 
-This page covers the **international** service at `https://api.siliconflow.com`, whose keys are issued at [cloud.siliconflow.com](https://cloud.siliconflow.com). The mainland China service is a separate control plane with its own accounts, keys and model catalogue, and is configured as the independent [`siliconflow-cn`](/providers/supported-providers/siliconflow-cn) provider.
+This page covers the **China** service at `https://api.siliconflow.cn`, whose keys are issued at [cloud.siliconflow.cn](https://cloud.siliconflow.cn). The international service is a separate control plane with its own accounts, keys and model catalogue, and is configured as the independent [`siliconflow`](/providers/supported-providers/siliconflow) provider.
 
 <Note>
-Do not point this provider at `https://api.siliconflow.cn` via `network_config.base_url`. `base_url` exists for proxies, private gateways and compatible deployments; it never changes which regional service a provider represents. Use the `siliconflow-cn` provider instead, so logs, cost attribution and capability gating name the service you are actually calling.
+The two services are independent. SiliconFlow does not document a key issued on one control plane working against the other, so configure each region with its own key. Regional identity comes from the provider you choose, never from `network_config.base_url`.
 </Note>
 
 ### Supported operations
@@ -20,7 +20,7 @@ Do not point this provider at `https://api.siliconflow.cn` via `network_config.b
 |-----------|---------------|-----------|-------------------|
 | List Models | ✅ | - | `/v1/models` |
 | Chat Completions | ✅ | ✅ | `/v1/chat/completions` |
-| Text Completions | ✅ | ✅ | `/v1/completions` |
+| Text Completions | ⚠️ | ⚠️ | `/v1/completions` (see note below) |
 | Responses | ✅ | ✅ | Chat fallback through `/v1/chat/completions` |
 | Embeddings | ✅ | ❌ | `/v1/embeddings` |
 | Rerank | ✅ | ❌ | `/v1/rerank` |
@@ -38,6 +38,10 @@ Do not point this provider at `https://api.siliconflow.cn` via `network_config.b
 | Batch Retrieve | ✅ | ❌ | `/v1/batches/{batch_id}` |
 | Batch Cancel | ✅ | ❌ | `/v1/batches/{batch_id}/cancel` |
 
+<Warning>
+**Text Completions is undocumented on this service.** The China documentation publishes no `/v1/completions` reference page, and its FIM guide routes `prefix` and `suffix` through `/v1/chat/completions` instead. Bifrost still sends the request — the operation is not blocked, so callers who have verified it works can use it — but availability is not guaranteed and an upstream rejection is returned unchanged. Prefer `/v1/chat/completions` for prefix and FIM workloads.
+</Warning>
+
 <Note>
 SiliconFlow does not provide a native Responses endpoint. Bifrost translates Responses requests to Chat Completions and converts the result back to the Responses schema. Stored-response semantics, `previous_response_id`, and retrieve, delete, cancel, or input-items lifecycle operations are not available.
 </Note>
@@ -48,8 +52,8 @@ SiliconFlow does not provide a native Responses endpoint. Bifrost translates Res
 <Tab title="Web UI">
 
 1. Navigate to **Models** > **Model Providers**.
-2. Click **Add New Provider** and select **SiliconFlow**.
-3. Click **Add Key**, enter a key name, and paste your SiliconFlow API key or use `env.SILICONFLOW_API_KEY`.
+2. Click **Add New Provider** and select **SiliconFlow CN**.
+3. Click **Add Key**, enter a key name, and paste your SiliconFlow CN API key or use `env.SILICONFLOWCN_API_KEY`.
 4. Set **Allowed Models** to **All Models** or add the models the key may serve.
 5. Enable **Use for Batch API** on at least one key if you plan to create inline or file-backed batch jobs.
 6. Save the provider configuration.
@@ -60,11 +64,11 @@ SiliconFlow does not provide a native Responses endpoint. Bifrost translates Res
 ```json
 {
   "providers": {
-    "siliconflow": {
+    "siliconflow-cn": {
       "keys": [
         {
-          "name": "siliconflow-key-1",
-          "value": "env.SILICONFLOW_API_KEY",
+          "name": "siliconflow-cn-key-1",
+          "value": "env.SILICONFLOWCN_API_KEY",
           "models": ["*"],
           "weight": 1.0,
           "use_for_batch_api": true
@@ -75,21 +79,21 @@ SiliconFlow does not provide a native Responses endpoint. Bifrost translates Res
 }
 ```
 
-The `keys` array is required. `use_for_batch_api` is only needed on keys that should serve Batch and batch-file workflows.
+The `keys` array is required. `use_for_batch_api` is only needed on keys that should serve Batch and batch-file workflows. No `network_config.base_url` is required — the provider already defaults to the China origin.
 
 </Tab>
 <Tab title="API">
 
-Use the [Provider Keys Management API](https://docs.getbifrost.ai/api-reference/providers/create-a-key-for-a-provider) to configure a SiliconFlow key with provider name `siliconflow`.
+Use the [Provider Keys Management API](https://docs.getbifrost.ai/api-reference/providers/create-a-key-for-a-provider) to configure a key with provider name `siliconflow-cn`.
 
-After configuration, send requests through the unified gateway with the `siliconflow/` model prefix:
+After configuration, send requests through the unified gateway with the `siliconflow-cn/` model prefix:
 
 ```bash
 curl -X POST http://localhost:8080/v1/chat/completions \
   -H "Authorization: Bearer $BIFROST_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "siliconflow/deepseek-ai/DeepSeek-V3.2",
+    "model": "siliconflow-cn/deepseek-ai/DeepSeek-V3.2",
     "messages": [
       {"role": "user", "content": "Explain semantic caching in one sentence."}
     ]
@@ -99,31 +103,31 @@ curl -X POST http://localhost:8080/v1/chat/completions \
 </Tab>
 <Tab title="Go SDK">
 
-Return SiliconFlow keys from your Bifrost key provider:
+Return SiliconFlow CN keys from your Bifrost key provider:
 
 ```go
-case schemas.SiliconFlow:
+case schemas.SiliconFlowCN:
     return []schemas.Key{{
-        Name:           "siliconflow-key-1",
-        Value:          *schemas.NewSecretVar("env.SILICONFLOW_API_KEY"),
+        Name:           "siliconflow-cn-key-1",
+        Value:          *schemas.NewSecretVar("env.SILICONFLOWCN_API_KEY"),
         Models:         []string{"*"},
         Weight:         1.0,
         UseForBatchAPI: schemas.Ptr(true),
     }}, nil
 ```
 
-Requests use `schemas.SiliconFlow` and the upstream model name without the gateway prefix:
+Requests use `schemas.SiliconFlowCN` and the upstream model name without the gateway prefix:
 
 ```go
 response, err := client.ChatCompletionRequest(
     schemas.NewBifrostContext(ctx, schemas.NoDeadline),
     &schemas.BifrostChatRequest{
-        Provider: schemas.SiliconFlow,
+        Provider: schemas.SiliconFlowCN,
         Model:    "deepseek-ai/DeepSeek-V3.2",
         Input: []schemas.ChatMessage{{
             Role: schemas.ChatMessageRoleUser,
             Content: &schemas.ChatMessageContent{
-                ContentStr: schemas.Ptr("Hello from SiliconFlow"),
+                ContentStr: schemas.Ptr("Hello from SiliconFlow CN"),
             },
         }},
     },
@@ -137,10 +141,10 @@ response, err := client.ChatCompletionRequest(
 
 ## Base URL
 
-Bifrost defaults to SiliconFlow's international API origin:
+Bifrost defaults to the China API origin:
 
 ```text
-https://api.siliconflow.com
+https://api.siliconflow.cn
 ```
 
 No `network_config.base_url` is required. Set it only to route through a proxy, private gateway or compatible deployment.
@@ -151,14 +155,47 @@ Set `base_url` to the API origin only. Do not append `/v1`; the provider adds th
 
 ---
 
+## Regional differences from the international service
+
+Both regions share the same wire protocol, so Bifrost reuses one implementation. The differences that affect callers:
+
+| Area | SiliconFlow CN (`siliconflow-cn`) | SiliconFlow (`siliconflow`) |
+|------|--------------------------|-------------------------------|
+| Model catalogue | Includes China-only models such as `BAAI/bge-large-zh-v1.5`, `BAAI/bge-reranker-v2-m3`, `Kwai-Kolors/Kolors` | Defaults documented around `Qwen/Qwen3-Embedding-8B`, `Qwen/Qwen3-Reranker-8B`, `black-forest-labs/FLUX*` |
+| Text Completions | Not documented upstream; see the warning above | Documented `/v1/completions` |
+| Rerank usage envelope | Returns `meta.tokens` and `meta.billed_units` | Returns top-level `tokens` |
+| Multimodal rerank and embeddings | Documents image and mixed input (`Qwen/Qwen3-VL-Reranker-8B`, `Qwen/Qwen3-VL-Embedding-8B`) | Documents text input |
+| Image watermark | `X-Enable-Watermark` request header, default `1` | Not documented |
+
+Bifrost's rerank decoder accepts both usage envelopes, so no configuration is needed for that difference.
+
+To disable the image watermark on this service, send the header through `network_config.extra_headers` or the per-request `x-bf-extra-headers` mechanism — no provider-specific setting exists:
+
+```json
+{
+  "providers": {
+    "siliconflow-cn": {
+      "network_config": {
+        "extra_headers": {
+          "X-Enable-Watermark": "0"
+        }
+      }
+    }
+  }
+}
+```
+
+---
+
 ## Extra parameters
 
-SiliconFlow-specific fields can be sent through `extra_params`. Bifrost preserves supported provider extensions while protecting reserved request fields such as `model`, `messages`, `documents`, and `input` from being overwritten.
+Provider-specific fields can be sent through `extra_params`. Bifrost preserves supported provider extensions while protecting reserved request fields such as `model`, `messages`, `documents`, and `input` from being overwritten.
 
 | Workload | Common extra parameters | Notes |
 |----------|-------------------------|-------|
 | Chat and Text | `top_k`, `min_p`, `repetition_penalty`, `stop` | Forwarded to the OpenAI-compatible completion request |
 | Reasoning Chat | `enable_thinking`, `thinking_budget` | Typed Bifrost reasoning settings are also mapped to these fields |
+| FIM / prefix completion | `prefix`, `suffix` | Sent on `/v1/chat/completions`, which is the documented China path |
 | List Models | `type`, `sub_type` | Added as query parameters; other extra fields are ignored for model listing |
 | Rerank | `max_chunks_per_doc`, `overlap_tokens` | Documents are sent upstream as strings |
 | Images | `negative_prompt`, `seed`, `num_inference_steps`, `aspect_ratio` | Model support varies |
@@ -169,8 +206,8 @@ Example reasoning request:
 
 ```json
 {
-  "model": "siliconflow/deepseek-ai/DeepSeek-V3.2",
-  "messages": [{"role": "user", "content": "Solve 17 × 23."}],
+  "model": "siliconflow-cn/deepseek-ai/DeepSeek-V3.2",
+  "messages": [{"role": "user", "content": "Solve 17 x 23."}],
   "extra_params": {
     "enable_thinking": true,
     "thinking_budget": 2048,
@@ -216,7 +253,7 @@ Unknown edit models, empty images, and requests containing multiple images retur
 
 ## Files and batch
 
-SiliconFlow's file integration is intentionally limited to batch inputs:
+File integration is intentionally limited to batch inputs:
 
 - File Upload and File List accept only `purpose=batch`; an omitted purpose defaults to `batch`.
 - File Retrieve, File Delete, and File Content are unsupported.
@@ -225,6 +262,8 @@ SiliconFlow's file integration is intentionally limited to batch inputs:
 - Batch jobs target `/v1/chat/completions`; a requested model is sent through `replace.model`.
 - Batch List, Retrieve, and Cancel are supported.
 - Batch Delete and Batch Results are unsupported.
+
+The China service documents a completion window of 24 to 336 hours and retains output and error files for 30 days. Results are read back through the `output_file_id` and `error_file_id` returned by Batch Retrieve.
 
 Configure at least one key with `use_for_batch_api: true` before using these operations.
 
@@ -235,7 +274,7 @@ Configure at least one key with `use_for_batch_api: true` before using these ope
 Video generation is asynchronous:
 
 1. Video Generation submits a job to `/v1/video/submit` and returns a provider-suffixed video ID.
-2. Video Retrieve checks `/v1/video/status` and maps SiliconFlow queue, progress, success, and failure states to Bifrost video statuses.
+2. Video Retrieve checks `/v1/video/status` and maps queue, progress, success, and failure states to Bifrost video statuses.
 3. Video Download first verifies that the job is completed, then downloads the signed result URL without forwarding the SiliconFlow Authorization header.
 
 Video List, Video Delete, and Video Remix are unsupported.
@@ -244,7 +283,7 @@ Video List, Video Delete, and Video Remix are unsupported.
 
 ## Unsupported operations
 
-The SiliconFlow provider returns an unsupported-operation error for:
+The provider returns an unsupported-operation error for:
 
 - Count Tokens
 - Transcription streaming
@@ -264,5 +303,5 @@ The SiliconFlow provider returns an unsupported-operation error for:
 
 ## Official documentation
 
-- [SiliconFlow international documentation](https://docs.siliconflow.com)
 - [SiliconFlow CN documentation](https://docs.siliconflow.cn)
+- [SiliconFlow international documentation](https://docs.siliconflow.com)
