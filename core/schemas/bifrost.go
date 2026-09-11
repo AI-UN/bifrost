@@ -75,6 +75,7 @@ const (
 	Wafer         ModelProvider = "wafer"
 	GithubCopilot ModelProvider = "github-copilot"
 	Databricks    ModelProvider = "databricks"
+	CPA           ModelProvider = "cpa"
 )
 
 // SupportedBaseProviders is the list of base providers allowed for custom providers.
@@ -122,6 +123,7 @@ var StandardProviders = []ModelProvider{
 	Wafer,
 	GithubCopilot,
 	Databricks,
+	CPA,
 }
 
 // RequestType represents the type of request being made to a provider.
