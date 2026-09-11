@@ -8644,7 +8644,8 @@
             "runware",
             "fireworks",
             "sarvam",
-            "wafer"
+            "wafer",
+            "cpa"
           ],
           "description": "Base provider type to extend"
         },
