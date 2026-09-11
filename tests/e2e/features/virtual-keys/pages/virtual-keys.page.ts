@@ -27,6 +27,8 @@ const PROVIDER_DISPLAY_NAMES: Record<string, string> = {
   sgl: "SGLang",
   nebius: "Nebius Token Factory",
   xai: "xAI",
+  siliconflow: "SiliconFlow",
+  "siliconflow-cn": "SiliconFlow CN",
 };
 
 /**
