@@ -31,13 +31,13 @@ func (s *RDBConfigStore) CreateSidekiqJob(ctx context.Context, job *tables.Table
 	}
 	job.CreatedAt = now
 	job.UpdatedAt = now
-	return s.DB().WithContext(ctx).Create(job).Error
+	return s.dbForContext(ctx).Create(job).Error
 }
 
 // GetSidekiqJob returns a single job by id, or nil when it does not exist.
 func (s *RDBConfigStore) GetSidekiqJob(ctx context.Context, id string) (*tables.TableSidekiqJob, error) {
 	var job tables.TableSidekiqJob
-	err := s.DB().WithContext(ctx).Where("id = ?", id).First(&job).Error
+	err := s.dbForContext(ctx).Where("id = ?", id).First(&job).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil, nil
 	}
@@ -68,7 +68,7 @@ func (s *RDBConfigStore) GetSidekiqJob(ctx context.Context, id string) (*tables.
 // any running job (e.g. from a crashed previous process) is immediately claimable.
 func (s *RDBConfigStore) ClaimSidekiqJob(ctx context.Context, id, runnerID string, staleBefore time.Time) (bool, error) {
 	now := time.Now()
-	res := s.DB().WithContext(ctx).
+	res := s.dbForContext(ctx).
 		Model(&tables.TableSidekiqJob{}).
 		Where("id = ? AND (status = ? OR (status = ? AND updated_at < ?))",
 			id,
@@ -134,7 +134,7 @@ func (s *RDBConfigStore) ClaimPartitionedSidekiqJob(ctx context.Context, id, run
 // the caller no longer owns the job (it was reaped and re-claimed), which the
 // runner treats as a signal to cancel its in-flight work.
 func (s *RDBConfigStore) HeartbeatSidekiqJob(ctx context.Context, id, runnerID string) (bool, error) {
-	res := s.DB().WithContext(ctx).
+	res := s.dbForContext(ctx).
 		Model(&tables.TableSidekiqJob{}).
 		Where("id = ? AND runner_id = ? AND status = ?", id, runnerID, tables.SidekiqStatusRunning).
 		Update("updated_at", time.Now())
@@ -149,7 +149,7 @@ func (s *RDBConfigStore) HeartbeatSidekiqJob(ctx context.Context, id, runnerID s
 // stale. Called after each processed page. Fenced on runner_id so only the current
 // owner can advance the job; a stale runner that revives affects 0 rows.
 func (s *RDBConfigStore) UpdateSidekiqJobProgress(ctx context.Context, id, runnerID, metadata string) error {
-	res := s.DB().WithContext(ctx).
+	res := s.dbForContext(ctx).
 		Model(&tables.TableSidekiqJob{}).
 		Where("id = ? AND runner_id = ? AND status = ?", id, runnerID, tables.SidekiqStatusRunning).
 		Updates(map[string]any{
@@ -173,7 +173,7 @@ func (s *RDBConfigStore) UpdateSidekiqJobProgress(ctx context.Context, id, runne
 // which would mask the staleness signal.
 func (s *RDBConfigStore) CompleteSidekiqJob(ctx context.Context, id, runnerID, metadata string) error {
 	now := time.Now()
-	res := s.DB().WithContext(ctx).
+	res := s.dbForContext(ctx).
 		Model(&tables.TableSidekiqJob{}).
 		Where("id = ? AND runner_id = ? AND status = ?", id, runnerID, tables.SidekiqStatusRunning).
 		Updates(map[string]any{
@@ -207,7 +207,7 @@ func (s *RDBConfigStore) FailSidekiqJob(ctx context.Context, id, runnerID, metad
 	if metadata != "" {
 		updates["metadata"] = metadata
 	}
-	res := s.DB().WithContext(ctx).
+	res := s.dbForContext(ctx).
 		Model(&tables.TableSidekiqJob{}).
 		Where("id = ? AND runner_id = ? AND status = ?", id, runnerID, tables.SidekiqStatusRunning).
 		Updates(updates)
@@ -279,7 +279,7 @@ func (s *RDBConfigStore) FinalizeCancelledSidekiqJob(ctx context.Context, id, ru
 // winner, so listing on every node is safe and needs no cross-node coordination.
 func (s *RDBConfigStore) ListClaimableSidekiqJobs(ctx context.Context, staleBefore time.Time) ([]tables.TableSidekiqJob, error) {
 	var jobs []tables.TableSidekiqJob
-	err := s.DB().WithContext(ctx).
+	err := s.dbForContext(ctx).
 		Where("status = ? OR (status = ? AND updated_at < ?)",
 			tables.SidekiqStatusPending,
 			tables.SidekiqStatusRunning, staleBefore).
@@ -296,7 +296,7 @@ func (s *RDBConfigStore) ListClaimableSidekiqJobs(ctx context.Context, staleBefo
 // use it to avoid enqueuing a duplicate while one of the same kind is active.
 func (s *RDBConfigStore) GetInFlightSidekiqJobByKind(ctx context.Context, kind string) (*tables.TableSidekiqJob, error) {
 	var job tables.TableSidekiqJob
-	err := s.DB().WithContext(ctx).
+	err := s.dbForContext(ctx).
 		Where("kind = ? AND status IN ?", kind, []string{tables.SidekiqStatusPending, tables.SidekiqStatusRunning}).
 		Order("created_at DESC").
 		First(&job).Error
@@ -315,7 +315,7 @@ func (s *RDBConfigStore) GetInFlightSidekiqJobByKind(ctx context.Context, kind s
 // eligible for inspection or a manual resume. Returns the number of jobs reaped.
 func (s *RDBConfigStore) MarkStaleSidekiqJobsFailed(ctx context.Context, staleBefore time.Time) (int64, error) {
 	now := time.Now()
-	res := s.DB().WithContext(ctx).
+	res := s.dbForContext(ctx).
 		Model(&tables.TableSidekiqJob{}).
 		Where("status = ? AND updated_at < ?", tables.SidekiqStatusRunning, staleBefore).
 		Updates(map[string]any{
