@@ -8700,7 +8700,8 @@
             "siliconflow",
             "siliconflow-cn",
             "zai",
-            "zhipu"
+            "zhipu",
+            "cpa"
           ],
           "description": "Base provider type to extend"
         },
