@@ -8698,7 +8698,9 @@
             "sarvam",
             "wafer",
             "siliconflow",
-            "siliconflow-cn"
+            "siliconflow-cn",
+            "zai",
+            "zhipu"
           ],
           "description": "Base provider type to extend"
         },
