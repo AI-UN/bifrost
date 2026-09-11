@@ -489,6 +489,9 @@
         },
         "github-copilot": {
           "$ref": "#/$defs/provider_with_github_copilot_config"
+        },
+        "cpa": {
+          "$ref": "#/$defs/provider"
         }
       },
       "additionalProperties": true

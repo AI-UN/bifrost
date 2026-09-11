@@ -1,0 +1,162 @@
+---
+title: "CLI Proxy API"
+description: "Route Claude Code, ChatGPT and Google AI subscriptions through one self-hosted CLI Proxy API gateway"
+icon: "route"
+---
+
+## Overview
+
+[CLI Proxy API](https://github.com/router-for-me/CLIProxyAPI) (CPA) is a self-hosted gateway that
+exposes Claude Code, ChatGPT (Codex) and Google AI subscriptions behind three client dialects at
+once. The `cpa` provider fronts one CPA instance as a single Bifrost provider.
+
+- **Endpoint:** your own CPA server, set through `network_config.base_url`. There is no default.
+- **Authentication:** the CPA `api-keys` value. One key works across all three dialects.
+- **Dialects reached:** `/v1/messages` (Anthropic), `/v1/chat/completions` and `/v1/responses`
+  (OpenAI), `/v1beta/models/{model}:generateContent` (Gemini).
+
+One provider entry, rather than three, matters for two reasons:
+
+1. **The model catalog stays deduplicated.** Catalog rows are keyed by `(provider, model)` and
+   every CPA dialect serves the same model set, so registering the same backend three times
+   produces `cpa/<model>`, `cpa-claude/<model>` and `cpa-gemini/<model>` for every single model.
+2. **The model-to-subscription decision stays in CPA.** CPA resolves a model through its own
+   registry, per-account aliases and executor selection — one alias can even round-robin across
+   several upstream models. Bifrost picks which dialect to *speak*; it never guesses which
+   subscription will run.
+
+### Supported operations
+
+| Operation | Non-streaming | Streaming | Notes |
+| --- | --- | --- | --- |
+| Chat Completions | ✅ | ✅ | Dialect follows the inbound protocol |
+| Responses API | ✅ | ✅ | Dialect follows the inbound protocol |
+| Count tokens | ✅ | - | Gemini clients use `:countTokens`; everyone else uses `/v1/messages/count_tokens` |
+| Compaction | ✅ | - | Codex remote compaction via `/v1/responses/compact` |
+| Text Completions | ✅ | ✅ | `/v1/completions` |
+| Image generation | ✅ | 🟡 | Streaming only for the OpenAI-dialect image models |
+| Image edit | ✅ | 🟡 | Streaming only for the OpenAI-dialect image models |
+| Image variation | ❌ | - | CPA publishes no `/v1/images/variations` route |
+| Embeddings, rerank, OCR, audio, video, batch, files, containers, cached content | ❌ | ❌ | No CPA route |
+
+## Setup & configuration
+
+<Tabs>
+<Tab title="Web UI">
+
+1. Open **Models** > **Model Providers**.
+2. Select **CLI Proxy API** and add a key.
+3. Enter the CPA API key directly or use `env.CPA_API_KEY`.
+4. Set **Base URL** to your CPA server, e.g. `http://cpa.internal:8317`.
+5. Set **Allowed Models** to `*` or an explicit model allowlist.
+6. Save the provider.
+
+</Tab>
+<Tab title="config.json">
+
+```json
+{
+  "providers": {
+    "cpa": {
+      "keys": [
+        {
+          "name": "cpa-key-1",
+          "value": "env.CPA_API_KEY",
+          "models": ["*"],
+          "weight": 1
+        }
+      ],
+      "network_config": {
+        "base_url": "http://cpa.internal:8317"
+      }
+    }
+  }
+}
+```
+
+`base_url` is required. Requests fail at provider initialization without it, rather than falling
+back to a public API.
+
+</Tab>
+<Tab title="API">
+
+Use the [Provider Keys Management API](https://docs.getbifrost.ai/api-reference/providers/create-a-key-for-a-provider)
+to create and manage CPA keys.
+
+</Tab>
+<Tab title="Go SDK">
+
+```go
+case schemas.CPA:
+    return []schemas.Key{{
+        Name:   "cpa-key-1",
+        Value:  *schemas.NewSecretVar("env.CPA_API_KEY"),
+        Models: []string{"*"},
+        Weight: 1,
+    }}, nil
+```
+
+</Tab>
+</Tabs>
+
+## How a request picks its CPA dialect
+
+Conversational requests keep the protocol the client spoke:
+
+| Client | Bifrost route | CPA route |
+| --- | --- | --- |
+| Claude Code, Anthropic SDK | `/anthropic/v1/messages` | `POST /v1/messages` |
+| Codex, OpenAI SDK (Responses) | `/v1/responses` | `POST /v1/responses` |
+| OpenAI SDK (Chat Completions) | `/v1/chat/completions` | `POST /v1/chat/completions` |
+| Google GenAI SDK | `/genai/v1beta/models/...` | `POST /v1beta/models/{model}:generateContent` |
+
+The requested model does not change that mapping. Asking Claude Code for `cpa/gpt-5.6-sol` still
+leaves Bifrost as an Anthropic Messages request, and CPA performs the single translation into the
+Codex protocol its ChatGPT subscription needs. Direct Go SDK calls carry no inbound protocol and
+use the OpenAI dialect.
+
+Image operations are the deliberate exception: they follow the **model family**, because CPA's two
+image surfaces accept disjoint model sets.
+
+| Model | CPA route |
+| --- | --- |
+| `gpt-image-*` (Codex), `grok-imagine-*` (xAI), `openai-compatibility` models with `image: true` | `POST /v1/images/generations`, `POST /v1/images/edits` |
+| Google AI image models such as `gemini-3-pro-image` | `POST /v1beta/models/{model}:generateContent` |
+| Imagen (`imagen-*`) | unsupported — see below |
+
+CPA owns the allowlist for its OpenAI image endpoints and answers `400` for anything outside it;
+Bifrost does not keep a second copy of that list.
+
+## Compaction
+
+`/v1/responses/compact` reaches CPA's compaction route, which forwards to the upstream Codex
+compaction endpoint rather than compacting locally. It is non-streaming; a streaming compaction
+request is rejected.
+
+## Count tokens
+
+Token counting accuracy is decided by CPA per upstream, not by Bifrost. Gemini and first-party
+Claude accounts call a real upstream count endpoint; Codex, OpenAI-compatible and third-party
+Claude gateways return a local tokenizer estimate. Treat the result as an estimate unless you know
+which upstream served it.
+
+## Unsupported operations
+
+Operations not listed as supported return `UnsupportedOperationError`.
+
+Imagen models are rejected on purpose. They publish only `:predict`, and CPA's Gemini route
+dispatches `generateContent`, `streamGenerateContent` and `countTokens` with no fallback branch, so
+a forwarded `:predict` would return an empty `200` with no body. Failing the request in Bifrost
+turns that silent success into an explicit error.
+
+## Migrating from separate per-dialect providers
+
+If you currently run one provider per dialect — for example `cpa` (OpenAI), `cpa-claude`
+(Anthropic) and `cpa-gemini` (Gemini) as custom providers against the same CPA server — move to the
+single `cpa` provider:
+
+1. Configure the `cpa` provider with the same base URL and key.
+2. Collapse the routing rules that targeted the per-dialect providers into rules targeting `cpa`.
+   The dialect is now chosen per request, so one rule replaces the three.
+3. Remove the old provider entries once no rule references them. Bifrost does not delete them for
+   you, and models under the old provider names stay in the catalog until you do.
