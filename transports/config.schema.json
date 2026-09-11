@@ -8775,7 +8775,8 @@
             "fireworks",
             "sarvam",
             "wafer",
-            "typesafe"
+            "typesafe",
+            "cpa"
           ],
           "description": "Base provider type to extend"
         },
