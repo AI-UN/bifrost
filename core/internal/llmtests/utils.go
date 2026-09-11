@@ -93,7 +93,7 @@ func GetProviderVoice(provider schemas.ModelProvider, voiceType string) string {
 		default:
 			return "English_Graceful_Lady"
 		}
-	case schemas.SiliconFlow:
+	case schemas.SiliconFlow, schemas.SiliconFlowCN:
 		switch voiceType {
 		case "primary":
 			return "FunAudioLLM/CosyVoice2-0.5B:alex"
