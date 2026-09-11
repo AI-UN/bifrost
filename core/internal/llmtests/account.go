@@ -197,6 +197,7 @@ func (account *ComprehensiveTestAccount) GetConfiguredProviders() ([]schemas.Mod
 		schemas.Databricks,
 		schemas.GithubCopilot,
 		schemas.SiliconFlow,
+		schemas.SiliconFlowCN,
 		ProviderOpenAICustom,
 	}, nil
 }
@@ -483,6 +484,15 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 		return []schemas.Key{
 			{
 				Value:          *schemas.NewSecretVar("env.SILICONFLOW_API_KEY"),
+				Models:         []string{"*"},
+				Weight:         1.0,
+				UseForBatchAPI: schemas.Ptr(true),
+			},
+		}, nil
+	case schemas.SiliconFlowCN:
+		return []schemas.Key{
+			{
+				Value:          *schemas.NewSecretVar("env.SILICONFLOWCN_API_KEY"),
 				Models:         []string{"*"},
 				Weight:         1.0,
 				UseForBatchAPI: schemas.Ptr(true),
@@ -1089,6 +1099,21 @@ func (account *ComprehensiveTestAccount) GetConfigForProvider(providerKey schema
 		return &schemas.ProviderConfig{
 			NetworkConfig: schemas.NetworkConfig{
 				BaseURL:                        os.Getenv("SILICONFLOW_BASE_URL"),
+				DefaultRequestTimeoutInSeconds: 300,
+				StreamIdleTimeoutInSeconds:     120,
+				MaxRetries:                     10,
+				RetryBackoffInitial:            1 * time.Second,
+				RetryBackoffMax:                12 * time.Second,
+			},
+			ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{
+				Concurrency: Concurrency,
+				BufferSize:  10,
+			},
+		}, nil
+	case schemas.SiliconFlowCN:
+		return &schemas.ProviderConfig{
+			NetworkConfig: schemas.NetworkConfig{
+				BaseURL:                        os.Getenv("SILICONFLOWCN_BASE_URL"),
 				DefaultRequestTimeoutInSeconds: 300,
 				StreamIdleTimeoutInSeconds:     120,
 				MaxRetries:                     10,
