@@ -90,6 +90,7 @@ const (
 	MiniMax       ModelProvider = "minimax"
 	BytePlus      ModelProvider = "byteplus"
 	SiliconFlow   ModelProvider = "siliconflow"
+	SiliconFlowCN ModelProvider = "siliconflow-cn"
 )
 
 // SupportedBaseProviders is the list of base providers allowed for custom providers.
@@ -144,6 +145,7 @@ var StandardProviders = []ModelProvider{
 	MiniMax,
 	BytePlus,
 	SiliconFlow,
+	SiliconFlowCN,
 }
 
 // RequestType represents the type of request being made to a provider.
