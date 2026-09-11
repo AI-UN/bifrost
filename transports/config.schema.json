@@ -8779,7 +8779,9 @@
             "fireworks",
             "sarvam",
             "wafer",
-            "typesafe"
+            "typesafe",
+            "zai",
+            "zhipu"
           ],
           "description": "Base provider type to extend"
         },
