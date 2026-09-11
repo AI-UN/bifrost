@@ -3370,6 +3370,17 @@ func (r *idleTimeoutReader) Read(p []byte) (n int, err error) {
 	if n > 0 {
 		r.timer.Reset(r.timeout)
 	}
+	if err == io.EOF && r.ctx != nil {
+		// The upstream body is finished. Record it so ReleaseStreamingResponse skips its
+		// drain: fasthttp's chunked requestStream has no finished flag, so reading it again
+		// past EOF re-enters parseChunkSize and blocks waiting for a chunk header that a
+		// keep-alive connection will never send.
+		//
+		// The key is reserved, and async per-chunk post-hooks hold blockRestrictedWrites
+		// while they run, so this goes through the reserved-write path. A plain SetValue
+		// would be dropped whenever the terminal read races a post-hook.
+		r.ctx.MarkStreamBodyExhausted()
+	}
 	if err != nil && err != io.EOF && r.fired.Load() {
 		return n, ErrStreamIdleTimeout
 	}
