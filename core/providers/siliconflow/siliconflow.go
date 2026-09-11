@@ -20,7 +20,10 @@ import (
 )
 
 // SiliconFlowProvider implements the Provider interface for SiliconFlow's API.
+// A single instance serves exactly one regional service, fixed at construction
+// by its serviceProfile.
 type SiliconFlowProvider struct {
+	profile             serviceProfile        // Immutable regional identity and default origin
 	logger              schemas.Logger        // Logger for provider operations
 	client              *fasthttp.Client      // HTTP client for unary API requests (ReadTimeout bounds overall response)
 	streamingClient     *fasthttp.Client      // HTTP client for streaming API requests (no ReadTimeout; idle governed by NewIdleTimeoutReader)
@@ -29,10 +32,22 @@ type SiliconFlowProvider struct {
 	sendBackRawResponse bool                  // Whether to include raw response in BifrostResponse
 }
 
-// NewSiliconFlowProvider creates a new SiliconFlow provider instance.
-// It initializes the HTTP client with the provided configuration and sets up response pools.
-// The client is configured with timeouts, concurrency limits, and optional proxy settings.
+// NewSiliconFlowProvider creates a provider bound to the international
+// SiliconFlow service at api.siliconflow.com.
 func NewSiliconFlowProvider(config *schemas.ProviderConfig, logger schemas.Logger) (*SiliconFlowProvider, error) {
+	return newProvider(config, logger, internationalProfile)
+}
+
+// NewSiliconFlowCNProvider creates a provider bound to the mainland China
+// SiliconFlow service at api.siliconflow.cn.
+func NewSiliconFlowCNProvider(config *schemas.ProviderConfig, logger schemas.Logger) (*SiliconFlowProvider, error) {
+	return newProvider(config, logger, chinaProfile)
+}
+
+// newProvider initializes the HTTP clients from the provided configuration and
+// binds the instance to one regional service. The clients are configured with
+// timeouts, concurrency limits, and optional proxy settings.
+func newProvider(config *schemas.ProviderConfig, logger schemas.Logger, profile serviceProfile) (*SiliconFlowProvider, error) {
 	config.CheckAndSetDefaults()
 
 	requestTimeout := time.Second * time.Duration(config.NetworkConfig.DefaultRequestTimeoutInSeconds)
@@ -51,15 +66,15 @@ func NewSiliconFlowProvider(config *schemas.ProviderConfig, logger schemas.Logge
 	client = providerUtils.ConfigureDialer(client, config.NetworkConfig.AllowPrivateNetwork)
 	client = providerUtils.ConfigureTLS(client, config.NetworkConfig, logger)
 	streamingClient := providerUtils.BuildStreamingClient(client)
-	// Set default BaseURL if not provided. International region is the
-	// default; the China region is configured via
-	// network_config.base_url: "https://api.siliconflow.cn".
+	// Regional identity is fixed by the profile; base_url only overrides the
+	// origin (proxy, private gateway, compatible deployment).
 	if config.NetworkConfig.BaseURL == "" {
-		config.NetworkConfig.BaseURL = "https://api.siliconflow.com"
+		config.NetworkConfig.BaseURL = profile.defaultBaseURL
 	}
 	config.NetworkConfig.BaseURL = strings.TrimRight(config.NetworkConfig.BaseURL, "/")
 
 	return &SiliconFlowProvider{
+		profile:             profile,
 		logger:              logger,
 		client:              client,
 		streamingClient:     streamingClient,
@@ -69,9 +84,9 @@ func NewSiliconFlowProvider(config *schemas.ProviderConfig, logger schemas.Logge
 	}, nil
 }
 
-// GetProviderKey returns the provider identifier for SiliconFlow.
+// GetProviderKey returns the regional provider identifier this instance serves.
 func (provider *SiliconFlowProvider) GetProviderKey() schemas.ModelProvider {
-	return schemas.SiliconFlow
+	return provider.profile.provider
 }
 
 // ListModels performs a list models request to SiliconFlow's API. SiliconFlow
@@ -174,7 +189,7 @@ func (provider *SiliconFlowProvider) ChatCompletionStream(ctx *schemas.BifrostCo
 		provider.networkConfig.StreamIdleTimeoutInSeconds,
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
-		schemas.SiliconFlow,
+		provider.GetProviderKey(),
 		postHookRunner,
 		nil,
 		nil,
@@ -1095,7 +1110,7 @@ func (provider *SiliconFlowProvider) BatchCreate(ctx *schemas.BifrostContext, ke
 			return nil, providerUtils.NewBifrostOperationError("failed to convert requests to JSONL", err)
 		}
 		uploadResp, bifrostErr := provider.FileUpload(ctx, key, &schemas.BifrostFileUploadRequest{
-			Provider: schemas.SiliconFlow,
+			Provider: provider.GetProviderKey(),
 			File:     jsonlData,
 			Filename: "batch_requests.jsonl",
 			Purpose:  schemas.FilePurposeBatch,

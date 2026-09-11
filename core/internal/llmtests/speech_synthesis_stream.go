@@ -420,7 +420,7 @@ func RunSpeechSynthesisStreamAdvancedTest(t *testing.T, client *bifrost.Bifrost,
 				voices = geminiVoices
 			case schemas.Elevenlabs:
 				voices = elevenlabsVoices
-			case schemas.SiliconFlow:
+			case schemas.SiliconFlow, schemas.SiliconFlowCN:
 				voices = siliconFlowVoices
 			}
 

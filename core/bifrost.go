@@ -53,6 +53,7 @@ import (
 	"github.com/maximhq/bifrost/core/providers/sarvam"
 	"github.com/maximhq/bifrost/core/providers/sgl"
 	"github.com/maximhq/bifrost/core/providers/siliconflow"
+	"github.com/maximhq/bifrost/core/providers/siliconflowcn"
 	"github.com/maximhq/bifrost/core/providers/typesafe"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/providers/vertex"
@@ -5274,6 +5275,8 @@ func (bifrost *Bifrost) createBaseProvider(providerKey schemas.ModelProvider, co
 		return typesafe.NewTypesafeProvider(config, bifrost.logger)
 	case schemas.SiliconFlow:
 		return siliconflow.NewSiliconFlowProvider(config, bifrost.logger)
+	case schemas.SiliconFlowCN:
+		return siliconflowcn.NewProvider(config, bifrost.logger)
 	default:
 		return nil, fmt.Errorf("unsupported provider: %s", targetProviderKey)
 	}
