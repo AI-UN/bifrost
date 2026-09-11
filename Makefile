@@ -614,7 +614,7 @@ test-core: install-gotestsum $(if $(DEBUG),install-delve) ## Run core tests (Usa
 		$(ECHO) "$(YELLOW)Attach your debugger to localhost:2345$(NC)"; \
 	fi; \
 	if [ -n "$(PROVIDER)" ]; then \
-		PROVIDER_TEST_NAME=$$($(ECHO) "$(PROVIDER)" | awk '{print toupper(substr($$0,1,1)) tolower(substr($$0,2))}' | sed 's/openai/OpenAI/i; s/openrouter/OpenRouter/i; s/sgl/SGL/i; s/xai/XAI/i; s/vllm/VLLM/i; s/githubcopilot/GithubCopilot/i'); \
+		PROVIDER_TEST_NAME=$$($(ECHO) "$(PROVIDER)" | awk '{print toupper(substr($$0,1,1)) tolower(substr($$0,2))}' | sed 's/openai/OpenAI/i; s/openrouter/OpenRouter/i; s/sgl/SGL/i; s/xai/XAI/i; s/vllm/VLLM/i; s/githubcopilot/GithubCopilot/i; s/^siliconflowcn$$/SiliconFlowCN/i; s/^siliconflow$$/SiliconFlow/i'); \
 		if [ -n "$(TESTCASE)" ]; then \
 			CLEAN_TESTCASE="$(TESTCASE)"; \
 			CLEAN_TESTCASE=$${CLEAN_TESTCASE#Test$${PROVIDER_TEST_NAME}/}; \
@@ -1908,7 +1908,7 @@ NEWMAN_HTMLEXTRA_VERSION ?= 1.23.1
 # Every provider fork the harness knows how to run. Also the provider set the
 # status table lists, including the deferred cache-parity pass, so it lives in
 # one place rather than being restated per newman invocation.
-HARNESS_PROVIDERS := openai anthropic bedrock gemini vertex azure passthrough openrouter huggingface
+HARNESS_PROVIDERS := openai anthropic bedrock gemini vertex passthrough openrouter huggingface siliconflow siliconflow-cn
 
 # Second parallelism axis. Each provider fork is sharded again by modality class so the run is not
 # bound by one provider's whole sequential item list: openai alone is ~1264 requests, and its
@@ -2066,6 +2066,10 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 		printf '  %s\n' "  vertex:   VERTEX_PROJECT_ID / GOOGLE_LOCATION for project/region, plus gcloud CLI on PATH + authenticated ('gcloud auth login') -"; \
 		printf '  %s\n' "            the Makefile mints a fresh OAuth access token per run (VERTEX_CREDENTIALS in config.json is a service-account key,"; \
 		printf '  %s\n' "            not a bearer token Postman can use directly, so this is the one leg that still needs its own auth step)."; \
+		printf '  %s\n' "  siliconflow / siliconflow-cn: two independent services, so two Bifrost providers and two keys."; \
+		printf '  %s\n' "            SILICONFLOW_API_KEY (api.siliconflow.com) and SILICONFLOWCN_API_KEY (api.siliconflow.cn) go in Bifrost's"; \
+		printf '  %s\n' "            own provider config. Optional model overrides: SILICONFLOW_MODEL -> {{siliconflowModel}}, SILICONFLOWCN_MODEL,"; \
+		printf '  %s\n' "            SILICONFLOWCN_EMBEDDING_MODEL and SILICONFLOWCN_RERANK_MODEL -> the matching {{siliconflowcn*}} variables."; \
 		printf '  %s\n' "  ENV_FILE still overrides any of the above if set - these are just sane defaults from what's already injected."; \
 		printf '  %s\n' "  Skipped cells (provider genuinely can't do it, e.g. OpenAI+PDF, Anthropic+audio/video) are listed in the folder description."; \
 		printf '\n%s\n' "$(CYAN)Cache Parity Matrices$(NC) ('Cross-Cut Rounds 34 + 35', generated - pick 'cache-parity' in the menu or FEATURE=\"cache\")"; \
@@ -2536,6 +2540,10 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 				$${VERTEX_PROJECT_ID:+--env-var "vertexProject=$$VERTEX_PROJECT_ID"} \
 				$${GOOGLE_LOCATION:+--env-var "vertexLocation=$$GOOGLE_LOCATION"} \
 				$${VERTEX_ACCESS_TOKEN_VAL:+--env-var "vertexAccessToken=$$VERTEX_ACCESS_TOKEN_VAL"} \
+				$${SILICONFLOW_MODEL:+--env-var "siliconflowModel=$$SILICONFLOW_MODEL"} \
+				$${SILICONFLOWCN_MODEL:+--env-var "siliconflowcnModel=$$SILICONFLOWCN_MODEL"} \
+				$${SILICONFLOWCN_EMBEDDING_MODEL:+--env-var "siliconflowcnEmbeddingModel=$$SILICONFLOWCN_EMBEDDING_MODEL"} \
+				$${SILICONFLOWCN_RERANK_MODEL:+--env-var "siliconflowcnRerankModel=$$SILICONFLOWCN_RERANK_MODEL"} \
 				$(if $(ENV_FILE),--environment $(ENV_FILE),) \
 				$(if $(FOLDER),--folder "$(FOLDER)",) \
 				--reporters cli,json$$DBVERIFY_REPORTER$$TOKEN_PARITY_REPORTER $$DBVERIFY_ARGS \
@@ -2752,6 +2760,10 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 				$${VERTEX_PROJECT_ID:+--env-var "vertexProject=$$VERTEX_PROJECT_ID"} \
 				$${GOOGLE_LOCATION:+--env-var "vertexLocation=$$GOOGLE_LOCATION"} \
 				$${VERTEX_ACCESS_TOKEN_VAL:+--env-var "vertexAccessToken=$$VERTEX_ACCESS_TOKEN_VAL"} \
+				$${SILICONFLOW_MODEL:+--env-var "siliconflowModel=$$SILICONFLOW_MODEL"} \
+				$${SILICONFLOWCN_MODEL:+--env-var "siliconflowcnModel=$$SILICONFLOWCN_MODEL"} \
+				$${SILICONFLOWCN_EMBEDDING_MODEL:+--env-var "siliconflowcnEmbeddingModel=$$SILICONFLOWCN_EMBEDDING_MODEL"} \
+				$${SILICONFLOWCN_RERANK_MODEL:+--env-var "siliconflowcnRerankModel=$$SILICONFLOWCN_RERANK_MODEL"} \
 				$(if $(ENV_FILE),--environment $(ENV_FILE),) \
 				$(if $(FOLDER),--folder "$(FOLDER)",) \
 				--reporters cli,json,htmlextra$$DBVERIFY_REPORTER$$TOKEN_PARITY_REPORTER $$DBVERIFY_ARGS \
@@ -2800,6 +2812,10 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 				$${VERTEX_PROJECT_ID:+--env-var "vertexProject=$$VERTEX_PROJECT_ID"} \
 				$${GOOGLE_LOCATION:+--env-var "vertexLocation=$$GOOGLE_LOCATION"} \
 				$${VERTEX_ACCESS_TOKEN_VAL:+--env-var "vertexAccessToken=$$VERTEX_ACCESS_TOKEN_VAL"} \
+				$${SILICONFLOW_MODEL:+--env-var "siliconflowModel=$$SILICONFLOW_MODEL"} \
+				$${SILICONFLOWCN_MODEL:+--env-var "siliconflowcnModel=$$SILICONFLOWCN_MODEL"} \
+				$${SILICONFLOWCN_EMBEDDING_MODEL:+--env-var "siliconflowcnEmbeddingModel=$$SILICONFLOWCN_EMBEDDING_MODEL"} \
+				$${SILICONFLOWCN_RERANK_MODEL:+--env-var "siliconflowcnRerankModel=$$SILICONFLOWCN_RERANK_MODEL"} \
 				$(if $(ENV_FILE),--environment $(ENV_FILE),) \
 				--reporters cli,json$$CACHE_PARITY_REPORTER \
 				$${CACHE_PARITY_REPORTER:+--reporter-cache-parity-out "tmp/harness-cache-parity-pass.json"} \
