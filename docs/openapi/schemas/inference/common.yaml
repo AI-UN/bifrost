@@ -40,6 +40,7 @@ ModelProvider:
     - typesafe
     - minimax
     - byteplus
+    - cpa
 
 Fallback:
   type: object
