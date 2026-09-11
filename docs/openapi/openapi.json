@@ -112071,7 +112071,7 @@
       },
       "ModelProvider": {
         "type": "string",
-        "description": "AI model provider identifier",
+        "description": "AI model provider identifier.\n\nRegional services are modelled as independent providers: `siliconflow`\nselects SiliconFlow's international service (api.siliconflow.com) and\n`siliconflow-cn` selects the mainland China service\n(api.siliconflow.cn). They have separate accounts, keys and model\ncatalogues.\n",
         "enum": [
           "anthropic",
           "azure",
@@ -112105,7 +112105,9 @@
           "wafer",
           "databricks",
           "cloudflare",
-          "typesafe"
+          "typesafe",
+          "siliconflow",
+          "siliconflow-cn"
         ]
       },
       "Fallback": {
