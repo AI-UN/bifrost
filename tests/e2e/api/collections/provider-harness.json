@@ -350,6 +350,26 @@
       "key": "vertexLocation",
       "value": "us-central1",
       "type": "string"
+    },
+    {
+      "key": "siliconflowModel",
+      "value": "deepseek-ai/DeepSeek-V3.2",
+      "type": "string"
+    },
+    {
+      "key": "siliconflowcnModel",
+      "value": "deepseek-ai/DeepSeek-V3.2",
+      "type": "string"
+    },
+    {
+      "key": "siliconflowcnEmbeddingModel",
+      "value": "BAAI/bge-large-zh-v1.5",
+      "type": "string"
+    },
+    {
+      "key": "siliconflowcnRerankModel",
+      "value": "BAAI/bge-reranker-v2-m3",
+      "type": "string"
     }
   ],
   "item": [
@@ -145275,6 +145295,328 @@
                 "v1",
                 "files",
                 "{{attachmentsAnthropicFileId}}"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "76. SiliconFlow regional split (two independent services)",
+      "description": "SiliconFlow runs two independent services - an international one and a mainland China one - with separate control planes, accounts, API keys and model catalogues. They are two Bifrost providers, not one provider with a base_url toggle. These cases pin that each prefix reaches its own service and reports its own identity on both the unary and the streaming path, and that China-only model families answer on the China provider.",
+      "item": [
+        {
+          "name": "international chat reports its own routed identity",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Regional identity must survive the whole round trip. SiliconFlow runs two independent",
+                  "// services with separate accounts and keys, so a response attributed to the wrong region",
+                  "// misroutes cost, logs and fallbacks even when the completion itself looks fine.",
+                  "pm.test('routed identity is siliconflow', function () {",
+                  "  var body = (pm.response.text() || '').slice(0, 400);",
+                  "  pm.expect(pm.response.code, 'request failed: ' + body).to.be.below(400);",
+                  "  var p = pm.response.headers.get('x-bifrost-provider');",
+                  "  pm.expect(p, 'x-bifrost-provider header missing: ' + body).to.eql('siliconflow');",
+                  "  var rp = pm.response.headers.get('x-bifrost-routing-info-provider');",
+                  "  pm.expect(rp, 'x-bifrost-routing-info-provider header missing: ' + body).to.eql('siliconflow');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"siliconflow/{{siliconflowModel}}\",\n  \"max_tokens\": 64,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: international.\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "international streaming chat reports its own routed identity",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Streaming is a separate code path (dedicated streaming client, SSE decode), so it needs",
+                  "// its own pin: a unary-only assertion stays green while the streaming leg is misrouted.",
+                  "if (pm.response.code >= 400) { pm.expect.fail('request failed: ' + (pm.response.text() || '').slice(0, 400)); }",
+                  "pm.test('streamed routed identity is siliconflow', function () {",
+                  "  var p = pm.response.headers.get('x-bifrost-provider');",
+                  "  pm.expect(p, 'x-bifrost-provider header missing on stream').to.eql('siliconflow');",
+                  "});",
+                  "pm.test('SSE frames carry incremental deltas and a [DONE] terminator', function () {",
+                  "  var lines = (pm.response.text() || '').split('\\n');",
+                  "  var chunks = 0, sawDelta = false, sawDone = false;",
+                  "  lines.forEach(function (l) {",
+                  "    if (l.indexOf('data: ') !== 0) { return; }",
+                  "    chunks++;",
+                  "    var s = l.slice(6).trim();",
+                  "    if (s === '[DONE]') { sawDone = true; return; }",
+                  "    try { var j = JSON.parse(s); var d = j.choices && j.choices[0] && j.choices[0].delta; if (d && typeof d.content === 'string' && d.content.length) { sawDelta = true; } } catch (e) {}",
+                  "  });",
+                  "  pm.expect(chunks, 'expected > 1 SSE data chunks, got ' + chunks).to.be.above(1);",
+                  "  pm.expect(sawDelta, 'expected at least one incremental content delta').to.be.true;",
+                  "  pm.expect(sawDone, 'expected an SSE [DONE] terminator').to.be.true;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"siliconflow/{{siliconflowModel}}\",\n  \"stream\": true,\n  \"max_tokens\": 128,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Write two short sentences about silicon.\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "china chat reports the china identity, not the international one",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Regional identity must survive the whole round trip. SiliconFlow runs two independent",
+                  "// services with separate accounts and keys, so a response attributed to the wrong region",
+                  "// misroutes cost, logs and fallbacks even when the completion itself looks fine.",
+                  "pm.test('routed identity is siliconflow-cn', function () {",
+                  "  var body = (pm.response.text() || '').slice(0, 400);",
+                  "  pm.expect(pm.response.code, 'request failed: ' + body).to.be.below(400);",
+                  "  var p = pm.response.headers.get('x-bifrost-provider');",
+                  "  pm.expect(p, 'x-bifrost-provider header missing: ' + body).to.eql('siliconflow-cn');",
+                  "  var rp = pm.response.headers.get('x-bifrost-routing-info-provider');",
+                  "  pm.expect(rp, 'x-bifrost-routing-info-provider header missing: ' + body).to.eql('siliconflow-cn');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"siliconflow-cn/{{siliconflowcnModel}}\",\n  \"max_tokens\": 64,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: china.\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "china streaming chat reports the china identity, not the international one",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Streaming is a separate code path (dedicated streaming client, SSE decode), so it needs",
+                  "// its own pin: a unary-only assertion stays green while the streaming leg is misrouted.",
+                  "if (pm.response.code >= 400) { pm.expect.fail('request failed: ' + (pm.response.text() || '').slice(0, 400)); }",
+                  "pm.test('streamed routed identity is siliconflow-cn', function () {",
+                  "  var p = pm.response.headers.get('x-bifrost-provider');",
+                  "  pm.expect(p, 'x-bifrost-provider header missing on stream').to.eql('siliconflow-cn');",
+                  "});",
+                  "pm.test('SSE frames carry incremental deltas and a [DONE] terminator', function () {",
+                  "  var lines = (pm.response.text() || '').split('\\n');",
+                  "  var chunks = 0, sawDelta = false, sawDone = false;",
+                  "  lines.forEach(function (l) {",
+                  "    if (l.indexOf('data: ') !== 0) { return; }",
+                  "    chunks++;",
+                  "    var s = l.slice(6).trim();",
+                  "    if (s === '[DONE]') { sawDone = true; return; }",
+                  "    try { var j = JSON.parse(s); var d = j.choices && j.choices[0] && j.choices[0].delta; if (d && typeof d.content === 'string' && d.content.length) { sawDelta = true; } } catch (e) {}",
+                  "  });",
+                  "  pm.expect(chunks, 'expected > 1 SSE data chunks, got ' + chunks).to.be.above(1);",
+                  "  pm.expect(sawDelta, 'expected at least one incremental content delta').to.be.true;",
+                  "  pm.expect(sawDone, 'expected an SSE [DONE] terminator').to.be.true;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"siliconflow-cn/{{siliconflowcnModel}}\",\n  \"stream\": true,\n  \"max_tokens\": 128,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Write two short sentences about silicon wafers.\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "china embeddings serve a china-only model family",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// BAAI/bge-*-zh is published by the China service only; routing it through the",
+                  "// international provider would fail, so this also proves the regions are distinct.",
+                  "pm.test('china embedding model returns a populated vector', function () {",
+                  "  var body = (pm.response.text() || '').slice(0, 400);",
+                  "  pm.expect(pm.response.code, 'request failed: ' + body).to.be.below(400);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.data, 'no data array: ' + body).to.not.be.empty;",
+                  "  pm.expect(j.data[0].embedding, 'no embedding vector: ' + body).to.not.be.empty;",
+                  "});",
+                  "pm.test('routed identity is the china service', function () {",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-provider')).to.eql('siliconflow-cn');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"siliconflow-cn/{{siliconflowcnEmbeddingModel}}\",\n  \"input\": \"A China-region embedding request.\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/embeddings",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "embeddings"
+              ]
+            }
+          }
+        },
+        {
+          "name": "china rerank normalizes the meta.tokens usage envelope",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The China service reports rerank usage as meta.tokens (plus meta.billed_units) while",
+                  "// the international service reports a top-level tokens object. Bifrost must present one",
+                  "// neutral schema regardless, so a decoder that only understood the international shape",
+                  "// would return ranked results with usage silently dropped.",
+                  "pm.test('rerank ranks documents', function () {",
+                  "  var body = (pm.response.text() || '').slice(0, 400);",
+                  "  pm.expect(pm.response.code, 'request failed: ' + body).to.be.below(400);",
+                  "  var r = pm.response.json().results || [];",
+                  "  pm.expect(r.length, 'no results: ' + body).to.be.above(0);",
+                  "  pm.expect(r[0], 'result must carry an index').to.have.property('index');",
+                  "  pm.expect(r[0], 'expected relevance_score on the wire').to.have.property('relevance_score');",
+                  "  pm.expect(r[0].index, 'the only relevant document must rank first').to.eql(0);",
+                  "});",
+                  "pm.test('china usage envelope is surfaced, not dropped', function () {",
+                  "  var j = pm.response.json();",
+                  "  var u = j.usage || j.meta || {};",
+                  "  var total = u.total_tokens;",
+                  "  if (total === undefined && u.tokens) { total = u.tokens.input_tokens; }",
+                  "  pm.expect(total, 'rerank usage missing: ' + pm.response.text().slice(0, 400)).to.be.above(0);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"siliconflow-cn/{{siliconflowcnRerankModel}}\",\n  \"query\": \"What is the capital of China?\",\n  \"documents\": [\n    \"Beijing is the capital of the People's Republic of China.\",\n    \"Carrots are orange root vegetables rich in beta carotene.\",\n    \"Berlin is the capital of Germany.\"\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/rerank",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "rerank"
               ]
             }
           }
