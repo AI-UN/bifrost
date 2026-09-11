@@ -154,6 +154,8 @@ const PROVIDER_KEYWORDS = {
   runware: ["runware", "runware/"],
   siliconflow: ["siliconflow", "siliconflow.com"],
   "siliconflow-cn": ["siliconflow-cn", "siliconflow.cn"],
+  zai: ["zai/", "z.ai"],
+  zhipu: ["zhipu", "bigmodel.cn"],
 };
 
 // Haystack = item JSON + ancestor folder names. Folder names encode the harness

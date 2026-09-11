@@ -614,7 +614,7 @@ test-core: install-gotestsum $(if $(DEBUG),install-delve) ## Run core tests (Usa
 		$(ECHO) "$(YELLOW)Attach your debugger to localhost:2345$(NC)"; \
 	fi; \
 	if [ -n "$(PROVIDER)" ]; then \
-		PROVIDER_TEST_NAME=$$($(ECHO) "$(PROVIDER)" | awk '{print toupper(substr($$0,1,1)) tolower(substr($$0,2))}' | sed 's/openai/OpenAI/i; s/openrouter/OpenRouter/i; s/sgl/SGL/i; s/xai/XAI/i; s/vllm/VLLM/i; s/githubcopilot/GithubCopilot/i; s/^siliconflowcn$$/SiliconFlowCN/i; s/^siliconflow$$/SiliconFlow/i'); \
+		PROVIDER_TEST_NAME=$$($(ECHO) "$(PROVIDER)" | awk '{print toupper(substr($$0,1,1)) tolower(substr($$0,2))}' | sed 's/openai/OpenAI/i; s/openrouter/OpenRouter/i; s/sgl/SGL/i; s/xai/XAI/i; s/zai/ZAI/i; s/vllm/VLLM/i; s/githubcopilot/GithubCopilot/i; s/^siliconflowcn$$/SiliconFlowCN/i; s/^siliconflow$$/SiliconFlow/i'); \
 		if [ -n "$(TESTCASE)" ]; then \
 			CLEAN_TESTCASE="$(TESTCASE)"; \
 			CLEAN_TESTCASE=$${CLEAN_TESTCASE#Test$${PROVIDER_TEST_NAME}/}; \
@@ -1908,7 +1908,7 @@ NEWMAN_HTMLEXTRA_VERSION ?= 1.23.1
 # Every provider fork the harness knows how to run. Also the provider set the
 # status table lists, including the deferred cache-parity pass, so it lives in
 # one place rather than being restated per newman invocation.
-HARNESS_PROVIDERS := openai anthropic bedrock gemini vertex passthrough openrouter huggingface siliconflow siliconflow-cn
+HARNESS_PROVIDERS := openai anthropic bedrock gemini vertex azure passthrough openrouter huggingface siliconflow siliconflow-cn zai zhipu
 
 # Second parallelism axis. Each provider fork is sharded again by modality class so the run is not
 # bound by one provider's whole sequential item list: openai alone is ~1264 requests, and its
@@ -1979,7 +1979,7 @@ install-newman: ## Install newman + htmlextra reporter if not already installed 
 	@$(USE_NODE); npm list -g newman-reporter-htmlextra > /dev/null 2>&1 || ([ -n "$$CI" ] || $(ECHO) "$(YELLOW)Installing newman-reporter-htmlextra@$(NEWMAN_HTMLEXTRA_VERSION)...$(NC)"; npm install -g newman-reporter-htmlextra@$(NEWMAN_HTMLEXTRA_VERSION))
 	@[ -n "$$CI" ] || $(ECHO) "$(GREEN)Newman + htmlextra are ready$(NC)"
 
-run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost provider-harness Postman collection. HELP=1 prints full parameter docs. Filter via PROVIDER=openai|anthropic|bedrock|gemini|vertex|azure|passthrough|openrouter|huggingface, FEATURE="<kw>" or FEATURE="<kw1>,<kw2>" (AND across substrings; matches request name/URL/body), RERUN_FAILED=1 (re-run only items that failed last run). INCLUDE_PREVIEW=1 to run [PREVIEW]-tagged account/region-scoped cases. SKIP_STREAM_CANCEL=1 skips stream cancellation probes. USE_INFISICAL=1 to source from Infisical (Usage: make run-provider-harness-test [HELP=1] [PROVIDER=anthropic] [FEATURE="web search"] [FEATURE="cross-cut,structured output"] [RERUN_FAILED=1] [INCLUDE_PREVIEW=1] [BASE_URL=...] [FOLDER="..."] [ENV_FILE=...] [VIEWER_PORT=8090] [CI=1])
+run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost provider-harness Postman collection. HELP=1 prints full parameter docs. Filter via PROVIDER=openai|anthropic|bedrock|gemini|vertex|azure|passthrough|openrouter|huggingface|zai|zhipu, FEATURE="<kw>" or FEATURE="<kw1>,<kw2>" (AND across substrings; matches request name/URL/body), RERUN_FAILED=1 (re-run only items that failed last run). INCLUDE_PREVIEW=1 to run [PREVIEW]-tagged account/region-scoped cases. SKIP_STREAM_CANCEL=1 skips stream cancellation probes. USE_INFISICAL=1 to source from Infisical (Usage: make run-provider-harness-test [HELP=1] [PROVIDER=anthropic] [FEATURE="web search"] [FEATURE="cross-cut,structured output"] [RERUN_FAILED=1] [INCLUDE_PREVIEW=1] [BASE_URL=...] [FOLDER="..."] …
 	@if [ -n "$(HELP)" ]; then \
 		printf '\n%s\n' "$(CYAN)run-provider-harness-test - Bifrost provider harness runner$(NC)"; \
 		printf '%s\n\n' "Runs the Bifrost provider-harness Postman collection through newman, with optional filtering."; \
@@ -2057,6 +2057,8 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 		printf '  %-18s %s\n' "USE_INFISICAL=1" "Source secrets from Infisical CLI ('infisical export --path /local --format dotenv') instead of .env."; \
 		printf '  %-18s %s\n' "VERTEX_GCS_BUCKET" "Env-sourced (.env/Infisical): GCS bucket for Vertex file ops (forwarded to Newman as vertexGcsBucket)."; \
 		printf '  %-18s %s\n' "VERTEX_GCS_PREFIX" "Env-sourced: GCS object prefix for Vertex file ops (forwarded as vertexGcsPrefix)."; \
+		printf '  %-18s %s\n' "ZAI_API_KEY"      "Env-sourced Z.AI key; optional ZAI_BASE_URL, ZAI_MODEL, and ZAI_IMAGE_MODEL override collection defaults."; \
+		printf '  %-18s %s\n' "ZHIPU_API_KEY"    "Env-sourced Zhipu AI key; optional ZHIPU_BASE_URL, ZHIPU_MODEL, ZHIPU_EMBEDDING_MODEL, and ZHIPU_RERANK_MODEL override collection defaults."; \
 		printf '\n%s\n' "$(CYAN)Token Parity Matrix$(NC) ('Cross-Cut Round 33', generated - FOLDER or FEATURE=\"token parity\" to target it)"; \
 		printf '  %s\n' "Runs the same 3-round conversation directly against each provider AND through Bifrost, asserts usage lands in the same"; \
 		printf '  %s\n' "range, and writes tmp/harness-token-parity.md. Reuses the SAME env vars tests/integrations/python/config.json already reads"; \
@@ -2534,6 +2536,15 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 				$${OPENAI_API_KEY:+--env-var "openaiKey=$$OPENAI_API_KEY"} \
 				$${ANTHROPIC_API_KEY:+--env-var "anthropicKey=$$ANTHROPIC_API_KEY"} \
 				$${GEMINI_API_KEY:+--env-var "genaiKey=$$GEMINI_API_KEY"} \
+				$${ZAI_API_KEY:+--env-var "zaiKey=$$ZAI_API_KEY"} \
+				$${ZHIPU_API_KEY:+--env-var "zhipuKey=$$ZHIPU_API_KEY"} \
+				$${ZAI_BASE_URL:+--env-var "zaiBaseUrl=$$ZAI_BASE_URL"} \
+				$${ZHIPU_BASE_URL:+--env-var "zhipuBaseUrl=$$ZHIPU_BASE_URL"} \
+				$${ZAI_MODEL:+--env-var "zaiModel=$$ZAI_MODEL"} \
+				$${ZHIPU_MODEL:+--env-var "zhipuModel=$$ZHIPU_MODEL"} \
+				$${ZHIPU_RERANK_MODEL:+--env-var "zhipuRerankModel=$$ZHIPU_RERANK_MODEL"} \
+				$${ZAI_IMAGE_MODEL:+--env-var "zaiImageModel=$$ZAI_IMAGE_MODEL"} \
+				$${ZHIPU_EMBEDDING_MODEL:+--env-var "zhipuEmbeddingModel=$$ZHIPU_EMBEDDING_MODEL"} \
 				$${AWS_ACCESS_KEY_ID:+--env-var "bedrockDirectAccessKeyId=$$AWS_ACCESS_KEY_ID"} \
 				$${AWS_SECRET_ACCESS_KEY:+--env-var "bedrockDirectSecretAccessKey=$$AWS_SECRET_ACCESS_KEY"} \
 				$${AWS_REGION:+--env-var "bedrockDirectRegion=$$AWS_REGION"} \
@@ -2754,6 +2765,15 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 				$${OPENAI_API_KEY:+--env-var "openaiKey=$$OPENAI_API_KEY"} \
 				$${ANTHROPIC_API_KEY:+--env-var "anthropicKey=$$ANTHROPIC_API_KEY"} \
 				$${GEMINI_API_KEY:+--env-var "genaiKey=$$GEMINI_API_KEY"} \
+				$${ZAI_API_KEY:+--env-var "zaiKey=$$ZAI_API_KEY"} \
+				$${ZHIPU_API_KEY:+--env-var "zhipuKey=$$ZHIPU_API_KEY"} \
+				$${ZAI_BASE_URL:+--env-var "zaiBaseUrl=$$ZAI_BASE_URL"} \
+				$${ZHIPU_BASE_URL:+--env-var "zhipuBaseUrl=$$ZHIPU_BASE_URL"} \
+				$${ZAI_MODEL:+--env-var "zaiModel=$$ZAI_MODEL"} \
+				$${ZHIPU_MODEL:+--env-var "zhipuModel=$$ZHIPU_MODEL"} \
+				$${ZHIPU_RERANK_MODEL:+--env-var "zhipuRerankModel=$$ZHIPU_RERANK_MODEL"} \
+				$${ZAI_IMAGE_MODEL:+--env-var "zaiImageModel=$$ZAI_IMAGE_MODEL"} \
+				$${ZHIPU_EMBEDDING_MODEL:+--env-var "zhipuEmbeddingModel=$$ZHIPU_EMBEDDING_MODEL"} \
 				$${AWS_ACCESS_KEY_ID:+--env-var "bedrockDirectAccessKeyId=$$AWS_ACCESS_KEY_ID"} \
 				$${AWS_SECRET_ACCESS_KEY:+--env-var "bedrockDirectSecretAccessKey=$$AWS_SECRET_ACCESS_KEY"} \
 				$${AWS_REGION:+--env-var "bedrockDirectRegion=$$AWS_REGION"} \
@@ -2806,6 +2826,15 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 				$${OPENAI_API_KEY:+--env-var "openaiKey=$$OPENAI_API_KEY"} \
 				$${ANTHROPIC_API_KEY:+--env-var "anthropicKey=$$ANTHROPIC_API_KEY"} \
 				$${GEMINI_API_KEY:+--env-var "genaiKey=$$GEMINI_API_KEY"} \
+				$${ZAI_API_KEY:+--env-var "zaiKey=$$ZAI_API_KEY"} \
+				$${ZHIPU_API_KEY:+--env-var "zhipuKey=$$ZHIPU_API_KEY"} \
+				$${ZAI_BASE_URL:+--env-var "zaiBaseUrl=$$ZAI_BASE_URL"} \
+				$${ZHIPU_BASE_URL:+--env-var "zhipuBaseUrl=$$ZHIPU_BASE_URL"} \
+				$${ZAI_MODEL:+--env-var "zaiModel=$$ZAI_MODEL"} \
+				$${ZHIPU_MODEL:+--env-var "zhipuModel=$$ZHIPU_MODEL"} \
+				$${ZHIPU_RERANK_MODEL:+--env-var "zhipuRerankModel=$$ZHIPU_RERANK_MODEL"} \
+				$${ZAI_IMAGE_MODEL:+--env-var "zaiImageModel=$$ZAI_IMAGE_MODEL"} \
+				$${ZHIPU_EMBEDDING_MODEL:+--env-var "zhipuEmbeddingModel=$$ZHIPU_EMBEDDING_MODEL"} \
 				$${AWS_ACCESS_KEY_ID:+--env-var "bedrockDirectAccessKeyId=$$AWS_ACCESS_KEY_ID"} \
 				$${AWS_SECRET_ACCESS_KEY:+--env-var "bedrockDirectSecretAccessKey=$$AWS_SECRET_ACCESS_KEY"} \
 				$${AWS_REGION:+--env-var "bedrockDirectRegion=$$AWS_REGION"} \

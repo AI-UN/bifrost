@@ -869,6 +869,43 @@ func HandleOpenAIChatCompletionRequest(
 	signer providerUtils.BodySigner,
 	logger schemas.Logger,
 ) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
+	return HandleOpenAIChatCompletionRequestWithConverter(
+		ctx,
+		client,
+		url,
+		request,
+		authHeader,
+		extraHeaders,
+		sendBackRawRequest,
+		sendBackRawResponse,
+		providerName,
+		nil,
+		customResponseHandler,
+		customErrorConverter,
+		signer,
+		logger,
+	)
+}
+
+// HandleOpenAIChatCompletionRequestWithConverter is the unary chat helper for
+// OpenAI-shaped providers whose wire request needs provider-specific conversion.
+// The established helper above delegates here with a nil converter.
+func HandleOpenAIChatCompletionRequestWithConverter(
+	ctx *schemas.BifrostContext,
+	client *fasthttp.Client,
+	url string,
+	request *schemas.BifrostChatRequest,
+	authHeader map[string]string,
+	extraHeaders map[string]string,
+	sendBackRawRequest bool,
+	sendBackRawResponse bool,
+	providerName schemas.ModelProvider,
+	customRequestConverter func(*schemas.BifrostChatRequest) (providerUtils.RequestBodyWithExtraParams, error),
+	customResponseHandler responseHandler[schemas.BifrostChatResponse],
+	customErrorConverter ErrorConverter,
+	signer providerUtils.BodySigner,
+	logger schemas.Logger,
+) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
 	// Create request
 	req := fasthttp.AcquireRequest()
 	resp := fasthttp.AcquireResponse()
@@ -917,6 +954,9 @@ func HandleOpenAIChatCompletionRequest(
 		ctx,
 		request,
 		func() (providerUtils.RequestBodyWithExtraParams, error) {
+			if customRequestConverter != nil {
+				return customRequestConverter(request)
+			}
 			reqBody := ToOpenAIChatRequest(ctx, request)
 			// Resolved here rather than inside the converter, so a failed document fetch surfaces
 			// as itself instead of as a provider 400 about a missing file_id.

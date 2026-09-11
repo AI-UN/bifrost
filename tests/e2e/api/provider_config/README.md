@@ -38,6 +38,8 @@ Ensure the Bifrost server is running and the chosen provider(s) are configured (
 - **Vertex** – Requires `region` in the key config for embeddings and other operations. Set this in Bifrost provider config (project, region, credentials). Embeddings typically require a supported region such as `us-central1`.
 - **Replicate** – Set `replicate_owner` (e.g. via environment or Postman env) when running Replicate tests; otherwise API calls may fail.
 - **SiliconFlow** – Two independent services, configured as two providers. `siliconflow` is the international service and defaults to `https://api.siliconflow.com`; `siliconflow-cn` is the mainland China service and defaults to `https://api.siliconflow.cn`. Each needs its own API key from its own control plane — `network_config.base_url` does not switch regions. Both default to `deepseek-ai/DeepSeek-V3.2` for chat; the China env file uses China-only embedding and rerank models.
+- **Z.AI** – Uses the `ZAI_API_KEY` environment-backed provider key and defaults to `https://api.z.ai/api/paas/v4`; the Postman environment carries chat/response model placeholders only.
+- **Zhipu AI** – Uses the `ZHIPU_API_KEY` environment-backed provider key and defaults to `https://open.bigmodel.cn/api/paas/v4`; `embedding_model` is set to `embedding-3` because Zhipu also exposes embeddings and rerank.
 
 ## Files
 
@@ -63,5 +65,7 @@ All Bifrost providers are included except **sgl** and **ollama** (excluded in `r
 - `bifrost-v1-siliconflow-cn.postman_environment.json`
 - `bifrost-v1-vertex.postman_environment.json`
 - `bifrost-v1-xai.postman_environment.json`
+- `bifrost-v1-zai.postman_environment.json`
+- `bifrost-v1-zhipu.postman_environment.json`
 
 To add a provider, copy an existing env file, rename it to `bifrost-v1-<provider>.postman_environment.json`, and set the `provider` and model values for that provider.
