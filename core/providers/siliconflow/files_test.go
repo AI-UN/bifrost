@@ -18,6 +18,7 @@ import (
 
 func newSFFileBatchVideoTestProvider(baseURL string) *SiliconFlowProvider {
 	return &SiliconFlowProvider{
+		profile: internationalProfile,
 		client: &fasthttp.Client{
 			ReadTimeout:  5 * time.Second,
 			WriteTimeout: 5 * time.Second,
