@@ -492,6 +492,9 @@
         },
         "siliconflow": {
           "$ref": "#/$defs/provider"
+        },
+        "siliconflow-cn": {
+          "$ref": "#/$defs/provider"
         }
       },
       "additionalProperties": true
@@ -2678,7 +2681,8 @@
                         "sgl",
                         "huggingface",
                         "databricks",
-                        "siliconflow"
+                        "siliconflow",
+                        "siliconflow-cn"
                       ]
                     },
                     "embedding_model": {
@@ -8646,7 +8650,8 @@
             "fireworks",
             "sarvam",
             "wafer",
-            "siliconflow"
+            "siliconflow",
+            "siliconflow-cn"
           ],
           "description": "Base provider type to extend"
         },
