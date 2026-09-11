@@ -59,6 +59,7 @@ All Bifrost providers are included except **sgl** and **ollama** (excluded in `r
 - `bifrost-v1-perplexity.postman_environment.json`
 - `bifrost-v1-replicate.postman_environment.json`
 - `bifrost-v1-vertex.postman_environment.json`
+- `bifrost-v1-cpa.postman_environment.json`
 - `bifrost-v1-xai.postman_environment.json`
 
 To add a provider, copy an existing env file, rename it to `bifrost-v1-<provider>.postman_environment.json`, and set the `provider` and model values for that provider.
