@@ -324,6 +324,7 @@ jobs:
             api.anthropic.com:443
             api.cerebras.ai:443
             api.siliconflow.com:443
+            api.siliconflow.cn:443
             api.cohere.ai:443
             api.deepseek.com:443
             api.elevenlabs.io:443
@@ -451,6 +452,7 @@ jobs:
           COHERE_API_KEY: ${{ secrets.COHERE_API_KEY }}
           FIREWORKS_API_KEY: ${{ secrets.FIREWORKS_API_KEY }}
           SILICONFLOW_API_KEY: ${{ secrets.SILICONFLOW_API_KEY }}
+          SILICONFLOWCN_API_KEY: ${{ secrets.SILICONFLOWCN_API_KEY }}
           VERTEX_CREDENTIALS: ${{ secrets.VERTEX_CREDENTIALS }}
           VERTEX_PROJECT_ID: ${{ secrets.VERTEX_PROJECT_ID }}
           VERTEX_GCS_BUCKET: ${{ secrets.VERTEX_GCS_BUCKET }}
@@ -543,6 +545,7 @@ jobs:
             api.anthropic.com:443
             api.cerebras.ai:443
             api.siliconflow.com:443
+            api.siliconflow.cn:443
             api.cohere.ai:443
             api.deepseek.com:443
             api.elevenlabs.io:443
@@ -681,6 +684,7 @@ jobs:
           COHERE_API_KEY: ${{ secrets.COHERE_API_KEY }}
           FIREWORKS_API_KEY: ${{ secrets.FIREWORKS_API_KEY }}
           SILICONFLOW_API_KEY: ${{ secrets.SILICONFLOW_API_KEY }}
+          SILICONFLOWCN_API_KEY: ${{ secrets.SILICONFLOWCN_API_KEY }}
           VERTEX_CREDENTIALS: ${{ secrets.VERTEX_CREDENTIALS }}
           VERTEX_PROJECT_ID: ${{ secrets.VERTEX_PROJECT_ID }}
           VERTEX_GCS_BUCKET: ${{ secrets.VERTEX_GCS_BUCKET }}
@@ -1024,6 +1028,7 @@ jobs:
             api.anthropic.com:443
             api.cerebras.ai:443
             api.siliconflow.com:443
+            api.siliconflow.cn:443
             api.cohere.ai:443
             api.deepseek.com:443
             api.elevenlabs.io:443
@@ -1258,6 +1263,7 @@ jobs:
             _grpc_config.localhost:443
             api.cerebras.ai:443
             api.siliconflow.com:443
+            api.siliconflow.cn:443
             api.cohere.ai:443
             api.deepseek.com:443
             api.elevenlabs.io:443
@@ -1343,6 +1349,7 @@ jobs:
           COHERE_API_KEY: ${{ secrets.COHERE_API_KEY }}
           FIREWORKS_API_KEY: ${{ secrets.FIREWORKS_API_KEY }}
           SILICONFLOW_API_KEY: ${{ secrets.SILICONFLOW_API_KEY }}
+          SILICONFLOWCN_API_KEY: ${{ secrets.SILICONFLOWCN_API_KEY }}
           VERTEX_CREDENTIALS: ${{ secrets.VERTEX_CREDENTIALS }}
           VERTEX_PROJECT_ID: ${{ secrets.VERTEX_PROJECT_ID }}
           VERTEX_GCS_BUCKET: ${{ secrets.VERTEX_GCS_BUCKET }}
@@ -1379,6 +1386,7 @@ jobs:
             _https._tcp.packages.microsoft.com:443
             api.cerebras.ai:443
             api.siliconflow.com:443
+            api.siliconflow.cn:443
             api.cohere.ai:443
             api.deepseek.com:443
             api.elevenlabs.io:443
@@ -1473,6 +1481,7 @@ jobs:
           COHERE_API_KEY: ${{ secrets.COHERE_API_KEY }}
           FIREWORKS_API_KEY: ${{ secrets.FIREWORKS_API_KEY }}
           SILICONFLOW_API_KEY: ${{ secrets.SILICONFLOW_API_KEY }}
+          SILICONFLOWCN_API_KEY: ${{ secrets.SILICONFLOWCN_API_KEY }}
           VERTEX_CREDENTIALS: ${{ secrets.VERTEX_CREDENTIALS }}
           VERTEX_PROJECT_ID: ${{ secrets.VERTEX_PROJECT_ID }}
           VERTEX_GCS_BUCKET: ${{ secrets.VERTEX_GCS_BUCKET }}
@@ -1503,6 +1512,7 @@ jobs:
           allowed-endpoints: >
             api.cerebras.ai:443
             api.siliconflow.com:443
+            api.siliconflow.cn:443
             api.cohere.ai:443
             api.deepseek.com:443
             api.elevenlabs.io:443
@@ -1575,6 +1585,7 @@ jobs:
             api.anthropic.com:443
             api.cerebras.ai:443
             api.siliconflow.com:443
+            api.siliconflow.cn:443
             api.cohere.ai:443
             api.deepseek.com:443
             api.elevenlabs.io:443
@@ -1681,6 +1692,7 @@ jobs:
             api.anthropic.com:443
             api.cerebras.ai:443
             api.siliconflow.com:443
+            api.siliconflow.cn:443
             api.cohere.ai:443
             api.deepseek.com:443
             api.elevenlabs.io:443
@@ -1805,6 +1817,7 @@ jobs:
           ELEVENLABS_API_KEY: ${{ secrets.ELEVENLABS_API_KEY }}
           FIREWORKS_API_KEY: ${{ secrets.FIREWORKS_API_KEY }}
           SILICONFLOW_API_KEY: ${{ secrets.SILICONFLOW_API_KEY }}
+          SILICONFLOWCN_API_KEY: ${{ secrets.SILICONFLOWCN_API_KEY }}
           HUGGING_FACE_API_KEY: ${{ secrets.HUGGING_FACE_API_KEY }}
           XAI_API_KEY: ${{ secrets.XAI_API_KEY }}
           REPLICATE_API_KEY: ${{ secrets.REPLICATE_API_KEY }}
@@ -1857,6 +1870,7 @@ jobs:
             172.38.0.11:5432
             api.cerebras.ai:443
             api.siliconflow.com:443
+            api.siliconflow.cn:443
             api.cohere.ai:443
             api.deepseek.com:443
             api.elevenlabs.io:443
@@ -1955,6 +1969,7 @@ jobs:
             127.0.0.1:8080
             api.cerebras.ai:443
             api.siliconflow.com:443
+            api.siliconflow.cn:443
             api.cohere.ai:443
             api.deepseek.com:443
             api.elevenlabs.io:443
@@ -2058,6 +2073,7 @@ jobs:
             api.anthropic.com:443
             api.cerebras.ai:443
             api.siliconflow.com:443
+            api.siliconflow.cn:443
             api.cohere.ai:443
             api.deepseek.com:443
             api.elevenlabs.io:443
@@ -2160,6 +2176,7 @@ jobs:
           ELEVENLABS_API_KEY: ${{ secrets.ELEVENLABS_API_KEY }}
           FIREWORKS_API_KEY: ${{ secrets.FIREWORKS_API_KEY }}
           SILICONFLOW_API_KEY: ${{ secrets.SILICONFLOW_API_KEY }}
+          SILICONFLOWCN_API_KEY: ${{ secrets.SILICONFLOWCN_API_KEY }}
           HUGGING_FACE_API_KEY: ${{ secrets.HUGGING_FACE_API_KEY }}
           XAI_API_KEY: ${{ secrets.XAI_API_KEY }}
           REPLICATE_API_KEY: ${{ secrets.REPLICATE_API_KEY }}
@@ -2211,6 +2228,7 @@ jobs:
             api.anthropic.com:443
             api.cerebras.ai:443
             api.siliconflow.com:443
+            api.siliconflow.cn:443
             api.cohere.ai:443
             api.deepseek.com:443
             api.elevenlabs.io:443
@@ -2313,6 +2331,7 @@ jobs:
           ELEVENLABS_API_KEY: ${{ secrets.ELEVENLABS_API_KEY }}
           FIREWORKS_API_KEY: ${{ secrets.FIREWORKS_API_KEY }}
           SILICONFLOW_API_KEY: ${{ secrets.SILICONFLOW_API_KEY }}
+          SILICONFLOWCN_API_KEY: ${{ secrets.SILICONFLOWCN_API_KEY }}
           HUGGING_FACE_API_KEY: ${{ secrets.HUGGING_FACE_API_KEY }}
           XAI_API_KEY: ${{ secrets.XAI_API_KEY }}
           REPLICATE_API_KEY: ${{ secrets.REPLICATE_API_KEY }}
@@ -2436,6 +2455,7 @@ jobs:
           COHERE_API_KEY: ${{ secrets.COHERE_API_KEY }}
           FIREWORKS_API_KEY: ${{ secrets.FIREWORKS_API_KEY }}
           SILICONFLOW_API_KEY: ${{ secrets.SILICONFLOW_API_KEY }}
+          SILICONFLOWCN_API_KEY: ${{ secrets.SILICONFLOWCN_API_KEY }}
           VERTEX_CREDENTIALS: ${{ secrets.VERTEX_CREDENTIALS }}
           VERTEX_PROJECT_ID: ${{ secrets.VERTEX_PROJECT_ID }}
           VERTEX_GCS_BUCKET: ${{ secrets.VERTEX_GCS_BUCKET }}
@@ -2558,6 +2578,7 @@ jobs:
           COHERE_API_KEY: ${{ secrets.COHERE_API_KEY }}
           FIREWORKS_API_KEY: ${{ secrets.FIREWORKS_API_KEY }}
           SILICONFLOW_API_KEY: ${{ secrets.SILICONFLOW_API_KEY }}
+          SILICONFLOWCN_API_KEY: ${{ secrets.SILICONFLOWCN_API_KEY }}
           VERTEX_CREDENTIALS: ${{ secrets.VERTEX_CREDENTIALS }}
           VERTEX_PROJECT_ID: ${{ secrets.VERTEX_PROJECT_ID }}
           VERTEX_GCS_BUCKET: ${{ secrets.VERTEX_GCS_BUCKET }}
@@ -2696,6 +2717,7 @@ jobs:
           COHERE_API_KEY: ${{ secrets.COHERE_API_KEY }}
           FIREWORKS_API_KEY: ${{ secrets.FIREWORKS_API_KEY }}
           SILICONFLOW_API_KEY: ${{ secrets.SILICONFLOW_API_KEY }}
+          SILICONFLOWCN_API_KEY: ${{ secrets.SILICONFLOWCN_API_KEY }}
           VERTEX_CREDENTIALS: ${{ secrets.VERTEX_CREDENTIALS }}
           VERTEX_PROJECT_ID: ${{ secrets.VERTEX_PROJECT_ID }}
           VERTEX_GCS_BUCKET: ${{ secrets.VERTEX_GCS_BUCKET }}
