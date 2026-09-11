@@ -76,6 +76,7 @@ jobs:
       COHERE_API_KEY: ${{ secrets.COHERE_API_KEY }}
       FIREWORKS_API_KEY: ${{ secrets.FIREWORKS_API_KEY }}
       SILICONFLOW_API_KEY: ${{ secrets.SILICONFLOW_API_KEY }}
+      SILICONFLOWCN_API_KEY: ${{ secrets.SILICONFLOWCN_API_KEY }}
       VERTEX_CREDENTIALS: ${{ secrets.VERTEX_CREDENTIALS }}
       VERTEX_PROJECT_ID: ${{ secrets.VERTEX_PROJECT_ID }}
       VERTEX_GCS_BUCKET: ${{ secrets.VERTEX_GCS_BUCKET }}
@@ -108,6 +109,7 @@ jobs:
             ark.ap-southeast.bytepluses.com:443
             api.cloudflare.com:443
             api.siliconflow.com:443
+            api.siliconflow.cn:443
             api.cohere.ai:443
             api.deepseek.com:443
             api.elevenlabs.io:443
