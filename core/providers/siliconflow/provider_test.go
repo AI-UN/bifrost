@@ -15,37 +15,60 @@ import (
 
 var _ schemas.Provider = (*SiliconFlowProvider)(nil)
 
-func TestNewSiliconFlowProvider(t *testing.T) {
+func TestSiliconFlowProviderRegionalConstructors(t *testing.T) {
 	tests := []struct {
-		name    string
-		baseURL string
-		wantURL string
+		name         string
+		construct    func(*schemas.ProviderConfig, schemas.Logger) (*SiliconFlowProvider, error)
+		baseURL      string
+		wantURL      string
+		wantProvider schemas.ModelProvider
 	}{
 		{
-			name:    "defaults to international API",
-			wantURL: "https://api.siliconflow.com",
+			name:         "international defaults to the .com origin",
+			construct:    NewSiliconFlowProvider,
+			wantURL:      "https://api.siliconflow.com",
+			wantProvider: schemas.SiliconFlow,
 		},
 		{
-			name:    "trims trailing slashes",
-			baseURL: "https://api.siliconflow.com///",
-			wantURL: "https://api.siliconflow.com",
+			name:         "china defaults to the .cn origin",
+			construct:    NewSiliconFlowCNProvider,
+			wantURL:      "https://api.siliconflow.cn",
+			wantProvider: schemas.SiliconFlowCN,
 		},
 		{
-			name:    "preserves China region override",
-			baseURL: "https://api.siliconflow.cn/",
-			wantURL: "https://api.siliconflow.cn",
+			name:         "international trims trailing slashes",
+			construct:    NewSiliconFlowProvider,
+			baseURL:      "https://api.siliconflow.com///",
+			wantURL:      "https://api.siliconflow.com",
+			wantProvider: schemas.SiliconFlow,
+		},
+		{
+			name:         "china trims trailing slashes",
+			construct:    NewSiliconFlowCNProvider,
+			baseURL:      "https://api.siliconflow.cn/",
+			wantURL:      "https://api.siliconflow.cn",
+			wantProvider: schemas.SiliconFlowCN,
+		},
+		{
+			// base_url points the instance at a proxy or gateway; it never
+			// reclassifies which regional service the provider represents.
+			name:         "base_url override does not change regional identity",
+			construct:    NewSiliconFlowCNProvider,
+			baseURL:      "https://gateway.internal/siliconflow",
+			wantURL:      "https://gateway.internal/siliconflow",
+			wantProvider: schemas.SiliconFlowCN,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			provider, err := NewSiliconFlowProvider(&schemas.ProviderConfig{
+			provider, err := tt.construct(&schemas.ProviderConfig{
 				NetworkConfig: schemas.NetworkConfig{BaseURL: tt.baseURL},
 			}, siliconFlowSpeechTestLogger{})
 			require.NoError(t, err)
 			require.NotNil(t, provider)
 			assert.Equal(t, tt.wantURL, provider.networkConfig.BaseURL)
-			assert.Equal(t, schemas.SiliconFlow, provider.GetProviderKey())
+			assert.Equal(t, tt.wantProvider, provider.GetProviderKey())
 			require.NotNil(t, provider.client)
 			require.NotNil(t, provider.streamingClient)
 			assert.NotSame(t, provider.client, provider.streamingClient)
@@ -179,39 +202,57 @@ func TestSiliconFlowProviderResponsesUsesChatFallback(t *testing.T) {
 }
 
 func TestSiliconFlowProviderUnsupportedOperations(t *testing.T) {
-	provider := &SiliconFlowProvider{}
 	key := schemas.Key{}
-	tests := []struct {
-		name   string
-		invoke func() *schemas.BifrostError
+	regions := []struct {
+		name         string
+		construct    func(*schemas.ProviderConfig, schemas.Logger) (*SiliconFlowProvider, error)
+		wantProvider schemas.ModelProvider
 	}{
-		{name: "TranscriptionStream", invoke: func() *schemas.BifrostError {
-			_, err := provider.TranscriptionStream(nil, nil, nil, key, nil)
-			return err
-		}},
-		{name: "ImageVariation", invoke: func() *schemas.BifrostError { _, err := provider.ImageVariation(nil, key, nil); return err }},
-		{name: "BatchDelete", invoke: func() *schemas.BifrostError { _, err := provider.BatchDelete(nil, nil, nil); return err }},
-		{name: "BatchResults", invoke: func() *schemas.BifrostError { _, err := provider.BatchResults(nil, nil, nil); return err }},
-		{name: "FileRetrieve", invoke: func() *schemas.BifrostError { _, err := provider.FileRetrieve(nil, nil, nil); return err }},
-		{name: "FileDelete", invoke: func() *schemas.BifrostError { _, err := provider.FileDelete(nil, nil, nil); return err }},
-		{name: "FileContent", invoke: func() *schemas.BifrostError { _, err := provider.FileContent(nil, nil, nil); return err }},
-		{name: "VideoList", invoke: func() *schemas.BifrostError { _, err := provider.VideoList(nil, key, nil); return err }},
-		{name: "VideoDelete", invoke: func() *schemas.BifrostError { _, err := provider.VideoDelete(nil, key, nil); return err }},
-		{name: "VideoEdit", invoke: func() *schemas.BifrostError { _, err := provider.VideoEdit(nil, key, nil); return err }},
-		{name: "VideoRemix", invoke: func() *schemas.BifrostError { _, err := provider.VideoRemix(nil, key, nil); return err }},
-		{name: "CountTokens", invoke: func() *schemas.BifrostError { _, err := provider.CountTokens(nil, key, nil); return err }},
-		{name: "OCR", invoke: func() *schemas.BifrostError { _, err := provider.OCR(nil, key, nil); return err }},
-		{name: "Compaction", invoke: func() *schemas.BifrostError { _, err := provider.Compaction(nil, key, nil); return err }},
-		{name: "Passthrough", invoke: func() *schemas.BifrostError { _, err := provider.Passthrough(nil, key, nil); return err }},
-		{name: "CachedContentCreate", invoke: func() *schemas.BifrostError { _, err := provider.CachedContentCreate(nil, key, nil); return err }},
+		{name: "international", construct: NewSiliconFlowProvider, wantProvider: schemas.SiliconFlow},
+		{name: "china", construct: NewSiliconFlowCNProvider, wantProvider: schemas.SiliconFlowCN},
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			bifrostErr := tt.invoke()
-			require.NotNil(t, bifrostErr)
-			require.NotNil(t, bifrostErr.Error)
-			assert.NotEmpty(t, bifrostErr.Error.Message)
+	for _, region := range regions {
+		t.Run(region.name, func(t *testing.T) {
+			provider, err := region.construct(&schemas.ProviderConfig{}, siliconFlowSpeechTestLogger{})
+			require.NoError(t, err)
+
+			tests := []struct {
+				name   string
+				invoke func() *schemas.BifrostError
+			}{
+				{name: "TranscriptionStream", invoke: func() *schemas.BifrostError {
+					_, err := provider.TranscriptionStream(nil, nil, nil, key, nil)
+					return err
+				}},
+				{name: "ImageVariation", invoke: func() *schemas.BifrostError { _, err := provider.ImageVariation(nil, key, nil); return err }},
+				{name: "BatchDelete", invoke: func() *schemas.BifrostError { _, err := provider.BatchDelete(nil, nil, nil); return err }},
+				{name: "BatchResults", invoke: func() *schemas.BifrostError { _, err := provider.BatchResults(nil, nil, nil); return err }},
+				{name: "FileRetrieve", invoke: func() *schemas.BifrostError { _, err := provider.FileRetrieve(nil, nil, nil); return err }},
+				{name: "FileDelete", invoke: func() *schemas.BifrostError { _, err := provider.FileDelete(nil, nil, nil); return err }},
+				{name: "FileContent", invoke: func() *schemas.BifrostError { _, err := provider.FileContent(nil, nil, nil); return err }},
+				{name: "VideoList", invoke: func() *schemas.BifrostError { _, err := provider.VideoList(nil, key, nil); return err }},
+				{name: "VideoDelete", invoke: func() *schemas.BifrostError { _, err := provider.VideoDelete(nil, key, nil); return err }},
+				{name: "VideoEdit", invoke: func() *schemas.BifrostError { _, err := provider.VideoEdit(nil, key, nil); return err }},
+				{name: "VideoRemix", invoke: func() *schemas.BifrostError { _, err := provider.VideoRemix(nil, key, nil); return err }},
+				{name: "CountTokens", invoke: func() *schemas.BifrostError { _, err := provider.CountTokens(nil, key, nil); return err }},
+				{name: "OCR", invoke: func() *schemas.BifrostError { _, err := provider.OCR(nil, key, nil); return err }},
+				{name: "Compaction", invoke: func() *schemas.BifrostError { _, err := provider.Compaction(nil, key, nil); return err }},
+				{name: "Passthrough", invoke: func() *schemas.BifrostError { _, err := provider.Passthrough(nil, key, nil); return err }},
+				{name: "CachedContentCreate", invoke: func() *schemas.BifrostError { _, err := provider.CachedContentCreate(nil, key, nil); return err }},
+			}
+
+			for _, tt := range tests {
+				t.Run(tt.name, func(t *testing.T) {
+					bifrostErr := tt.invoke()
+					require.NotNil(t, bifrostErr)
+					require.NotNil(t, bifrostErr.Error)
+					assert.NotEmpty(t, bifrostErr.Error.Message)
+					// The rejection must name the regional service the caller
+					// actually configured, not a hardcoded sibling.
+					assert.Equal(t, region.wantProvider, bifrostErr.ExtraFields.Provider)
+				})
+			}
 		})
 	}
 }
