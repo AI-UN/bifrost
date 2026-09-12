@@ -76,16 +76,23 @@ This allows you to use a unified chat completion interface across all providers,
 
 ## 3. Responses-to-Chat Conversion
 
-Some providers and models expose chat completions upstream but do not implement native Responses endpoints. LiteLLM compatibility mode automatically handles this by:
+Some providers and models expose chat completions upstream but do not implement native Responses endpoints. This lets a Responses-only client (for example Codex) reach them. LiteLLM compatibility mode handles this by:
 
-1. Checking if the model supports Responses natively (using the model catalog)
-2. If not supported, converting your Responses input to chat completion format
-3. Calling the chat completions endpoint internally
-4. Transforming the response or stream back to Responses format
+1. Checking that the caller speaks the OpenAI Responses wire
+2. Checking if the model supports Responses natively (using the model catalog)
+3. If not supported, converting your Responses input to chat completion format
+4. Calling the chat completions endpoint internally
+5. Transforming the response or stream back to Responses format
 
 <Note>
 **Symmetric Fallback**: The conversion only happens when the model doesn't support Responses natively. If a model has native Responses support, Bifrost uses it directly without any conversion.
 </Note>
+
+<Warning>
+**Scoped to the OpenAI Responses wire.** Anthropic Messages (`/anthropic/v1/messages`) and Gemini GenerateContent (`/genai/v1beta/models/{model}`) are represented internally as Responses requests, but their clients expect native Anthropic or Gemini stream events, not Responses events. This fallback is therefore skipped on those endpoints even when the model catalog lists the model as chat-only — those providers already serve their own protocol natively.
+
+The per-request `x-bf-compat: ["convert_responses_to_chat"]` header overrides this scoping, because it is an explicit opt-in. Be aware that forcing it on a streaming Anthropic or Gemini endpoint produces a degraded stream: the Anthropic converter emits `content_block_delta` events without the surrounding `message_start` / `content_block_start` / `content_block_stop` / `message_stop` lifecycle, and the Gemini endpoint has no chat-chunk converter at all.
+</Warning>
 
 ## How It Works
 
