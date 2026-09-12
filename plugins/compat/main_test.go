@@ -330,3 +330,109 @@ func TestPreLLMHook_DoesNotConvertResponsesStreamWithoutChatStreamSupport(t *tes
 		t.Fatal("did not expect conversion without streaming chat support")
 	}
 }
+
+// chatOnlyResolver models a third-party OpenAI-compatible provider (e.g. Xiaomi Mimo)
+// that serves chat completions but has no Responses API.
+func chatOnlyResolver(schemas.ModelProvider) *schemas.CustomProviderConfig {
+	return &schemas.CustomProviderConfig{
+		BaseProviderType: schemas.OpenAI,
+		AllowedRequests: &schemas.AllowedRequests{
+			ChatCompletion:       true,
+			ChatCompletionStream: true,
+		},
+	}
+}
+
+// The fallback relies on the provider re-assembling Responses events. Anthropic Messages
+// and Gemini GenerateContent arrive as ResponsesRequest too, but their routes cannot render
+// chat chunks, so only callers on the OpenAI Responses wire may be downgraded.
+func TestPreLLMHook_ResponsesToChatFallbackIsScopedToOpenAIWire(t *testing.T) {
+	for _, tc := range []struct {
+		integration string
+		wantConvert bool
+	}{
+		{integration: "", wantConvert: true},
+		{integration: "openai", wantConvert: true},
+		{integration: "anthropic", wantConvert: false},
+		{integration: "genai", wantConvert: false},
+		{integration: "bedrock", wantConvert: false},
+		{integration: "cohere", wantConvert: false},
+	} {
+		for _, requestType := range []schemas.RequestType{schemas.ResponsesRequest, schemas.ResponsesStreamRequest} {
+			t.Run(tc.integration+"/"+string(requestType), func(t *testing.T) {
+				plugin, err := Init(Config{ConvertResponsesToChat: true}, nil, nil, chatOnlyResolver)
+				if err != nil {
+					t.Fatalf("Init returned error: %v", err)
+				}
+
+				ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+				if tc.integration != "" {
+					ctx.SetValue(schemas.BifrostContextKeyIntegrationType, tc.integration)
+				}
+
+				if _, _, err = plugin.PreLLMHook(ctx, &schemas.BifrostRequest{
+					RequestType:      requestType,
+					ResponsesRequest: &schemas.BifrostResponsesRequest{Provider: "xiaomi", Model: "mimo-v2.5-pro"},
+				}); err != nil {
+					t.Fatalf("PreLLMHook returned error: %v", err)
+				}
+
+				changeType, converted := ctx.Value(schemas.BifrostContextKeyChangeRequestType).(schemas.RequestType)
+				if converted != tc.wantConvert {
+					t.Fatalf("converted = %v, want %v", converted, tc.wantConvert)
+				}
+				if converted && changeType != schemas.ChatCompletionRequest {
+					t.Fatalf("change request type = %q, want %q", changeType, schemas.ChatCompletionRequest)
+				}
+			})
+		}
+	}
+}
+
+// x-bf-compat is a deliberate per-request opt-in, so it overrides the wire scoping.
+func TestPreLLMHook_ResponsesToChatOverrideBypassesWireScoping(t *testing.T) {
+	plugin, err := Init(Config{}, nil, nil, chatOnlyResolver)
+	if err != nil {
+		t.Fatalf("Init returned error: %v", err)
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyIntegrationType, "anthropic")
+	ctx.SetValue(schemas.BifrostContextKeyCompatConvertResponsesToChat, true)
+
+	if _, _, err = plugin.PreLLMHook(ctx, &schemas.BifrostRequest{
+		RequestType:      schemas.ResponsesStreamRequest,
+		ResponsesRequest: &schemas.BifrostResponsesRequest{Provider: "xiaomi", Model: "mimo-v2.5-pro"},
+	}); err != nil {
+		t.Fatalf("PreLLMHook returned error: %v", err)
+	}
+
+	if _, ok := ctx.Value(schemas.BifrostContextKeyChangeRequestType).(schemas.RequestType); !ok {
+		t.Fatal("expected the explicit x-bf-compat override to force conversion")
+	}
+}
+
+// Azure DeepSeek reaches chat completions through a provider that re-assembles Responses
+// events (openai.HandleOpenAIChatCompletionStreaming), so it is intentionally not scoped
+// to the OpenAI wire — Claude Code on /anthropic/v1/messages still needs its reasoning.
+func TestPreLLMHook_AzureDeepSeekConvertsOnAnthropicWire(t *testing.T) {
+	plugin, err := Init(Config{AzureDeepseek: true}, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("Init returned error: %v", err)
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyIntegrationType, "anthropic")
+	ctx.SetValue(schemas.BifrostContextKeyUserAgent, "claude-cli/1.0.0")
+
+	if _, _, err = plugin.PreLLMHook(ctx, &schemas.BifrostRequest{
+		RequestType:      schemas.ResponsesStreamRequest,
+		ResponsesRequest: &schemas.BifrostResponsesRequest{Provider: schemas.Azure, Model: "deepseek-r1"},
+	}); err != nil {
+		t.Fatalf("PreLLMHook returned error: %v", err)
+	}
+
+	if _, ok := ctx.Value(schemas.BifrostContextKeyChangeRequestType).(schemas.RequestType); !ok {
+		t.Fatal("expected Azure DeepSeek to still convert for coding harnesses")
+	}
+}

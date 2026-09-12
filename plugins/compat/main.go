@@ -160,13 +160,18 @@ func (p *CompatPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 	// Responses → chat completion conversion
 	if (convertResponsesToChatOverrideEnabled && convertResponsesToChatOverride) || p.config.ConvertResponsesToChat {
 		if (modifiedReq.RequestType == schemas.ResponsesRequest || modifiedReq.RequestType == schemas.ResponsesStreamRequest) && modifiedReq.ResponsesRequest != nil {
-			currentType := schemas.ResponsesRequest
-			targetType := schemas.ChatCompletionRequest
-			if modifiedReq.RequestType == schemas.ResponsesStreamRequest {
-				currentType = schemas.ResponsesStreamRequest
-				targetType = schemas.ChatCompletionStreamRequest
+			forced := convertResponsesToChatOverrideEnabled && convertResponsesToChatOverride
+			if !forced && !responsesToChatFallbackApplies(ctx) {
+				ctx.Log(schemas.LogLevelDebug, "skipping responses -> chat completions fallback: caller does not speak the OpenAI Responses wire")
+			} else {
+				currentType := schemas.ResponsesRequest
+				targetType := schemas.ChatCompletionRequest
+				if modifiedReq.RequestType == schemas.ResponsesStreamRequest {
+					currentType = schemas.ResponsesStreamRequest
+					targetType = schemas.ChatCompletionStreamRequest
+				}
+				p.markForConversion(ctx, modifiedReq.ResponsesRequest.Provider, modifiedReq.ResponsesRequest.Model, currentType, targetType, schemas.ChatCompletionRequest, forced)
 			}
-			p.markForConversion(ctx, modifiedReq.ResponsesRequest.Provider, modifiedReq.ResponsesRequest.Model, currentType, targetType, schemas.ChatCompletionRequest, convertResponsesToChatOverrideEnabled && convertResponsesToChatOverride)
 		}
 	}
 
@@ -248,6 +253,23 @@ func (p *CompatPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 // Cleanup performs plugin cleanup.
 func (p *CompatPlugin) Cleanup() error {
 	return nil
+}
+
+// integrationTypeOpenAI mirrors integrations.RouteConfigTypeOpenAI, duplicated as a
+// literal because the transport imports this plugin, not the other way round.
+const integrationTypeOpenAI = "openai"
+
+// responsesToChatFallbackApplies reports whether the caller's wire survives downgrading
+// its Responses request to chat completions. Core leaves the chat -> Responses re-assembly
+// to the provider, so only callers on the OpenAI Responses wire get a usable stream back.
+// Anthropic Messages and Gemini GenerateContent are internally ResponsesRequest too, but
+// their routes cannot render chat chunks. An absent value means a direct Go SDK caller.
+func responsesToChatFallbackApplies(ctx *schemas.BifrostContext) bool {
+	integration, ok := ctx.Value(schemas.BifrostContextKeyIntegrationType).(string)
+	if !ok || integration == "" {
+		return true
+	}
+	return integration == integrationTypeOpenAI
 }
 
 // markForConversion checks if the model supports the current request type; if not, mark for conversion.
