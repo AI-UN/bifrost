@@ -385,6 +385,7 @@ func TestClearCtxForFallback(t *testing.T) {
 		schemas.BifrostContextKeyAPIKeyName,
 		schemas.BifrostContextKeyGovernanceIncludeOnlyKeys,
 		schemas.BifrostContextKeyChangeRequestType,
+		schemas.BifrostContextKeyIsResponsesToChatCompletionFallback,
 		schemas.BifrostContextKeyAttemptTrail,
 		schemas.BifrostContextKeyStreamEndIndicator,
 		schemas.BifrostContextKeyConnectionClosed,
