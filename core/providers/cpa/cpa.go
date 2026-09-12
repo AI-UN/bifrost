@@ -17,7 +17,7 @@ import (
 // comment for why this is one provider rather than three.
 type CPAProvider struct {
 	logger    schemas.Logger
-	openai    schemas.Provider
+	openai    *openai.OpenAIProvider
 	anthropic schemas.Provider
 	gemini    schemas.Provider
 }
