@@ -145280,6 +145280,146 @@
           }
         }
       ]
+    },
+    {
+      "name": "76. Native wire scoping for the responses->chat fallback (native-wire-responses-chat)",
+      "description": "The compat plugin's convert_responses_to_chat fallback downgrades a Responses request to chat completions. Core does not convert the stream back itself: handleProviderStreamRequest sets BifrostContextKeyIsResponsesToChatCompletionFallback and calls ChatCompletionStream, leaving re-assembly to the provider. Only openai.HandleOpenAIChatCompletionStreaming did that, so anthropic and gemini emitted raw chat chunks on a downgraded stream.\n\nThat matters because the datasheet lists essentially every Claude and Gemini row as mode:chat with no /v1/responses, so the fallback fires on ordinary models. Anthropic Messages and Gemini GenerateContent are both represented internally as ResponsesRequest, so a downgraded request reached the native routes as chat chunks: the Anthropic route rendered them through ToAnthropicChatStreamResponse, which emits content_block_delta with no message_start / content_block_start / content_block_stop / message_stop, and the GenAI route has no chat stream converter at all, so the transport logged a warning and dropped every chunk after the HTTP 200 had already been committed - an empty stream the client waits on forever.\n\nCompat now scopes the automatic fallback to the OpenAI Responses wire, so these cases force it with the targeted x-bf-compat header to keep exercising the conversion. Both models are chat-only in the datasheet, so markForConversion really fires rather than passing vacuously.",
+      "item": [
+        {
+          "name": "anthropic/claude-haiku-4-5 /anthropic/v1/messages forced responses->chat streams a complete Messages lifecycle - native-wire-responses-chat",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('anthropic: forced responses->chat keeps the full Anthropic SSE lifecycle - native-wire-responses-chat', function () {",
+                  "  if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "  var raw = pm.response.text() || '';",
+                  "  pm.expect(pm.response.code, 'failed: ' + raw.slice(0, 400)).to.be.below(400);",
+                  "  var events = [];",
+                  "  raw.split('\\n').forEach(function (line) {",
+                  "    var t = line.trim();",
+                  "    if (t.indexOf('event:') === 0) { events.push(t.slice(6).trim()); }",
+                  "  });",
+                  "  pm.expect(events.length, 'a downgraded stream must still reach the client: ' + raw.slice(0, 400)).to.be.above(0);",
+                  "  ['message_start', 'content_block_start', 'content_block_delta', 'content_block_stop', 'message_stop'].forEach(function (want) {",
+                  "    pm.expect(events, 'missing ' + want + '; the chat fallback was not re-assembled into Responses events').to.include(want);",
+                  "  });",
+                  "  pm.expect(events[0], 'a Messages stream must open on message_start').to.equal('message_start');",
+                  "  pm.expect(events[events.length - 1], 'a Messages stream must terminate on message_stop').to.equal('message_stop');",
+                  "  pm.expect(raw, 'the terminal message_delta must carry usage or the request cannot be costed').to.include('output_tokens');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              },
+              {
+                "key": "x-bf-compat",
+                "value": "[\"convert_responses_to_chat\"]"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"anthropic/claude-haiku-4-5\",\"max_tokens\":64,\"stream\":true,\"messages\":[{\"role\":\"user\",\"content\":\"Count from 1 to 5.\"}]}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "gemini/gemini-2.5-flash :streamGenerateContent forced responses->chat still streams candidates - native-wire-responses-chat",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('genai: forced responses->chat does not silently empty the stream - native-wire-responses-chat', function () {",
+                  "  if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "  var raw = pm.response.text() || '';",
+                  "  pm.expect(pm.response.code, 'failed: ' + raw.slice(0, 400)).to.be.below(400);",
+                  "  pm.expect(raw.trim().length, 'the GenAI route has no chat chunk converter, so an un-re-assembled fallback drops every chunk and returns an empty 200').to.be.above(0);",
+                  "  pm.expect(raw, 'expected Gemini candidates in the stream: ' + raw.slice(0, 400)).to.include('candidates');",
+                  "  var text = '';",
+                  "  raw.split('\\n').forEach(function (line) {",
+                  "    var t = line.trim();",
+                  "    if (t.indexOf('data:') !== 0) { return; }",
+                  "    var payload = t.slice(5).trim();",
+                  "    if (!payload || payload === '[DONE]') { return; }",
+                  "    var parsed;",
+                  "    try { parsed = JSON.parse(payload); } catch (e) { return; }",
+                  "    var candidates = parsed.candidates || [];",
+                  "    if (!candidates.length || !candidates[0].content) { return; }",
+                  "    var parts = candidates[0].content.parts || [];",
+                  "    parts.forEach(function (p) {",
+                  "      if (typeof p.text === 'string') { text += p.text; }",
+                  "    });",
+                  "  });",
+                  "  pm.expect(text.length, 'the re-assembled stream carried no model text: ' + raw.slice(0, 400)).to.be.above(0);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-compat",
+                "value": "[\"convert_responses_to_chat\"]"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"contents\": [{ \"parts\": [{ \"text\": \"Count from 1 to 5.\" }] }]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/genai/v1beta/models/gemini/gemini-2.5-flash:streamGenerateContent?alt=sse",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai",
+                "v1beta",
+                "models",
+                "gemini",
+                "gemini-2.5-flash:streamGenerateContent"
+              ],
+              "query": [
+                {
+                  "key": "alt",
+                  "value": "sse"
+                }
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }
