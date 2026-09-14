@@ -161,10 +161,11 @@ func TestRewriteAnthropicRawRequestBodyRejectsDuplicateKeys(t *testing.T) {
 		t.Fatal("rewriteAnthropicRawRequestBody() error = nil, want duplicate-key error")
 	}
 }
-// Anthropic Messages is represented internally as a Responses request, but compat fallback
-// may execute it through a chat-only custom provider. The transport must therefore accept
-// chat stream chunks as well as Responses stream chunks; otherwise handleStreaming calls a
-// nil converter and panics after the HTTP 200 has already been committed.
+
+// Anthropic Messages is represented internally as a Responses request. Compat no longer
+// downgrades it to chat completions on its own, but an explicit x-bf-compat opt-in still
+// can, so this route must keep a non-nil chat converter: a nil one makes handleStreaming
+// drop every chunk after the HTTP 200 has already been committed.
 func TestAnthropicMessagesRouteConvertsCompatChatStream(t *testing.T) {
 	routes := createAnthropicMessagesRouteConfig("/anthropic", nil)
 	if len(routes) == 0 || routes[0].StreamConfig == nil {
