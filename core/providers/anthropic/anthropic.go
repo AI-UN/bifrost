@@ -999,6 +999,9 @@ func HandleAnthropicChatCompletionStreaming(
 		// True once message_stop arrives — Anthropic's only completion signal.
 		sawTerminalEvent := false
 
+		responsesFallback := providerUtils.NewResponsesStreamFallback(ctx)
+		defer responsesFallback.Release()
+
 		for {
 			// If context was cancelled/timed out, let defer handle it
 			if ctx.Err() != nil {
@@ -1190,6 +1193,13 @@ func HandleAnthropicChatCompletionStreaming(
 							response.ExtraFields.RawResponse = eventData
 						}
 
+						if responsesFallback.Active() {
+							if !responsesFallback.Send(ctx, postHookRunner, response, responseChan, logger, postHookSpanFinalizer, false) {
+								return
+							}
+							continue
+						}
+
 						providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, response, nil, nil, nil, nil), responseChan, postHookSpanFinalizer)
 						continue
 					}
@@ -1234,7 +1244,13 @@ func HandleAnthropicChatCompletionStreaming(
 					response.ExtraFields.RawResponse = eventData
 				}
 
-				providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, response, nil, nil, nil, nil), responseChan, postHookSpanFinalizer)
+				if responsesFallback.Active() {
+					if !responsesFallback.Send(ctx, postHookRunner, response, responseChan, logger, postHookSpanFinalizer, false) {
+						return
+					}
+				} else {
+					providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, response, nil, nil, nil, nil), responseChan, postHookSpanFinalizer)
+				}
 			}
 			if isLastChunk {
 				sawTerminalEvent = true
@@ -1286,6 +1302,10 @@ func HandleAnthropicChatCompletionStreaming(
 			providerUtils.ParseAndSetRawRequest(&response.ExtraFields, jsonBody)
 		}
 		response.ExtraFields.Latency = time.Since(startTime).Milliseconds()
+		if responsesFallback.Active() {
+			responsesFallback.Send(ctx, postHookRunner, response, responseChan, logger, postHookSpanFinalizer, true)
+			return
+		}
 		ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 		providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, response, nil, nil, nil, nil), responseChan, postHookSpanFinalizer)
 	}()
