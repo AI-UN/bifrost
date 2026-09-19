@@ -27146,3 +27146,55 @@ func TestAgentGrantsFromConfigFile_NewKeyUnknownAgent(t *testing.T) {
 		assert.Empty(t, vk.AgentGrants)
 	}
 }
+
+func TestLoadClientConfig_PreservesResponsesToChatWhenFileOmitsSetting(t *testing.T) {
+	initTestLogger()
+	store := NewMockConfigStore()
+	store.clientConfig = &configstore.ClientConfig{
+		Compat: configstore.CompatConfig{
+			ConvertResponsesToChat: true,
+		},
+		ConfigHash: "stored-config-hash",
+	}
+
+	var configData ConfigData
+	require.NoError(t, json.Unmarshal([]byte(`{
+		"client": {
+			"compat": {
+				"convert_text_to_chat": false
+			}
+		}
+	}`), &configData))
+
+	config := &Config{ConfigStore: store}
+	require.NoError(t, loadClientConfig(context.Background(), config, &configData))
+
+	require.True(t, config.ClientConfig.Compat.ConvertResponsesToChat)
+	require.True(t, store.clientConfig.Compat.ConvertResponsesToChat)
+}
+
+func TestLoadClientConfig_AppliesExplicitResponsesToChatSetting(t *testing.T) {
+	initTestLogger()
+	store := NewMockConfigStore()
+	store.clientConfig = &configstore.ClientConfig{
+		Compat: configstore.CompatConfig{
+			ConvertResponsesToChat: true,
+		},
+		ConfigHash: "stored-config-hash",
+	}
+
+	var configData ConfigData
+	require.NoError(t, json.Unmarshal([]byte(`{
+		"client": {
+			"compat": {
+				"convert_responses_to_chat": false
+			}
+		}
+	}`), &configData))
+
+	config := &Config{ConfigStore: store}
+	require.NoError(t, loadClientConfig(context.Background(), config, &configData))
+
+	require.False(t, config.ClientConfig.Compat.ConvertResponsesToChat)
+	require.False(t, store.clientConfig.Compat.ConvertResponsesToChat)
+}
