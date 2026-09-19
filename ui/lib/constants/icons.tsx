@@ -921,6 +921,7 @@ export const ProviderIcons = {
 				className={className}
 			/>
 		);
+	},
 	cpa: ({ size = "md", className = "" }: IconProps) => {
 		const resolvedSize = resolveSize(size);
 
