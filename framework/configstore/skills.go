@@ -400,7 +400,7 @@ func (s *RDBConfigStore) BumpAllSkillsVersion(ctx context.Context, bump string) 
 	default:
 		return "", fmt.Errorf("unsupported all-skills version bump %q", bump)
 	}
-	if err := s.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	if err := s.dbForContext(ctx).Transaction(func(tx *gorm.DB) error {
 		return bumpAllSkillsVersionTx(ctx, tx, bumpType, false)
 	}); err != nil {
 		return "", err
@@ -604,7 +604,7 @@ func (s *RDBConfigStore) CreateSkill(ctx context.Context, skill *tables.TableSki
 	}
 	var objectWrites []pendingSkillObjectWrite
 	var firstSkill bool
-	if err := s.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	if err := s.dbForContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var existing tables.TableSkill
 		if err := tx.First(&existing, "name = ?", skill.Name).Error; err == nil {
 			return fmt.Errorf("skill name %q already exists", skill.Name)
@@ -641,10 +641,10 @@ func (s *RDBConfigStore) CreateSkill(ctx context.Context, skill *tables.TableSki
 	}); err != nil {
 		return err
 	}
-	if err := runPendingSkillObjectWrites(ctx, s.DB().WithContext(ctx), objectStore, objectWrites, true, skill.ID, ""); err != nil {
+	if err := runPendingSkillObjectWrites(ctx, s.dbForContext(ctx), objectStore, objectWrites, true, skill.ID, ""); err != nil {
 		return err
 	}
-	if err := s.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	if err := s.dbForContext(ctx).Transaction(func(tx *gorm.DB) error {
 		return bumpAllSkillsVersionTx(ctx, tx, allSkillsVersionBumpMinor, firstSkill)
 	}); err != nil {
 		return fmt.Errorf("skill %q was created successfully but all-skills version could not be bumped; manually bump all-skills version with a minor bump to publish this create: %w", skill.Name, err)
@@ -783,7 +783,7 @@ func (s *RDBConfigStore) UpdateSkill(ctx context.Context, skill *tables.TableSki
 	var objectWrites []pendingSkillObjectWrite
 	var versionID string
 	var existingLatestVersion string
-	if err := s.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	if err := s.dbForContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var existing tables.TableSkill
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&existing, "id = ?", skill.ID).Error; err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -841,7 +841,7 @@ func (s *RDBConfigStore) UpdateSkill(ctx context.Context, skill *tables.TableSki
 
 	// Phase 2: Upload objects to the store. On failure, delete the version row
 	// as compensation — the skill still serves its previous version safely.
-	if err := runPendingSkillObjectWrites(ctx, s.DB().WithContext(ctx), objectStore, objectWrites, false, skill.ID, versionID); err != nil {
+	if err := runPendingSkillObjectWrites(ctx, s.dbForContext(ctx), objectStore, objectWrites, false, skill.ID, versionID); err != nil {
 		return err
 	}
 
@@ -854,7 +854,7 @@ func (s *RDBConfigStore) UpdateSkill(ctx context.Context, skill *tables.TableSki
 	// If this fails, the skill continues serving its previous version safely.
 	// The new version row and its objects remain intact so the caller can
 	// retry serving (e.g. via shift-version) without re-uploading.
-	if err := s.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	if err := s.dbForContext(ctx).Transaction(func(tx *gorm.DB) error {
 		skill.LatestVersion = version
 		result := tx.Model(&tables.TableSkill{}).
 			Where("id = ?", skill.ID).
@@ -880,7 +880,7 @@ func (s *RDBConfigStore) UpdateSkill(ctx context.Context, skill *tables.TableSki
 // DeleteSkill deletes a skill, cleaning up object-store files across ALL versions.
 func (s *RDBConfigStore) DeleteSkill(ctx context.Context, id string, objectStore objectstore.ObjectStore) error {
 	var keys []string
-	if err := s.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	if err := s.dbForContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var skill tables.TableSkill
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&skill, "id = ?", id).Error; err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -1144,7 +1144,7 @@ func ExtractSkillFieldsFromFrontmatter(frontmatter tables.SkillJSONMap) SkillFro
 // ShiftSkillVersion shifts a skill to serve a previously-saved version.
 // Files already exist on the target version; only the skill row fields and latest_version pointer change.
 func (s *RDBConfigStore) ShiftSkillVersion(ctx context.Context, skillID string, targetVersion string, objectStore objectstore.ObjectStore) error {
-	return s.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	return s.dbForContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var skill tables.TableSkill
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&skill, "id = ?", skillID).Error; err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -1200,13 +1200,13 @@ func (s *RDBConfigStore) CreateSkillFileBlob(ctx context.Context, blob *tables.T
 	if blob.ID == "" {
 		blob.ID = uuid.NewString()
 	}
-	return s.DB().WithContext(ctx).Create(blob).Error
+	return s.dbForContext(ctx).Create(blob).Error
 }
 
 // UpdateSkillConfigHash sets the config_hash on a skill row so config reconciliation
 // can detect subsequent no-change restarts without re-running UpdateSkill.
 func (s *RDBConfigStore) UpdateSkillConfigHash(ctx context.Context, skillID string, configHash string) error {
-	return s.DB().WithContext(ctx).
+	return s.dbForContext(ctx).
 		Model(&tables.TableSkill{}).
 		Where("id = ?", skillID).
 		Update("config_hash", configHash).Error
@@ -1217,14 +1217,14 @@ const SkillOrphanCleanupGracePeriod = 24 * time.Hour
 // CleanupOrphanSkillFileBlobs deletes DB fallback blobs not referenced by any skill file.
 // When force is false, a 24-hour grace period protects freshly uploaded pending blobs.
 func (s *RDBConfigStore) CleanupOrphanSkillFileBlobs(ctx context.Context, force bool) (int64, error) {
-	query := s.DB().WithContext(ctx)
+	query := s.dbForContext(ctx)
 	if !force {
 		cutoff := time.Now().Add(-SkillOrphanCleanupGracePeriod)
 		query = query.Where("created_at < ?", cutoff)
 	}
 	result := query.
 		Where("NOT EXISTS (?)",
-			s.DB().Model(&tables.TableSkillFile{}).
+			s.dbForContext(ctx).Model(&tables.TableSkillFile{}).
 				Select("1").
 				Where("skill_files.blob_id = skill_file_blobs.id"),
 		).

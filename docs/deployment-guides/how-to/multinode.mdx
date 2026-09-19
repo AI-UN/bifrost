@@ -1,444 +1,255 @@
 ---
-title: "Multinode Deployment"
-description: "Deploy multiple Bifrost nodes with shared configuration for high availability in OSS deployments"
+title: "Multinode Deployment (Fork)"
+description: "Deploy this Bifrost OSS fork with PostgreSQL-backed runtime configuration synchronization"
 icon: "layer-group"
 ---
 
 ## Overview
 
-Running multiple Bifrost nodes provides high availability, load distribution, and fault tolerance for your AI gateway. This guide covers the recommended approach for deploying multiple Bifrost nodes in OSS deployments.
+This fork of Bifrost OSS supports active-active multinode deployments with a shared PostgreSQL `config_store`. Every node can serve inference traffic and accept configuration changes. PostgreSQL is the authoritative runtime configuration source, while each node keeps a local in-memory snapshot for fast request processing.
+
+Configuration changes made through the Web UI or management API are committed with a global revision. Other nodes poll that revision and apply the latest database snapshot without requiring a restart.
 
 <Warning>
-  Running multiple OSS Bifrost nodes with a Postgres backend is not supported.
-  
-  Here is the short technical explanation:
-  
-  - Bifrost is designed to keep all critical information in memory, including provider configs, API keys, budgets, usage, and traffic distribution.
-  - Once a node is initialized, it does not read this information back from the database.
-  - In the Enterprise version, we use a slightly modified version of RAFT to synchronize this state in real time across nodes, while the database acts only as a dumb store.
-  - Based on our current view, OSS is sufficient for startups and medium-scale teams, and can easily handle around 3,000–5,000 RPS on a single instance.
-  - If you need high availability and enterprise capabilities such as real-time synchronization, the Enterprise plan is the right fit. 
-  - And yes, that is part of how we draw the OSS vs Enterprise line 💰.
+  This multinode configuration synchronization is a fork-specific extension. It is not part of the upstream Bifrost OSS release and should not be interpreted as an upstream-supported capability.
 </Warning>
 
-### OSS vs Enterprise
+<Info>
+  The nodes are peers. There is no permanent leader, writer node, or follower role.
+</Info>
 
-| Aspect | OSS Approach | Enterprise Approach |
-|--------|--------------|---------------------|
-| **Configuration Source** | Shared `config.json` file | Database with P2P sync |
-| **Sync Mechanism** | File sharing (ConfigMap, volumes) | Gossip protocol (real-time) |
-| **Config Updates** | Modify file + restart nodes | UI/API with automatic propagation |
+## Supported synchronization
 
----
+The fork synchronization layer covers configuration definitions that affect the gateway runtime:
 
-## How It Works
+- Providers and provider keys
+- Client, authentication, proxy, and header-filter configuration
+- Governance entities and routing rules
+- Plugins
+- MCP client definitions and virtual-key assignments
+- Feature flags
+- Prompt and skill definitions
+- Framework and model-catalog synchronization settings
 
-All configuration in Bifrost is loaded into memory at startup. For OSS multinode deployments, the recommended approach is to use `config.json` **without** `config_store` enabled.
+The following data remains operational state and does not increment the configuration revision:
 
-### `config.json` as Single Source of Truth
-
-When you deploy without `config_store`:
-
-- **No database involved** - `config.json` is the only configuration source
-- **Shared file** - All nodes read from the same `config.json` file
-- **Identical configuration** - Since the source is shared, all nodes automatically have the same configuration
-- **No sync needed** - The shared file itself ensures consistency
-
-<Frame>
-<img src="/media/oss-multinode.png" alt="OSS multi-node setup" />
-</Frame>
----
-
-## Why not to use `config_store` for Multinode OSS?
-
-Using `config_store` (database-backed configuration) with multiple nodes in OSS creates a **synchronization problem**:
-
-1. **Config changes are local** - When you update configuration via the UI or API, it updates the database and the in-memory config on that specific node only
-2. **No propagation mechanism** - Other nodes don't know about the change; they keep their existing in-memory configuration
-3. **Nodes become out of sync** - Different nodes end up with different configurations
-4. **Restart required** - You'd have to restart all nodes after every config change to bring them back in sync
-
-This defeats the purpose of having database-backed configuration with real-time updates.
+- Budget and rate-limit usage counters
+- Provider and key health status
+- OAuth tokens, sessions, temporary tokens, and per-user credentials
+- Background jobs and remote catalog synchronization state
 
 <Warning>
-Without P2P clustering (Enterprise feature), there's no mechanism to notify other nodes of configuration changes. For OSS multinode deployments, use the shared `config.json` approach instead.
+  This fork's configuration synchronization does not provide cluster-wide, strongly consistent budget or rate-limit accounting. Each node still tracks request usage locally. Upstream Enterprise clustering remains the appropriate option when global usage enforcement and real-time distributed runtime state are required.
 </Warning>
 
-### Enterprise Solution
-
-Bifrost Enterprise includes **P2P clustering** with gossip protocol that automatically syncs configuration changes across all nodes in real-time. See the [Clustering documentation](/enterprise/clustering) for details.
+Some process-level settings still require a restart, including listener/TLS configuration, the `config_store` connection itself, and storage backend replacement.
 
 ---
 
-## Setting Up Multinode OSS Deployment
+## How synchronization works
 
-### Example config.json
+```mermaid
+graph LR
+  A[Node A management API] -->|CAS transaction| P[(PostgreSQL config_store)]
+  B[Node B management API] -->|CAS transaction| P
+  C[Node C management API] -->|CAS transaction| P
+  P -->|revision polling| A
+  P -->|revision polling| B
+  P -->|revision polling| C
+```
 
-Create a `config.json` **without** `config_store` or `logs_store`:
+1. A configuration mutation includes the revision that the caller last read.
+2. PostgreSQL commits the configuration rows and increments the global revision in one transaction.
+3. A stale mutation is rejected with `409 Conflict` instead of silently overwriting another administrator's change.
+4. The node that accepted the write applies the committed configuration locally.
+5. Other nodes detect the new revision within the polling interval and reconcile directly to the latest snapshot.
+6. A node becomes ready only after its initial database snapshot is loaded and validated.
 
-<Note>
-If you use PostgreSQL for `logs_store`, ensure the target database is UTF8 encoded. See [PostgreSQL UTF8 Requirement](../../quickstart/gateway/setting-up#postgresql-utf8-requirement).
-</Note>
+Nodes can skip intermediate revisions after downtime because synchronization is state-based. They read and apply the latest committed snapshot rather than replaying every historical mutation.
+
+---
+
+## Configure PostgreSQL as the authority
+
+All nodes must use `source_of_truth: "config_store"` and connect to the same PostgreSQL database.
 
 ```json
 {
   "$schema": "https://www.getbifrost.ai/schema",
-  "client": {
-    "drop_excess_requests": false,
-    "enable_logging": false    
-  },
+  "source_of_truth": "config_store",
+  "encryption_key": "env.BIFROST_ENCRYPTION_KEY",
   "config_store": {
-    "enabled": false
+    "enabled": true,
+    "type": "postgres",
+    "config": {
+      "host": "env.PG_HOST",
+      "port": "5432",
+      "user": "env.PG_USER",
+      "password": "env.PG_PASSWORD",
+      "db_name": "bifrost",
+      "ssl_mode": "require"
+    }
   },
   "logs_store": {
     "enabled": true,
     "type": "postgres",
-    "config": {...}
-  },
-  "providers": {
-    "openai": {
-      "keys": [
-        {
-          "name": "openai-primary",
-          "value": "env.OPENAI_API_KEY",
-          "models": ["gpt-4o", "gpt-4o-mini"],
-          "weight": 1.0
-        }
-      ]
-    },
-    "anthropic": {
-      "keys": [
-        {
-          "name": "anthropic-primary",
-          "value": "env.ANTHROPIC_API_KEY",
-          "models": ["claude-sonnet-4-20250514", "claude-3-5-haiku-20241022"],
-          "weight": 1.0
-        }
-      ]
+    "config": {
+      "host": "env.PG_HOST",
+      "port": "5432",
+      "user": "env.PG_USER",
+      "password": "env.PG_PASSWORD",
+      "db_name": "bifrost_logs",
+      "ssl_mode": "require"
     }
   }
 }
 ```
 
+When `source_of_truth` is `config_store`:
+
+- `config.json` is bootstrap-only.
+- Runtime sections such as `providers`, `governance`, `plugins`, and `mcp` are ignored in the file.
+- Provider environment auto-detection is disabled.
+- PostgreSQL is required; SQLite is rejected.
+
+Every node must use the same encryption key. Nodes must also have the same Bifrost version and access to the same custom plugin binaries.
+
+---
+
+## Helm deployment
+
+Set the chart to use PostgreSQL and the database-authoritative source mode:
+
+```yaml
+replicaCount: 3
+
+bifrost:
+  sourceOfTruth: config_store
+  encryptionKeySecret:
+    name: bifrost-encryption
+    key: encryption-key
+
+storage:
+  mode: postgres
+  configStore:
+    enabled: true
+    type: postgres
+  logsStore:
+    enabled: true
+    type: postgres
+
+postgresql:
+  external:
+    enabled: true
+    host: postgres.example.internal
+    port: "5432"
+    database: bifrost
+    username: bifrost
+    existingSecret: bifrost-postgres
+    existingSecretPasswordKey: password
+```
+
+The chart uses separate probes:
+
+- `GET /health` for liveness and backing-store health
+- `GET /ready` for traffic readiness after the initial configuration snapshot is applied
+
 <Note>
-Notice `config_store` is disabled. This ensures all configuration comes from the file only.
+  Keep the readiness probe on `/ready`. Using `/health` can route traffic to a newly started node before its provider, governance, plugin, and MCP state is available.
 </Note>
 
-### Kubernetes Deployment
-
-Use a ConfigMap to share the same configuration across all pods:
-
-```yaml
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: bifrost-config
-  namespace: default
-data:
-  config.json: |
-    {
-      "$schema": "https://www.getbifrost.ai/schema",
-      "client": {
-        "drop_excess_requests": false,
-        "enable_logging": false        
-      },
-      "config_store": {
-        "enabled": false
-      },
-      "logs_store": {
-        "enabled": true,
-        "type": "postgres",
-        "config": {...}
-      },
-      "providers": {
-        "openai": {
-          "keys": [
-            {
-              "name": "openai-primary",
-              "value": "env.OPENAI_API_KEY",
-              "models": ["gpt-4o", "gpt-4o-mini"],
-              "weight": 1.0
-            }
-          ]
-        }
-      }
-    }
 ---
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: bifrost
-  namespace: default
-spec:
-  replicas: 3
-  selector:
-    matchLabels:
-      app: bifrost
-  template:
-    metadata:
-      labels:
-        app: bifrost
-    spec:
-      containers:
-      - name: bifrost
-        image: maximhq/bifrost:latest
-        ports:
-        - containerPort: 8080
-          name: http
-        env:
-        - name: OPENAI_API_KEY
-          valueFrom:
-            secretKeyRef:
-              name: provider-secrets
-              key: openai-api-key
-        volumeMounts:
-        - name: config
-          mountPath: /app
-          readOnly: true
-        resources:
-          requests:
-            cpu: 250m
-            memory: 256Mi
-          limits:
-            cpu: 1000m
-            memory: 1Gi
-        livenessProbe:
-          httpGet:
-            path: /health
-            port: 8080
-          initialDelaySeconds: 10
-          periodSeconds: 10
-        readinessProbe:
-          httpGet:
-            path: /health
-            port: 8080
-          initialDelaySeconds: 5
-          periodSeconds: 5
-      volumes:
-      - name: config
-        configMap:
-          name: bifrost-config
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: bifrost
-  namespace: default
-spec:
-  type: LoadBalancer
-  selector:
-    app: bifrost
-  ports:
-  - port: 80
-    targetPort: 8080
-    protocol: TCP
-    name: http
-```
 
-### Docker Compose
+## Configuration revision API
 
-Share the configuration using a bind mount:
-
-```yaml
-version: '3.8'
-
-services:
-  nginx:
-    image: nginx:alpine
-    ports:
-      - "80:80"
-    volumes:
-      - ./nginx.conf:/etc/nginx/nginx.conf:ro
-    depends_on:
-      - bifrost-1
-      - bifrost-2
-      - bifrost-3
-
-  bifrost-1:
-    image: maximhq/bifrost:latest
-    environment:
-      - OPENAI_API_KEY=${OPENAI_API_KEY}
-      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
-    volumes:
-      - ./config.json:/app/config.json:ro
-    expose:
-      - "8080"
-
-  bifrost-2:
-    image: maximhq/bifrost:latest
-    environment:
-      - OPENAI_API_KEY=${OPENAI_API_KEY}
-      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
-    volumes:
-      - ./config.json:/app/config.json:ro
-    expose:
-      - "8080"
-
-  bifrost-3:
-    image: maximhq/bifrost:latest
-    environment:
-      - OPENAI_API_KEY=${OPENAI_API_KEY}
-      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
-    volumes:
-      - ./config.json:/app/config.json:ro
-    expose:
-      - "8080"
-```
-
-**nginx.conf** for load balancing:
-
-```nginx
-events {
-    worker_connections 1024;
-}
-
-http {
-    upstream bifrost {
-        least_conn;
-        server bifrost-1:8080;
-        server bifrost-2:8080;
-        server bifrost-3:8080;
-    }
-
-    server {
-        listen 80;
-
-        location / {
-            proxy_pass http://bifrost;
-            proxy_set_header Host $host;
-            proxy_set_header X-Real-IP $remote_addr;
-            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-            proxy_connect_timeout 60s;
-            proxy_send_timeout 60s;
-            proxy_read_timeout 60s;
-        }
-
-        location /health {
-            access_log off;
-            return 200 "healthy\n";
-        }
-    }
-}
-```
-
-### Bare Metal / VM Deployment
-
-For bare metal or VM deployments, distribute the configuration file using:
-
-- **NFS mount** - Mount a shared NFS directory containing `config.json`
-- **rsync** - Sync the config file from a central location to all nodes
-- **Configuration management** - Use Ansible, Chef, or Puppet to deploy identical configs
-
-Example with rsync:
+The Bifrost Web UI manages revisions automatically. Direct API clients should read the current revision before sending a configuration mutation.
 
 ```bash
-# On config server - push to all nodes
-for node in node1 node2 node3; do
-  rsync -avz /etc/bifrost/config.json $node:/etc/bifrost/config.json
-done
-
-# Restart nodes after config update
-for node in node1 node2 node3; do
-  ssh $node "systemctl restart bifrost"
-done
+curl -i http://localhost:8080/api/config/revision
 ```
 
----
+Example response:
 
-## Updating Configuration
-
-To update configuration in a multinode OSS deployment:
-
-1. **Modify the shared `config.json` file**
-   - Update the ConfigMap (Kubernetes)
-   - Edit the shared file (Docker Compose / bare metal)
-
-2. **Restart the nodes**
-   - Rolling restart is supported - nodes can be restarted one at a time
-   - Each node picks up the new configuration on startup
-
-### Kubernetes Rolling Restart
-
-```bash
-# Update ConfigMap
-kubectl apply -f configmap.yaml
-
-# Trigger rolling restart
-kubectl rollout restart deployment/bifrost
-
-# Watch the rollout
-kubectl rollout status deployment/bifrost
+```http
+HTTP/1.1 200 OK
+ETag: "42"
+X-Bifrost-Config-Revision: 42
+Content-Type: application/json
 ```
-
-### Docker Compose Restart
-
-```bash
-# After updating config.json
-docker-compose restart bifrost-1
-docker-compose restart bifrost-2
-docker-compose restart bifrost-3
-```
-
----
-
-## Best Practices
-
-### Use Environment Variables for Secrets
-
-Never put API keys directly in `config.json`. Use the `env.` prefix to reference environment variables:
 
 ```json
 {
-  "providers": {
-    "openai": {
-      "keys": [
-        {
-          "value": "env.OPENAI_API_KEY"
-        }
-      ]
-    }
-  }
+  "revision": 42
 }
 ```
 
-Then provide the actual keys via environment variables or Kubernetes secrets.
+Pass the revision through `If-Match`:
 
-### Load Balancer Configuration
-
-Always put a load balancer in front of your Bifrost nodes:
-
-- **Kubernetes**: Use a Service with `type: LoadBalancer` or an Ingress
-- **Docker/VMs**: Use nginx, HAProxy, or a cloud load balancer
-
-### Health Checks
-
-Configure health checks to ensure traffic only goes to healthy nodes:
-
-- **Liveness endpoint**: `GET /health`
-- **Readiness endpoint**: `GET /health`
-
-### Resource Allocation
-
-For production deployments:
-
-```yaml
-resources:
-  requests:
-    cpu: 500m
-    memory: 512Mi
-  limits:
-    cpu: 2000m
-    memory: 2Gi
+```bash
+curl -X POST http://localhost:8080/api/providers \
+  -H "Content-Type: application/json" \
+  -H "If-Match: 42" \
+  -d '{
+    "provider": "openai"
+  }'
 ```
+
+Successful mutations return the new revision in `ETag` and `X-Bifrost-Config-Revision`.
+
+| Status | Meaning |
+|---|---|
+| `200` / `201` | Database commit and local runtime apply succeeded |
+| `202` | Database commit succeeded, but local runtime apply is pending and will be retried |
+| `409` | The supplied revision is stale; fetch the latest state before retrying |
+| `428` | `If-Match` was not supplied for a synchronized configuration mutation |
+
+Do not automatically replay a `409` response with a new revision. Refresh the affected configuration first so an administrator can resolve the concurrent change.
 
 ---
 
-## Summary
+## Operational requirements
 
-| Scenario | Recommendation |
-|----------|----------------|
-| Single node | Use `config_store` for UI access |
-| Multinode OSS | Use shared `config.json` without `config_store` |
-| Multinode Enterprise | Use P2P clustering with `config_store` |
+### Load balancing
 
-For OSS multinode deployments, the shared `config.json` approach provides a simple, reliable way to keep all nodes in sync without the complexity of database synchronization.
+Place a load balancer or Kubernetes Service in front of all nodes. Every ready node can serve inference and management traffic.
+
+### PostgreSQL availability
+
+The gateway continues serving with its last successfully applied in-memory snapshot during a temporary polling failure. Configuration writes and new-node startup require PostgreSQL availability.
+
+### Startup coordination
+
+Nodes coordinate initial database hydration with a renewable distributed lock. This prevents simultaneous empty-database initialization from overwriting singleton or seed configuration.
+
+### Monitoring
+
+Monitor these signals:
+
+- `/ready` failures during startup
+- Configuration revision conflicts (`409`)
+- Committed-but-pending responses (`202`)
+- Config sync worker errors or repeated reconcile failures
+- PostgreSQL connection health and latency
+
+---
+
+## Static-file alternative
+
+A shared static `config.json` with `config_store.enabled: false` remains supported. This approach is useful for fully declarative deployments where every configuration change already triggers a rolling restart.
+
+Use PostgreSQL `config_store` synchronization when operators need to manage providers, keys, routing, plugins, or MCP clients through the Web UI or API without restarting every gateway node.
+
+---
+
+## Fork and Enterprise comparison
+
+| Capability | Fork OSS PostgreSQL sync | Upstream Enterprise clustering |
+|---|---|---|
+| Gateway topology | Active-active peers | Active-active peers |
+| Configuration persistence | PostgreSQL | PostgreSQL |
+| Configuration propagation | Revision polling and snapshot reconciliation | Real-time cluster synchronization |
+| Concurrent writes | Global revision CAS | Cluster-coordinated writes |
+| Global budget/rate-limit usage | Not provided | Supported |
+| Runtime operational-state synchronization | Limited to configuration definitions | Supported |
+
+See [Enterprise Clustering](/enterprise/clustering) when the deployment requires globally coordinated usage, traffic distribution, or operational runtime state.

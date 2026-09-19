@@ -4,16 +4,21 @@ description: "How config.json, the config store, split mode, and authoritative f
 icon: "shuffle"
 ---
 
-Bifrost can use `config.json` in two different ways:
+Bifrost can use `config.json` in three different ways:
 
 - As the only runtime configuration source, with `config_store.enabled: false`.
 - As a declarative bootstrap and reconciliation source for a SQLite or PostgreSQL config store.
+- As bootstrap-only input while PostgreSQL is authoritative for this fork's synchronized OSS multinode runtime configuration.
 
-That distinction matters at startup. Bifrost uses `source_of_truth` and per-section reconciliation metadata, including `config_hash` for many config rows, to decide when file-backed configuration should preserve DB edits, update stored values, or prune DB-only rows.
+The selected `source_of_truth` controls whether file sections participate in startup reconciliation or are ignored after bootstrap.
 
 <Note>
 `config_hash` is auto-managed. Do not set it manually in `config.json` or API payloads.
 </Note>
+
+<Warning>
+`source_of_truth: "config_store"` is a fork-specific extension and is not available in the upstream Bifrost OSS release.
+</Warning>
 
 ---
 
@@ -25,6 +30,7 @@ That distinction matters at startup. Bifrost uses `source_of_truth` and per-sect
 | `config.json` with `config_store` omitted | Default SQLite `config.db` in app-dir | Enabled | File sections are reconciled into SQLite, then DB state is used at runtime |
 | `config.json` with `config_store.enabled: true` | Explicit SQLite or PostgreSQL | Enabled | File sections are reconciled into the configured store, then DB state is used at runtime |
 | `config.json` with `config_store.enabled: false` | Disabled | Unavailable for config-backed surfaces | File is loaded into memory at startup; changes require restart |
+| `source_of_truth: "config_store"` *(fork only)* | PostgreSQL | Enabled with revision CAS | File runtime sections are ignored; every node loads and follows the shared database snapshot |
 
 `source_of_truth` only affects DB-backed reconciliation. In file-only mode there is no config store to reconcile against, so `config.json` is naturally the runtime source.
 
@@ -76,6 +82,34 @@ This is useful for stricter GitOps setups where the DB should converge back to t
 
 ---
 
+## config_store as Source of Truth (Fork)
+
+This fork can use PostgreSQL as the runtime authority for an active-active OSS multinode deployment:
+
+```json
+{
+  "source_of_truth": "config_store",
+  "config_store": {
+    "enabled": true,
+    "type": "postgres",
+    "config": {
+      "host": "env.PG_HOST",
+      "port": "5432",
+      "user": "env.PG_USER",
+      "password": "env.PG_PASSWORD",
+      "db_name": "bifrost",
+      "ssl_mode": "require"
+    }
+  }
+}
+```
+
+In this mode, `config.json` is bootstrap-only. Runtime sections such as `providers`, `governance`, `plugins`, and `mcp` are ignored in the file. Configuration writes use a global PostgreSQL revision and propagate to every node through snapshot reconciliation.
+
+See [Multinode Deployment](/deployment-guides/how-to/multinode) for deployment requirements, API conflict handling, and capability boundaries.
+
+---
+
 ## Missing vs Empty Sections
 
 In split mode, missing sections are left alone. Authoritative mode is stricter: a missing section is not the same as an empty section.
@@ -112,6 +146,7 @@ Before using `source_of_truth: "config.json"` in production, check whether your 
 | Interactive single-node gateway | Omit `config.json`, or use `config.json` with a config store and default `split` mode |
 | Bootstrap from file, then allow UI/API edits | DB-backed config store, explicit or default, with `source_of_truth: "split"` |
 | Strict GitOps over selected sections | DB-backed config store, explicit or default, plus `source_of_truth: "config.json"` and only the sections you intend to own |
-| File-only OSS multinode deployment | `config_store.enabled: false` with a shared `config.json` |
+| Active-active OSS multinode with runtime UI/API edits *(fork only)* | Shared PostgreSQL config store plus `source_of_truth: "config_store"` |
+| File-only upstream OSS multinode with rolling restarts | `config_store.enabled: false` with a shared `config.json` |
 
-For DB-backed deployments, prefer `split` unless you explicitly want restarts to revert UI/API changes back to `config.json`.
+For single-node DB-backed deployments, prefer `split` unless you explicitly want file authority. In this fork, active-active OSS multinode deployments can use PostgreSQL with `source_of_truth: "config_store"`; upstream OSS does not include this mode.
