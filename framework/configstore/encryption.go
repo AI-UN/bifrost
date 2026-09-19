@@ -64,7 +64,7 @@ func encryptClaimedRows[T any, ID any](ctx context.Context, s *RDBConfigStore, i
 			defer wg.Done()
 			sem <- struct{}{}
 			defer func() { <-sem }()
-			errs[i] = s.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+			errs[i] = s.dbForContext(ctx).Transaction(func(tx *gorm.DB) error {
 				var row []T
 				if err := lockRow(tx).Where(where, encryptionStatusPlainText, ids[i]).
 					Limit(1).Find(&row).Error; err != nil {
@@ -189,7 +189,7 @@ func (s *RDBConfigStore) encryptPlaintextKeys(ctx context.Context) (int, error) 
 		// every secret column, and a stored vault ref resolves over the
 		// network — work the claim below would then repeat.
 		var ids []uint
-		if err := s.DB().WithContext(ctx).
+		if err := s.dbForContext(ctx).
 			Model(&tables.TableKey{}).
 			Where("(encryption_status = ? OR encryption_status IS NULL OR encryption_status = '') AND id > ?", encryptionStatusPlainText, cursor).
 			Order("id").
@@ -221,7 +221,7 @@ func (s *RDBConfigStore) encryptPlaintextVirtualKeys(ctx context.Context) (int, 
 		// every secret column, and a stored vault ref resolves over the
 		// network — work the claim below would then repeat.
 		var ids []string
-		if err := s.DB().WithContext(ctx).
+		if err := s.dbForContext(ctx).
 			Model(&tables.TableVirtualKey{}).
 			Where("(encryption_status = ? OR encryption_status IS NULL OR encryption_status = '') AND value != '' AND id > ?", encryptionStatusPlainText, cursor).
 			Order("id").
@@ -253,7 +253,7 @@ func (s *RDBConfigStore) encryptPlaintextSessions(ctx context.Context) (int, err
 		// every secret column, and a stored vault ref resolves over the
 		// network — work the claim below would then repeat.
 		var ids []int
-		if err := s.DB().WithContext(ctx).
+		if err := s.dbForContext(ctx).
 			Model(&tables.SessionsTable{}).
 			Where("(encryption_status = ? OR encryption_status IS NULL OR encryption_status = '') AND token != '' AND id > ?", encryptionStatusPlainText, cursor).
 			Order("id").
@@ -285,7 +285,7 @@ func (s *RDBConfigStore) encryptPlaintextTempTokens(ctx context.Context) (int, e
 		// every secret column, and a stored vault ref resolves over the
 		// network — work the claim below would then repeat.
 		var ids []string
-		if err := s.DB().WithContext(ctx).
+		if err := s.dbForContext(ctx).
 			Model(&tables.TempToken{}).
 			Where("(encryption_status = ? OR encryption_status IS NULL OR encryption_status = '') AND token != '' AND id > ?", encryptionStatusPlainText, cursor).
 			Order("id").
@@ -317,7 +317,7 @@ func (s *RDBConfigStore) encryptPlaintextOAuthTokens(ctx context.Context) (int, 
 		// every secret column, and a stored vault ref resolves over the
 		// network — work the claim below would then repeat.
 		var ids []string
-		if err := s.DB().WithContext(ctx).
+		if err := s.dbForContext(ctx).
 			Model(&tables.TableMCPOauthToken{}).
 			Where("(encryption_status = ? OR encryption_status IS NULL OR encryption_status = '') AND id > ?", encryptionStatusPlainText, cursor).
 			Order("id").
@@ -353,7 +353,7 @@ func (s *RDBConfigStore) encryptPlaintextOAuthConfigs(ctx context.Context) (int,
 		// every secret column, and a stored vault ref resolves over the
 		// network — work the claim below would then repeat.
 		var ids []string
-		if err := s.DB().WithContext(ctx).
+		if err := s.dbForContext(ctx).
 			Model(&tables.TableOauthConfig{}).
 			Where("(encryption_status = ? OR encryption_status IS NULL OR encryption_status = '') AND client_secret != '' AND id > ?", encryptionStatusPlainText, cursor).
 			Order("id").
@@ -385,7 +385,7 @@ func (s *RDBConfigStore) encryptPlaintextMCPClients(ctx context.Context) (int, e
 		// every secret column, and a stored vault ref resolves over the
 		// network — work the claim below would then repeat.
 		var ids []uint
-		if err := s.DB().WithContext(ctx).
+		if err := s.dbForContext(ctx).
 			Model(&tables.TableMCPClient{}).
 			Where("(encryption_status = ? OR encryption_status IS NULL OR encryption_status = '') AND id > ?", encryptionStatusPlainText, cursor).
 			Order("id").
@@ -418,7 +418,7 @@ func (s *RDBConfigStore) encryptPlaintextProviderProxies(ctx context.Context) (i
 		// every secret column, and a stored vault ref resolves over the
 		// network — work the claim below would then repeat.
 		var ids []uint
-		if err := s.DB().WithContext(ctx).
+		if err := s.dbForContext(ctx).
 			Model(&tables.TableProvider{}).
 			Where("(encryption_status = ? OR encryption_status IS NULL OR encryption_status = '') AND proxy_config_json != '' AND proxy_config_json IS NOT NULL AND id > ?", encryptionStatusPlainText, cursor).
 			Order("id").
@@ -451,7 +451,7 @@ func (s *RDBConfigStore) encryptPlaintextVectorStoreConfigs(ctx context.Context)
 		// every secret column, and a stored vault ref resolves over the
 		// network — work the claim below would then repeat.
 		var ids []uint
-		if err := s.DB().WithContext(ctx).
+		if err := s.dbForContext(ctx).
 			Model(&tables.TableVectorStoreConfig{}).
 			Where("(encryption_status = ? OR encryption_status IS NULL OR encryption_status = '') AND config IS NOT NULL AND config != '' AND id > ?", encryptionStatusPlainText, cursor).
 			Order("id").
@@ -484,7 +484,7 @@ func (s *RDBConfigStore) encryptPlaintextPlugins(ctx context.Context) (int, erro
 		// every secret column, and a stored vault ref resolves over the
 		// network — work the claim below would then repeat.
 		var ids []uint
-		if err := s.DB().WithContext(ctx).
+		if err := s.dbForContext(ctx).
 			Model(&tables.TablePlugin{}).
 			Where("(encryption_status = ? OR encryption_status IS NULL OR encryption_status = '') AND config_json != '' AND config_json != '{}' AND id > ?", encryptionStatusPlainText, cursor).
 			Order("id").

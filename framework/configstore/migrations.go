@@ -495,6 +495,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_use_openai_endpoints_column"}, run: migrationAddUseOpenAIEndpointsColumn},
 	{IDs: []string{"add_time_of_day_pricing_columns"}, run: migrationAddTimeOfDayPricingColumns},
 	{IDs: []string{"migrate_vk_standalone_limits_to_model_configs"}, run: migrationMigrateVKStandaloneLimitsToModelConfigs},
+	{IDs: []string{"add_config_revision_table"}, run: migrationAddConfigRevisionTable},
 }
 
 // videoResolutionPricingColumns are the resolution-banded video output rate columns.
@@ -13772,3 +13773,31 @@ func migrationMigrateVKStandaloneLimitsToModelConfigs(ctx context.Context, db *g
 	return nil
 }
 
+// migrationAddConfigRevisionTable creates and seeds the singleton runtime-configuration revision table.
+func migrationAddConfigRevisionTable(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_config_revision_table"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+
+	return RunSingleMigration(ctx, migrator.DefaultOptions, db, logger, &migrator.Migration{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := tx.AutoMigrate(&tables.TableConfigRevision{}); err != nil {
+				return fmt.Errorf("creating config revision table: %w", err)
+			}
+			row := tables.TableConfigRevision{
+				ID:        tables.ConfigRevisionSingletonID,
+				Revision:  0,
+				UpdatedAt: time.Now().UTC(),
+			}
+			if err := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&row).Error; err != nil {
+				return fmt.Errorf("seeding config revision row: %w", err)
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			return tx.WithContext(ctx).Migrator().DropTable(&tables.TableConfigRevision{})
+		},
+	})
+}
