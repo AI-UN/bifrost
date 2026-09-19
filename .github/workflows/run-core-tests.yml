@@ -70,6 +70,7 @@ jobs:
       FIREWORKS_API_KEY: ${{ secrets.FIREWORKS_API_KEY }}
       SILICONFLOW_API_KEY: ${{ secrets.SILICONFLOW_API_KEY }}
       SILICONFLOWCN_API_KEY: ${{ secrets.SILICONFLOWCN_API_KEY }}
+      DEEPINFRA_API_KEY: ${{ secrets.DEEPINFRA_API_KEY }}
       VERTEX_CREDENTIALS: ${{ secrets.VERTEX_CREDENTIALS }}
       VERTEX_PROJECT_ID: ${{ secrets.VERTEX_PROJECT_ID }}
       VERTEX_GCS_BUCKET: ${{ secrets.VERTEX_GCS_BUCKET }}
@@ -101,6 +102,7 @@ jobs:
             api.siliconflow.com:443
             api.siliconflow.cn:443
             api.cohere.ai:443
+            api.deepinfra.com:443
             api.deepseek.com:443
             api.elevenlabs.io:443
             api.fireworks.ai:443
