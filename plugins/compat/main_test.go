@@ -200,3 +200,133 @@ func TestPreLLMHook_DoesNotConvertWhenCustomProviderAllowsResponses(t *testing.T
 		t.Fatal("did not expect change request type when custom provider explicitly allows responses")
 	}
 }
+
+func TestPreLLMHook_UsesStreamingAllowedRequestsForResponsesFallback(t *testing.T) {
+	plugin, err := Init(
+		Config{ConvertResponsesToChat: true},
+		nil,
+		nil,
+		func(provider schemas.ModelProvider) *schemas.CustomProviderConfig {
+			if provider != "xiaomi" {
+				return nil
+			}
+			return &schemas.CustomProviderConfig{
+				AllowedRequests: &schemas.AllowedRequests{
+					Responses:            true,
+					ResponsesStream:      false,
+					ChatCompletion:       true,
+					ChatCompletionStream: true,
+				},
+			}
+		},
+	)
+	if err != nil {
+		t.Fatalf("Init returned error: %v", err)
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	req := &schemas.BifrostRequest{
+		RequestType: schemas.ResponsesStreamRequest,
+		ResponsesRequest: &schemas.BifrostResponsesRequest{
+			Provider: "xiaomi",
+			Model:    "mimo-v2.5-pro",
+		},
+	}
+
+	_, _, err = plugin.PreLLMHook(ctx, req)
+	if err != nil {
+		t.Fatalf("PreLLMHook returned error: %v", err)
+	}
+
+	changeType, ok := ctx.Value(schemas.BifrostContextKeyChangeRequestType).(schemas.RequestType)
+	if !ok {
+		t.Fatal("expected streaming responses request to fall back to chat")
+	}
+	if changeType != schemas.ChatCompletionRequest {
+		t.Fatalf("expected change request type %q, got %q", schemas.ChatCompletionRequest, changeType)
+	}
+}
+
+func TestPreLLMHook_DoesNotConvertWhenCustomProviderAllowsResponsesStream(t *testing.T) {
+	plugin, err := Init(
+		Config{ConvertResponsesToChat: true},
+		nil,
+		nil,
+		func(provider schemas.ModelProvider) *schemas.CustomProviderConfig {
+			if provider != "xiaomi" {
+				return nil
+			}
+			return &schemas.CustomProviderConfig{
+				AllowedRequests: &schemas.AllowedRequests{
+					Responses:            false,
+					ResponsesStream:      true,
+					ChatCompletion:       true,
+					ChatCompletionStream: true,
+				},
+			}
+		},
+	)
+	if err != nil {
+		t.Fatalf("Init returned error: %v", err)
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	req := &schemas.BifrostRequest{
+		RequestType: schemas.ResponsesStreamRequest,
+		ResponsesRequest: &schemas.BifrostResponsesRequest{
+			Provider: "xiaomi",
+			Model:    "mimo-v2.5-pro",
+		},
+	}
+
+	_, _, err = plugin.PreLLMHook(ctx, req)
+	if err != nil {
+		t.Fatalf("PreLLMHook returned error: %v", err)
+	}
+
+	if _, ok := ctx.Value(schemas.BifrostContextKeyChangeRequestType).(schemas.RequestType); ok {
+		t.Fatal("did not expect conversion when custom provider explicitly allows streaming responses")
+	}
+}
+
+func TestPreLLMHook_DoesNotConvertResponsesStreamWithoutChatStreamSupport(t *testing.T) {
+	plugin, err := Init(
+		Config{ConvertResponsesToChat: true},
+		nil,
+		nil,
+		func(provider schemas.ModelProvider) *schemas.CustomProviderConfig {
+			if provider != "xiaomi" {
+				return nil
+			}
+			return &schemas.CustomProviderConfig{
+				AllowedRequests: &schemas.AllowedRequests{
+					Responses:            false,
+					ResponsesStream:      false,
+					ChatCompletion:       true,
+					ChatCompletionStream: false,
+				},
+			}
+		},
+	)
+	if err != nil {
+		t.Fatalf("Init returned error: %v", err)
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	req := &schemas.BifrostRequest{
+		RequestType: schemas.ResponsesStreamRequest,
+		ResponsesRequest: &schemas.BifrostResponsesRequest{
+			Provider: "xiaomi",
+			Model:    "mimo-v2.5-pro",
+		},
+	}
+
+	_, _, err = plugin.PreLLMHook(ctx, req)
+	if err != nil {
+		t.Fatalf("PreLLMHook returned error: %v", err)
+	}
+
+	if _, ok := ctx.Value(schemas.BifrostContextKeyChangeRequestType).(schemas.RequestType); ok {
+		t.Fatal("did not expect conversion without streaming chat support")
+	}
+}
