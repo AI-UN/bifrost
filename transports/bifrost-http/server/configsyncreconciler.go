@@ -379,10 +379,8 @@ func (r *configSnapshotReconciler) applyUpdates(ctx context.Context, old, next *
 		}
 	}
 	if !sameEntity("prompts", old.Prompts, next.Prompts) || !sameEntity("prompt_versions", old.PromptVersions, next.PromptVersions) {
-		if reloader, err := lib.FindPluginAs[handlers.PromptCacheReloader](r.server.Config, r.server.getPromptsPluginName()); err == nil && reloader != nil {
-			if err := reloader.Reload(ctx); err != nil {
-				return fmt.Errorf("reload prompt cache: %w", err)
-			}
+		if err := r.server.ReloadPromptCache(ctx); err != nil {
+			return fmt.Errorf("reload prompt cache: %w", err)
 		}
 	}
 	return nil
