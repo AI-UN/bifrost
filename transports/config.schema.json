@@ -502,6 +502,12 @@
         },
         "siliconflow-cn": {
           "$ref": "#/$defs/provider"
+        },
+        "zai": {
+          "$ref": "#/$defs/provider"
+        },
+        "zhipu": {
+          "$ref": "#/$defs/provider"
         }
       },
       "additionalProperties": true
@@ -2721,7 +2727,8 @@
                         "huggingface",
                         "databricks",
                         "siliconflow",
-                        "siliconflow-cn"
+                        "siliconflow-cn",
+                        "zhipu"
                       ]
                     },
                     "embedding_model": {
@@ -8814,7 +8821,9 @@
             "sarvam",
             "wafer",
             "siliconflow",
-            "siliconflow-cn"
+            "siliconflow-cn",
+            "zai",
+            "zhipu"
           ],
           "description": "Base provider type to extend"
         },

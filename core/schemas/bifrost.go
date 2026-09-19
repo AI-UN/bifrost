@@ -75,6 +75,8 @@ const (
 	Sarvam        ModelProvider = "sarvam"
 	Wafer         ModelProvider = "wafer"
 	GithubCopilot ModelProvider = "github-copilot"
+	ZAI           ModelProvider = "zai"
+	Zhipu         ModelProvider = "zhipu"
 	Databricks    ModelProvider = "databricks"
 	SiliconFlow   ModelProvider = "siliconflow"
 	SiliconFlowCN ModelProvider = "siliconflow-cn"
@@ -125,6 +127,8 @@ var StandardProviders = []ModelProvider{
 	Sarvam,
 	Wafer,
 	GithubCopilot,
+	ZAI,
+	Zhipu,
 	Databricks,
 	SiliconFlow,
 	SiliconFlowCN,
