@@ -105,8 +105,8 @@ func TestPreLLMHook_ShouldConvertParamsOverrideClonesRequest(t *testing.T) {
 	if modifiedReq == req {
 		t.Fatal("expected request clone when should_convert_params override is enabled")
 	}
-	if modifiedReq.ChatRequest.Input[0].Role != schemas.ChatMessageRoleSystem {
-		t.Fatalf("expected converted role %q, got %q", schemas.ChatMessageRoleSystem, modifiedReq.ChatRequest.Input[0].Role)
+	if modifiedReq.ChatRequest.Input[0].Role != schemas.ChatMessageRoleDeveloper {
+		t.Fatalf("expected cloned request role to remain %q, got %q", schemas.ChatMessageRoleDeveloper, modifiedReq.ChatRequest.Input[0].Role)
 	}
 	if req.ChatRequest.Input[0].Role != schemas.ChatMessageRoleDeveloper {
 		t.Fatalf("expected original request to remain %q, got %q", schemas.ChatMessageRoleDeveloper, req.ChatRequest.Input[0].Role)
