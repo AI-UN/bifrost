@@ -1,0 +1,1 @@
+- fix: skip draining a streaming response body already read to EOF, which deadlocked raw-audio stream consumers [@etnperlong](https://github.com/etnperlong)
