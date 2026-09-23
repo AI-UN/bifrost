@@ -45,6 +45,8 @@ export const KNOWN_PROVIDERS = [
   'cerebras',
   'nebius',
   'sambanova',
+  'siliconflow',
+  'siliconflow-cn',
 ] as const
 
 /**
@@ -54,6 +56,8 @@ export const SAMPLE_API_KEYS = {
   openai: 'sk-test-openai-key-12345678901234567890',
   anthropic: 'sk-ant-test-key-12345678901234567890',
   gemini: 'test-gemini-api-key-1234567890',
+  siliconflow: 'sk-test-siliconflow-key-1234567890',
+  'siliconflow-cn': 'sk-test-siliconflow-cn-key-1234567890',
 }
 
 /**
@@ -63,4 +67,6 @@ export const SAMPLE_MODELS = {
   openai: ['gpt-4', 'gpt-4-turbo', 'gpt-3.5-turbo'],
   anthropic: ['claude-3-opus', 'claude-3-sonnet', 'claude-3-haiku'],
   gemini: ['gemini-pro', 'gemini-pro-vision'],
+  siliconflow: ['deepseek-ai/DeepSeek-V3.2'],
+  'siliconflow-cn': ['deepseek-ai/DeepSeek-V3.2'],
 }
