@@ -26,6 +26,7 @@ import (
 	"github.com/maximhq/bifrost/core/providers/bedrockmantle"
 	"github.com/maximhq/bifrost/core/providers/cerebras"
 	"github.com/maximhq/bifrost/core/providers/cohere"
+	"github.com/maximhq/bifrost/core/providers/cpa"
 	"github.com/maximhq/bifrost/core/providers/databricks"
 	"github.com/maximhq/bifrost/core/providers/deepinfra"
 	"github.com/maximhq/bifrost/core/providers/deepseek"
@@ -4657,6 +4658,8 @@ func (bifrost *Bifrost) createBaseProvider(providerKey schemas.ModelProvider, co
 		return zai.NewZAIProvider(config, bifrost.logger)
 	case schemas.Zhipu:
 		return zhipu.NewProvider(config, bifrost.logger)
+	case schemas.CPA:
+		return cpa.NewCPAProvider(config, bifrost.logger)
 	default:
 		return nil, fmt.Errorf("unsupported provider: %s", targetProviderKey)
 	}

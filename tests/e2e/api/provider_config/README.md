@@ -64,6 +64,7 @@ All Bifrost providers are included except **sgl** and **ollama** (excluded in `r
 - `bifrost-v1-siliconflow.postman_environment.json`
 - `bifrost-v1-siliconflow-cn.postman_environment.json`
 - `bifrost-v1-vertex.postman_environment.json`
+- `bifrost-v1-cpa.postman_environment.json`
 - `bifrost-v1-xai.postman_environment.json`
 - `bifrost-v1-zai.postman_environment.json`
 - `bifrost-v1-zhipu.postman_environment.json`
