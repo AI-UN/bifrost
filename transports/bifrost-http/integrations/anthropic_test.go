@@ -192,6 +192,46 @@ func TestRewriteAnthropicRawRequestBodyRejectsDuplicateKeys(t *testing.T) {
 	}
 }
 
+// Anthropic Messages is represented internally as a Responses request. Compat no longer
+// downgrades it to chat completions on its own, but an explicit x-bf-compat opt-in still
+// can, so this route must keep a non-nil chat converter: a nil one makes handleStreaming
+// drop every chunk after the HTTP 200 has already been committed.
+func TestAnthropicMessagesRouteConvertsCompatChatStream(t *testing.T) {
+	routes := createAnthropicMessagesRouteConfig("/anthropic", nil)
+	if len(routes) == 0 || routes[0].StreamConfig == nil {
+		t.Fatal("anthropic messages stream config is missing")
+	}
+	converter := routes[0].StreamConfig.ChatStreamResponseConverter
+	if converter == nil {
+		t.Fatal("anthropic messages route must convert chat chunks from responses-to-chat fallback")
+	}
+
+	content := "hello"
+	eventType, converted, err := converter(nil, &schemas.BifrostChatResponse{
+		ID:    "msg_test",
+		Model: "claude-sonnet-5",
+		Choices: []schemas.BifrostResponseChoice{{
+			Index: 0,
+			ChatStreamResponseChoice: &schemas.ChatStreamResponseChoice{
+				Delta: &schemas.ChatStreamResponseChoiceDelta{Content: &content},
+			},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("chat stream converter returned error: %v", err)
+	}
+	if eventType != "" {
+		t.Fatalf("event type = %q, want empty because converter returns complete SSE", eventType)
+	}
+	wire, ok := converted.(string)
+	if !ok {
+		t.Fatalf("converted response type = %T, want string", converted)
+	}
+	if !strings.Contains(wire, "event: content_block_delta") || !strings.Contains(wire, `"text":"hello"`) {
+		t.Fatalf("unexpected Anthropic SSE: %q", wire)
+	}
+}
+
 // TestRewriteAnthropicRawRequestBodyTransformsTargetsDuplicateText verifies provider transforms update one exact native field.
 func TestRewriteAnthropicRawRequestBodyTransformsTargetsDuplicateText(t *testing.T) {
 	rawBody := []byte(`{
