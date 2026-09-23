@@ -9,7 +9,8 @@ ModelProvider:
     selects SiliconFlow's international service (api.siliconflow.com) and
     `siliconflow-cn` selects the mainland China service
     (api.siliconflow.cn). They have separate accounts, keys and model
-    catalogues.
+    catalogues. `zai` selects Z.AI's international service; `zhipu` selects
+    Zhipu AI's mainland China service.
   enum:
     - anthropic
     - azure
@@ -45,6 +46,8 @@ ModelProvider:
     - databricks
     - siliconflow
     - siliconflow-cn
+    - zai
+    - zhipu
 
 Fallback:
   type: object
