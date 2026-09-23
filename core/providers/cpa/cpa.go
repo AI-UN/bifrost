@@ -228,6 +228,11 @@ func (provider *CPAProvider) Rerank(_ *schemas.BifrostContext, _ schemas.Key, _ 
 	return nil, provider.unsupported(schemas.RerankRequest)
 }
 
+// Decision is not supported by the CPA provider.
+func (provider *CPAProvider) Decision(_ *schemas.BifrostContext, _ schemas.Key, _ *schemas.BifrostDecisionRequest) (*schemas.BifrostDecisionResponse, *schemas.BifrostError) {
+	return nil, provider.unsupported(schemas.DecisionRequest)
+}
+
 // OCR is not supported by the CPA provider.
 func (provider *CPAProvider) OCR(_ *schemas.BifrostContext, _ schemas.Key, _ *schemas.BifrostOCRRequest) (*schemas.BifrostOCRResponse, *schemas.BifrostError) {
 	return nil, provider.unsupported(schemas.OCRRequest)
