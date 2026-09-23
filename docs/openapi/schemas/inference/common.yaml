@@ -39,6 +39,7 @@ ModelProvider:
     - runway
     - runware
     - fireworks
+    - deepinfra
     - sarvam
     - wafer
     - databricks
