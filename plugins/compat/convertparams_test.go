@@ -169,7 +169,7 @@ func newConvertTestPlugin(t *testing.T, cfg Config) *CompatPlugin {
 		{Model: "gemini-test-flash", Provider: string(schemas.Gemini), Mode: "chat", MaxOutputTokens: new(65536)},
 		{Model: "gemini-nocap-flash", Provider: string(schemas.Gemini), Mode: "chat"},
 	})
-	p, err := Init(cfg, bifrost.NewNoOpLogger(), modelcatalog.NewTestCatalogWithDatasheet(ds))
+	p, err := Init(cfg, bifrost.NewNoOpLogger(), modelcatalog.NewTestCatalogWithDatasheet(ds), nil)
 	if err != nil {
 		t.Fatalf("Init: %v", err)
 	}
