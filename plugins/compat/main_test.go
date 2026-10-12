@@ -7,6 +7,7 @@ import (
 
 	schemas "github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
+	"github.com/maximhq/bifrost/framework/modelcatalog/datasheet"
 )
 
 func TestConfigUnmarshalConvertResponsesToChat(t *testing.T) {
@@ -28,7 +29,7 @@ func TestConfigUnmarshalConvertResponsesToChat(t *testing.T) {
 }
 
 func TestPreLLMHook_ResponsesToChatOverrideForUnknownModel(t *testing.T) {
-	plugin, err := Init(Config{}, nil, &modelcatalog.ModelCatalog{}, nil)
+	plugin, err := Init(Config{}, nil, modelcatalog.NewTestCatalogWithDatasheet(datasheet.NewTestStore(nil)), nil)
 	if err != nil {
 		t.Fatalf("Init returned error: %v", err)
 	}
@@ -72,7 +73,7 @@ func TestPreLLMHook_ResponsesToChatOverrideForUnknownModel(t *testing.T) {
 }
 
 func TestPreLLMHook_ShouldConvertParamsOverrideClonesRequest(t *testing.T) {
-	plugin, err := Init(Config{}, nil, &modelcatalog.ModelCatalog{}, nil)
+	plugin, err := Init(Config{}, nil, modelcatalog.NewTestCatalogWithDatasheet(datasheet.NewTestStore(nil)), nil)
 	if err != nil {
 		t.Fatalf("Init returned error: %v", err)
 	}
@@ -163,7 +164,7 @@ func TestPreLLMHook_DoesNotConvertWhenCustomProviderAllowsResponses(t *testing.T
 	plugin, err := Init(
 		Config{ConvertResponsesToChat: true},
 		nil,
-		&modelcatalog.ModelCatalog{},
+		modelcatalog.NewTestCatalogWithDatasheet(datasheet.NewTestStore(nil)),
 		func(provider schemas.ModelProvider) *schemas.CustomProviderConfig {
 			if provider != "xiaomi" {
 				return nil
