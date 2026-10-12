@@ -785,7 +785,7 @@ func HandleOpenAITextCompletionStreaming(
 					}
 				} else {
 					// The body is fully consumed, so the deferred release must not drain it again.
-					ctx.SetValue(schemas.BifrostContextKeyStreamBodyExhausted, true)
+					ctx.MarkStreamBodyExhausted()
 				}
 				break
 			}
@@ -1574,7 +1574,7 @@ func HandleOpenAIChatCompletionStreaming(
 					}
 				} else {
 					// The body is fully consumed, so the deferred release must not drain it again.
-					ctx.SetValue(schemas.BifrostContextKeyStreamBodyExhausted, true)
+					ctx.MarkStreamBodyExhausted()
 				}
 				break
 			}
