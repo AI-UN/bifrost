@@ -15,6 +15,10 @@ import { Info } from "lucide-react";
 import { useEffect, useState } from "react";
 import { Control, UseFormReturn } from "react-hook-form";
 import { DeploymentsTable } from "./deploymentsTable";
+const PROVIDER_API_KEY_PLACEHOLDERS: Record<string, string> = {
+	zai: "API Key or env.ZAI_API_KEY",
+	zhipu: "API Key or env.ZHIPU_API_KEY",
+};
 
 // Providers that support batch APIs
 const BATCH_SUPPORTED_PROVIDERS = ["openai", "bedrock", "anthropic", "gemini", "azure", "vertex", "wafer"];
@@ -159,6 +163,7 @@ export function ApiKeyFormFragment({ control, providerName, baseProviderType, fo
 	const copilotAppSuffix = hasCopilotApiToken(form.watch("key.value")) ? "(Optional)" : "(Required)";
 	const isKeylessProvider = isOllama || isSGL;
 	const supportsBatchAPI = BATCH_SUPPORTED_PROVIDERS.includes(effectiveProvider);
+	const apiKeyPlaceholder = PROVIDER_API_KEY_PLACEHOLDERS[effectiveProvider] ?? "API Key or env.MY_KEY";
 
 	// Auth type state for Azure: 'api_key', 'entra_id', or 'default_credential'
 	const [azureAuthType, setAzureAuthType] = useState<"api_key" | "entra_id" | "default_credential">("api_key");
@@ -360,7 +365,7 @@ export function ApiKeyFormFragment({ control, providerName, baseProviderType, fo
 							)}
 							<FormControl>
 								<SecretVarInput
-									placeholder={isGithubCopilot ? "Copilot API token, or leave blank to use a GitHub App" : "API Key or env.MY_KEY"}
+									placeholder={isGithubCopilot ? "Copilot API token, or leave blank to use a GitHub App" : apiKeyPlaceholder}
 									type="text"
 									{...field}
 								/>
