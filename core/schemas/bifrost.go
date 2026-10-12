@@ -82,6 +82,7 @@ const (
 	Typesafe      ModelProvider = "typesafe"
 	SiliconFlow   ModelProvider = "siliconflow"
 	SiliconFlowCN ModelProvider = "siliconflow-cn"
+	CPA           ModelProvider = "cpa"
 )
 
 // SupportedBaseProviders is the list of base providers allowed for custom providers.
@@ -135,6 +136,7 @@ var StandardProviders = []ModelProvider{
 	Typesafe,
 	SiliconFlow,
 	SiliconFlowCN,
+	CPA,
 }
 
 // RequestType represents the type of request being made to a provider.
