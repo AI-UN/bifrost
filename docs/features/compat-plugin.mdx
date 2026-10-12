@@ -93,7 +93,7 @@ Some providers and models expose chat completions upstream but do not implement 
 <Warning>
 **Scoped to the OpenAI Responses wire.** Anthropic Messages (`/anthropic/v1/messages`) and Gemini GenerateContent (`/genai/v1beta/models/{model}`) are represented internally as Responses requests, but their clients expect native Anthropic or Gemini stream events, not Responses events. This fallback is therefore skipped on those endpoints even when the model catalog lists the model as chat-only — those providers already serve their own protocol natively.
 
-The per-request `x-bf-compat: ["convert_responses_to_chat"]` header overrides this scoping, because it is an explicit opt-in. Be aware that forcing it on a streaming Anthropic or Gemini endpoint produces a degraded stream: the Anthropic converter emits `content_block_delta` events without the surrounding `message_start` / `content_block_start` / `content_block_stop` / `message_stop` lifecycle, and the Gemini endpoint has no chat-chunk converter at all.
+The per-request `x-bf-compat: ["convert_responses_to_chat"]` header overrides this scoping because it is an explicit opt-in. Forced streaming fallback reconstructs Responses events from the provider's chat stream before the integration converts them back to the native wire format, preserving the Anthropic Messages lifecycle and Gemini candidate events.
 </Warning>
 
 ## How It Works
