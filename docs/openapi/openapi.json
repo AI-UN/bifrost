@@ -98326,7 +98326,7 @@
     "schemas": {
       "ModelProvider": {
         "type": "string",
-        "description": "AI model provider identifier.\n\nRegional services are modelled as independent providers: `siliconflow`\nselects SiliconFlow's international service (api.siliconflow.com) and\n`siliconflow-cn` selects the mainland China service\n(api.siliconflow.cn). They have separate accounts, keys and model\ncatalogues.\n",
+        "description": "AI model provider identifier.\n\nRegional services are modelled as independent providers. `siliconflow`\nselects SiliconFlow's international service (api.siliconflow.com), and\n`siliconflow-cn` selects the mainland China service (api.siliconflow.cn).\nEach has its own account, key and model catalogue. `zai` selects Z.AI's\ninternational service; `zhipu` selects Zhipu AI's mainland China service.\n",
         "enum": [
           "anthropic",
           "azure",
@@ -98356,11 +98356,15 @@
           "runway",
           "runware",
           "fireworks",
+          "deepinfra",
           "sarvam",
           "wafer",
           "databricks",
           "siliconflow",
-          "siliconflow-cn"
+          "siliconflow-cn",
+          "zai",
+          "zhipu",
+          "cpa"
         ]
       },
       "Fallback": {

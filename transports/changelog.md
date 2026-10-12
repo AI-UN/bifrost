@@ -34,3 +34,8 @@
 ## 🗄️ Database Migrations
 
 - No new database migrations in this release.
+
+## Fork maintenance
+
+- **Upstream Synchronization** - Rebased the ten active fork patch branches onto upstream main at `11f01359b`, including transport `v2.2.6`. Preserved upstream setup/auth changes, provider harness cases, provider registrations, and Responses-to-Chat compatibility.
+- **Multinode Patch Isolation** - Removed the optional PostgreSQL revision/CAS synchronization patch from the active integration while retaining `feat/oss-multinode-config-sync` separately. Single-node SQLite and PostgreSQL config stores remain supported; deployments using `source_of_truth: "config_store"` must review file reconciliation before changing to `split` or `config.json`. Existing revision tables are not dropped.
