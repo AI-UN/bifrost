@@ -33,6 +33,8 @@ export const KnownProvidersNames = [
 	"databricks",
 	"github-copilot",
 	"typesafe",
+	"siliconflow",
+	"siliconflow-cn",
 ] as const;
 
 // Local Provider type derived from KNOWN_PROVIDERS constant
@@ -65,6 +67,8 @@ export const EmbeddingSupportedProviders: readonly ProviderName[] = [
 	"openai",
 	"openrouter",
 	"sgl",
+	"siliconflow",
+	"siliconflow-cn",
 	"vertex",
 	"vllm",
 	"databricks",
@@ -174,6 +178,8 @@ export const ProviderLabels: Record<ProviderName, string> = {
 	databricks: "Databricks",
 	"github-copilot": "GitHub Copilot",
 	typesafe: "TypeSafe",
+	siliconflow: "SiliconFlow",
+	"siliconflow-cn": "SiliconFlow CN",
 } as const;
 
 // Helper function to get provider label, supporting custom providers

@@ -845,6 +845,36 @@ export const ProviderIcons = {
 			</svg>
 		);
 	},
+	siliconflow: ({ size = "md", className = "" }: IconProps) => {
+		const resolvedSize = resolveSize(size);
+
+		return (
+			<img
+				src="/images/siliconflow.png"
+				alt="SiliconFlow"
+				width={resolvedSize}
+				height={resolvedSize}
+				loading="lazy"
+				decoding="async"
+				className={className}
+			/>
+		);
+	},
+	"siliconflow-cn": ({ size = "md", className = "" }: IconProps) => {
+		const resolvedSize = resolveSize(size);
+
+		return (
+			<img
+				src="/images/siliconflow.png"
+				alt="SiliconFlow CN"
+				width={resolvedSize}
+				height={resolvedSize}
+				loading="lazy"
+				decoding="async"
+				className={className}
+			/>
+		);
+	},
 	// TypeSafe's geometric logomark, extracted from their brand wordmark SVG. The
 	// source art uses currentColor, so the icon follows the surrounding text in
 	// both themes without a theme branch. The wordmark's remaining letterforms are
