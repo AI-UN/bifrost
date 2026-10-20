@@ -154,6 +154,9 @@ func dialectConfig(config *schemas.ProviderConfig, baseURL string, base schemas.
 		BaseProviderType:  base,
 	}
 	if config.CustomProviderConfig != nil {
+		if config.CustomProviderConfig.CustomProviderKey != "" {
+			custom.CustomProviderKey = config.CustomProviderConfig.CustomProviderKey
+		}
 		custom.IsKeyLess = config.CustomProviderConfig.IsKeyLess
 		custom.AllowedRequests = config.CustomProviderConfig.AllowedRequests
 		custom.RequestPathOverrides = config.CustomProviderConfig.RequestPathOverrides
