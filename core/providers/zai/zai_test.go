@@ -98,6 +98,17 @@ func TestProviderProfiles(t *testing.T) {
 	assert.Equal(t, schemas.Zhipu, china.GetProviderKey())
 	assert.Equal(t, defaultChinaBaseURL, china.networkConfig.BaseURL)
 }
+
+func TestCustomProviderUsesCustomKey(t *testing.T) {
+	provider, err := NewZAIProvider(&schemas.ProviderConfig{
+		CustomProviderConfig: &schemas.CustomProviderConfig{
+			BaseProviderType:  schemas.ZAI,
+			CustomProviderKey: "my-zai",
+		},
+	}, testLogger{})
+	require.NoError(t, err)
+	assert.Equal(t, schemas.ModelProvider("my-zai"), provider.GetProviderKey())
+}
 func TestResponsesUseResponsesPermissions(t *testing.T) {
 	var calls atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -688,7 +699,7 @@ func TestChinaEmbeddingAndRerankEndpoints(t *testing.T) {
 		response, bifrostErr := provider.Embedding(
 			schemas.NewBifrostContext(context.Background(), schemas.NoDeadline),
 			schemas.Key{Value: *schemas.NewSecretVar("test-key")},
-			&schemas.BifrostEmbeddingRequest{Provider: schemas.Zhipu, Model: "embedding-3", Input: &schemas.EmbeddingInput{Text: &text}},
+			&schemas.BifrostEmbeddingRequest{Provider: schemas.Zhipu, Model: "embedding-3", Input: []schemas.EmbeddingInputItem{{Content: schemas.EmbeddingContent{{Type: schemas.EmbeddingContentPartTypeText, Text: &text}}}}},
 		)
 		require.Nil(t, bifrostErr)
 		require.NotNil(t, response)
