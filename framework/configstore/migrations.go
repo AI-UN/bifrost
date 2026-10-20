@@ -589,6 +589,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_mcp_per_user_discoveries"}, run: migrationAddMCPPerUserDiscoveries},
 	{IDs: []string{"add_mcp_client_pending_verification_column"}, run: migrationAddMCPClientPendingVerificationColumn},
 	{IDs: []string{"add_cache_creation_above_12hr_pricing_columns"}, run: migrationAddCacheCreationAbove12hrPricingColumns},
+	{IDs: []string{"add_compat_convert_responses_to_chat_column"}, run: migrationAddCompatConvertResponsesToChatColumn},
 }
 
 // warpLogEmbeddingColumns are the semantic-search configuration columns added

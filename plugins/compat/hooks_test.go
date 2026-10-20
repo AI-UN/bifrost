@@ -187,7 +187,7 @@ func TestReasoningWithToolsResponsesRouting(t *testing.T) {
 		})
 		mc := modelcatalog.NewTestCatalogWithDatasheet(ds)
 		mc.SetKeyConfigForProvider(schemas.OpenAI, []schemas.Key{{ID: "openai-key", Aliases: schemas.KeyAliases{"team-reasoner": {ModelID: "no-reasoning-with-tools"}}}})
-		p, err := Init(Config{ShouldDropParams: true, ForceReasoningOnlyModelsToResponses: enabled}, bifrost.NewNoOpLogger(), mc)
+		p, err := Init(Config{ShouldDropParams: true, ForceReasoningOnlyModelsToResponses: enabled}, bifrost.NewNoOpLogger(), mc, nil)
 		if err != nil {
 			t.Fatalf("Init: %v", err)
 		}
@@ -342,7 +342,7 @@ func TestDecisionToResponsesEmulationOptIn(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			p, err := Init(Config{ConvertDecisionToResponses: tt.enabled}, bifrost.NewNoOpLogger(), nil)
+			p, err := Init(Config{ConvertDecisionToResponses: tt.enabled}, bifrost.NewNoOpLogger(), nil, nil)
 			if err != nil {
 				t.Fatalf("Init: %v", err)
 			}
