@@ -445,7 +445,7 @@ func TestDialectConfigIsolation(t *testing.T) {
 	original := &schemas.ProviderConfig{
 		NetworkConfig: schemas.NetworkConfig{
 			BaseURL:      "http://cpa.internal:8317",
-			ExtraHeaders: map[string]string{"x-test": "1"},
+			ExtraHeaders: schemas.NewSecretVarMap(map[string]string{"x-test": "1"}),
 		},
 		CustomProviderConfig: &schemas.CustomProviderConfig{
 			AllowedRequests:       &schemas.AllowedRequests{ChatCompletion: true},
