@@ -16,10 +16,11 @@ import (
 // to the built-in providers for the three dialects CPA accepts. See the package
 // comment for why this is one provider rather than three.
 type CPAProvider struct {
-	logger    schemas.Logger
-	openai    *openai.OpenAIProvider
-	anthropic schemas.Provider
-	gemini    schemas.Provider
+	logger      schemas.Logger
+	providerKey schemas.ModelProvider
+	openai      *openai.OpenAIProvider
+	anthropic   schemas.Provider
+	gemini      schemas.Provider
 }
 
 var _ schemas.Provider = (*CPAProvider)(nil)
@@ -41,17 +42,22 @@ func NewCPAProvider(config *schemas.ProviderConfig, logger schemas.Logger) (*CPA
 		return nil, fmt.Errorf("network_config.base_url is required for cpa and must point at the CLI Proxy API server")
 	}
 
+	providerKey := schemas.CPA
+	if config.CustomProviderConfig != nil && config.CustomProviderConfig.CustomProviderKey != "" {
+		providerKey = schemas.ModelProvider(config.CustomProviderConfig.CustomProviderKey)
+	}
 	return &CPAProvider{
-		logger:    logger,
-		openai:    openai.NewOpenAIProvider(dialectConfig(config, baseURL, schemas.OpenAI), logger),
-		anthropic: anthropic.NewAnthropicProvider(dialectConfig(config, baseURL, schemas.Anthropic), logger),
-		gemini:    gemini.NewGeminiProvider(dialectConfig(config, baseURL+geminiAPIVersionPath, schemas.Gemini), logger),
+		logger:      logger,
+		providerKey: providerKey,
+		openai:      openai.NewOpenAIProvider(dialectConfig(config, baseURL, schemas.OpenAI), logger),
+		anthropic:   anthropic.NewAnthropicProvider(dialectConfig(config, baseURL, schemas.Anthropic), logger),
+		gemini:      gemini.NewGeminiProvider(dialectConfig(config, baseURL+geminiAPIVersionPath, schemas.Gemini), logger),
 	}, nil
 }
 
-// GetProviderKey returns the provider identifier for CPA.
+// GetProviderKey returns the configured provider identity.
 func (provider *CPAProvider) GetProviderKey() schemas.ModelProvider {
-	return schemas.CPA
+	return provider.providerKey
 }
 
 // dialectProvider returns the sub-provider for d, and records on the context which
@@ -89,6 +95,11 @@ func (provider *CPAProvider) unsupported(requestType schemas.RequestType) *schem
 // would return the same models three times.
 func (provider *CPAProvider) ListModels(ctx *schemas.BifrostContext, keys []schemas.Key, request *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
 	return provider.dialectProvider(ctx, dialectOpenAI).ListModels(ctx, keys, request)
+}
+
+// ModelRetrieve is not supported by the CPA catalog route.
+func (provider *CPAProvider) ModelRetrieve(_ *schemas.BifrostContext, _ schemas.Key, _ *schemas.BifrostModelRetrieveRequest) (*schemas.BifrostModelRetrieveResponse, *schemas.BifrostError) {
+	return nil, provider.unsupported(schemas.ModelRetrieveRequest)
 }
 
 // TextCompletion performs a legacy text completion request via CPA's
