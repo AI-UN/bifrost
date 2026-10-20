@@ -608,6 +608,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_oauth2_authorize_requests_device_code_columns"}, run: migrationAddOAuth2AuthorizeRequestsDeviceCodeColumns},
 	{IDs: []string{"add_oauth2_authorize_requests_device_code_indexes"}, run: migrationAddOAuth2AuthorizeRequestsDeviceCodeIndexes},
 	{IDs: []string{"add_client_config_mcp_server_max_protocol_version_column"}, run: migrationAddClientConfigMCPServerMaxProtocolVersionColumn},
+	{IDs: []string{"add_compat_convert_responses_to_chat_column"}, run: migrationAddCompatConvertResponsesToChatColumn},
 }
 
 // warpLogEmbeddingColumns are the semantic-search configuration columns added
