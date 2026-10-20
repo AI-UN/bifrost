@@ -82,8 +82,10 @@ for plugin_name in "${!PLUGIN_VERSIONS[@]}"; do
 done
 
 # Remove Markdown comments before validating or publishing changelog content.
+# Non-greedy across the whole file, so a one-line `<!-- ... -->` removes only
+# itself instead of opening a range that swallows the rest of the file.
 strip_changelog_comments() {
-  sed '/<!--/,/-->/d'
+  perl -0777 -pe 's/<!--.*?-->//gs'
 }
 
 changelog_is_empty() {
