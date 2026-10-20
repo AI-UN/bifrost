@@ -733,6 +733,12 @@
         },
         "github-copilot": {
           "$ref": "#/$defs/provider_with_github_copilot_config"
+        },
+        "siliconflow": {
+          "$ref": "#/$defs/provider"
+        },
+        "siliconflow-cn": {
+          "$ref": "#/$defs/provider"
         }
       },
       "additionalProperties": true
@@ -4484,7 +4490,9 @@
                         "sgl",
                         "huggingface",
                         "databricks",
-                        "cloudflare"
+                        "cloudflare",
+                        "siliconflow",
+                        "siliconflow-cn"
                       ]
                     },
                     "embedding_model": {
@@ -12821,7 +12829,9 @@
             "sarvam",
             "wafer",
             "cloudflare",
-            "typesafe"
+            "typesafe",
+            "siliconflow",
+            "siliconflow-cn"
           ],
           "description": "Base provider type to extend"
         },

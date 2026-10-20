@@ -70,6 +70,8 @@ export const ModelPlaceholders = {
 	cloudflare: "e.g. @cf/meta/llama-4-scout-17b-16e-instruct, @cf/baai/bge-large-en-v1.5",
 	"github-copilot": "e.g. gpt-5.5, claude-sonnet-4-6",
 	typesafe: "e.g. jev-1.13.0, jev-latest, jev-preview",
+	siliconflow: "deepseek-ai/DeepSeek-V3.2",
+	"siliconflow-cn": "deepseek-ai/DeepSeek-V3.2",
 };
 
 export const isKeyRequiredByProvider: Record<ProviderName, boolean> = {
@@ -107,6 +109,8 @@ export const isKeyRequiredByProvider: Record<ProviderName, boolean> = {
 	cloudflare: true,
 	"github-copilot": false,
 	typesafe: true,
+	siliconflow: true,
+	"siliconflow-cn": true,
 };
 
 export const DefaultNetworkConfig = {

@@ -80,6 +80,8 @@ const (
 	Databricks    ModelProvider = "databricks"
 	Cloudflare    ModelProvider = "cloudflare"
 	Typesafe      ModelProvider = "typesafe"
+	SiliconFlow   ModelProvider = "siliconflow"
+	SiliconFlowCN ModelProvider = "siliconflow-cn"
 )
 
 // SupportedBaseProviders is the list of base providers allowed for custom providers.
@@ -130,6 +132,8 @@ var StandardProviders = []ModelProvider{
 	Databricks,
 	Cloudflare,
 	Typesafe,
+	SiliconFlow,
+	SiliconFlowCN,
 }
 
 // RequestType represents the type of request being made to a provider.
