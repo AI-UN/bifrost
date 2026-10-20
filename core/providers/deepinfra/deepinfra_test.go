@@ -134,7 +134,9 @@ func TestDeepInfraProviderEndpointRouting(t *testing.T) {
 				if _, err := provider.Embedding(ctx, key, &schemas.BifrostEmbeddingRequest{
 					Provider: schemas.DeepInfra,
 					Model:    "Qwen/Qwen3-Embedding-8B",
-					Input:    &schemas.EmbeddingInput{Texts: []string{"hello"}},
+					Input: []schemas.EmbeddingInputItem{{Content: schemas.EmbeddingContent{
+						{Type: schemas.EmbeddingContentPartTypeText, Text: schemas.Ptr("hello")},
+					}}},
 				}); err != nil {
 					t.Fatalf("Embedding returned error: %v", llmtests.GetErrorMessage(err))
 				}
