@@ -72,9 +72,8 @@ func newProvider(config *schemas.ProviderConfig, logger schemas.Logger, profile 
 }
 
 func (provider *ZAIProvider) GetProviderKey() schemas.ModelProvider {
-	return provider.profile.provider
+	return providerUtils.GetProviderName(provider.profile.provider, provider.customProviderConfig)
 }
-
 func (provider *ZAIProvider) requestURL(ctx *schemas.BifrostContext, path string) string {
 	return provider.networkConfig.BaseURL + providerUtils.GetPathFromContext(ctx, path)
 }
@@ -179,6 +178,10 @@ func (provider *ZAIProvider) ResponsesStream(ctx *schemas.BifrostContext, postHo
 
 func (provider *ZAIProvider) ListModels(_ *schemas.BifrostContext, _ []schemas.Key, _ *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.ListModelsRequest, provider.GetProviderKey())
+}
+
+func (provider *ZAIProvider) ModelRetrieve(_ *schemas.BifrostContext, _ schemas.Key, _ *schemas.BifrostModelRetrieveRequest) (*schemas.BifrostModelRetrieveResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.ModelRetrieveRequest, provider.GetProviderKey())
 }
 
 func (provider *ZAIProvider) TextCompletion(_ *schemas.BifrostContext, _ schemas.Key, _ *schemas.BifrostTextCompletionRequest) (*schemas.BifrostTextCompletionResponse, *schemas.BifrostError) {
