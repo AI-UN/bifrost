@@ -1414,6 +1414,11 @@ func (provider *SiliconFlowProvider) BatchCancel(ctx *schemas.BifrostContext, ke
 	return nil, lastErr
 }
 
+// ModelRetrieve is not supported by the SiliconFlow provider.
+func (provider *SiliconFlowProvider) ModelRetrieve(_ *schemas.BifrostContext, _ schemas.Key, _ *schemas.BifrostModelRetrieveRequest) (*schemas.BifrostModelRetrieveResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.ModelRetrieveRequest, provider.GetProviderKey())
+}
+
 // BatchDelete is not supported by the SiliconFlow provider.
 func (provider *SiliconFlowProvider) BatchDelete(_ *schemas.BifrostContext, _ []schemas.Key, _ *schemas.BifrostBatchDeleteRequest) (*schemas.BifrostBatchDeleteResponse, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.BatchDeleteRequest, provider.GetProviderKey())
