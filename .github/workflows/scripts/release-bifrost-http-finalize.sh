@@ -82,8 +82,10 @@ for plugin_name in "${!PLUGIN_VERSIONS[@]}"; do
 done
 
 # Remove Markdown comments before validating or publishing changelog content.
+# Non-greedy across the whole file, so a one-line `<!-- ... -->` removes only
+# itself instead of opening a range that swallows the rest of the file.
 strip_changelog_comments() {
-  sed '/<!--/,/-->/d'
+  perl -0777 -pe 's/<!--.*?-->//gs'
 }
 
 changelog_is_empty() {
@@ -112,6 +114,27 @@ fi
 if changelog_is_empty "$CHANGELOG_BODY"; then
   echo "❌ Changelog is empty"
   exit 1
+fi
+
+# Fork release notes live in a fork-owned file per release tag, so they never
+# collide with upstream's edits to transports/changelog.md during the nightly
+# rebase and never leak into a later release.
+FORK_CHANGELOG_DIR="${FORK_CHANGELOG_DIR:-}"
+if [[ -n "$FORK_CHANGELOG_DIR" ]]; then
+  FORK_CHANGELOG_FILE="${FORK_CHANGELOG_DIR}/${TAG_NAME}.md"
+  if [[ -f "$FORK_CHANGELOG_FILE" ]]; then
+    FORK_CHANGELOG_BODY="$(strip_changelog_comments < "$FORK_CHANGELOG_FILE")"
+    if ! changelog_is_empty "$FORK_CHANGELOG_BODY"; then
+      echo "ℹ️ Appending fork release notes from $FORK_CHANGELOG_FILE"
+      CHANGELOG_BODY="${CHANGELOG_BODY}
+
+## 🍴 Fork Changes
+
+${FORK_CHANGELOG_BODY}"
+    fi
+  else
+    echo "ℹ️ No fork release notes at $FORK_CHANGELOG_FILE"
+  fi
 fi
 echo "📝 New changelog: $CHANGELOG_BODY"
 
