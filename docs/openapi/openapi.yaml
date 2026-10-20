@@ -5,8 +5,9 @@ info:
     Bifrost HTTP Transport API for AI model inference and gateway management.
 
     This API provides a unified interface for interacting with multiple AI providers
-    including OpenAI, Anthropic, Bedrock, Gemini, and more through a single API,
-    along with comprehensive management APIs for configuring and monitoring the gateway.
+    including OpenAI, Anthropic, Bedrock, Gemini, Z.AI (international), Zhipu AI
+    (mainland China), and more through a single API, along with comprehensive
+    management APIs for configuring and monitoring the gateway.
 
     ## API Structure
 

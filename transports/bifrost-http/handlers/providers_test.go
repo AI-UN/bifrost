@@ -182,8 +182,7 @@ func TestAddProvider_ReloadsRuntimeEvenWhenModelDiscoveryIsSkipped(t *testing.T)
 	}
 }
 
-// TestAddProvider_CustomProviderBaseTypes pins which base_provider_type values
-// the provider API accepts: typesafe is a supported base, vertex is not.
+// TestAddProvider_CustomProviderBaseTypes pins which base_provider_type values the provider API accepts.
 func TestAddProvider_CustomProviderBaseTypes(t *testing.T) {
 	SetLogger(&mockLogger{})
 	lib.SetLogger(&mockLogger{})
@@ -195,7 +194,8 @@ func TestAddProvider_CustomProviderBaseTypes(t *testing.T) {
 		wantStatus int
 	}{
 		{name: "typesafe base accepted", provider: "my-typesafe", base: schemas.Typesafe, wantStatus: fasthttp.StatusOK},
-		{name: "vertex base rejected", provider: "my-vertex", base: schemas.Vertex, wantStatus: fasthttp.StatusBadRequest},
+		{name: "Z.AI base accepted", provider: "my-zai", base: schemas.ZAI, wantStatus: fasthttp.StatusOK},
+		{name: "Zhipu base accepted", provider: "my-zhipu", base: schemas.Zhipu, wantStatus: fasthttp.StatusOK},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

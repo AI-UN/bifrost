@@ -164,6 +164,8 @@ const PROVIDER_KEYWORDS = {
   typesafe: ["typesafe", "/typesafe", "jev-"],
   siliconflow: ["siliconflow", "siliconflow.com"],
   "siliconflow-cn": ["siliconflow-cn", "siliconflow.cn"],
+  zai: ["zai/", "z.ai"],
+  zhipu: ["zhipu", "bigmodel.cn"],
 };
 
 // Haystack = item JSON + ancestor folder names. Folder names encode the harness
@@ -328,6 +330,14 @@ const itemMatchesProvider = (item, ancestorNames, provider = PROVIDER) => {
   // would otherwise try to reach SiliconFlow. Route them away from replicate; the reverse
   // direction needs no guard because real Replicate rows never say "siliconflow".
   if (haystack.includes("siliconflow") && provider === "replicate") return false;
+  // Z.AI and Zhipu share the GLM model family; keep their regional endpoint rows exclusive
+  // so ZAI rows carrying Zhipu documentation terms do not enter the Zhipu provider shard.
+  const isZhipu = haystack.includes("zhipu") || haystack.includes("bigmodel.cn");
+  if (provider === "zhipu") return isZhipu;
+  if (isZhipu) return false;
+  const isZAI = haystack.includes("zai/") || haystack.includes("z.ai");
+  if (provider === "zai") return isZAI;
+  if (isZAI) return false;
   // Vertex rows run Gemini models (model "vertex/gemini-..."), so they'd otherwise be claimed
   // by the gemini partition too - same collision class as openrouter/bedrock_mantle above.
   // Route them exclusively to vertex.
