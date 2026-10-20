@@ -1275,6 +1275,27 @@ func TestUpdateConfig_CompatAllFlagsOffKeepsPluginLoaded(t *testing.T) {
 	require.Len(t, cm.reloaded, 1, "compat plugin must be reloaded with the new config")
 	assert.Equal(t, compat.Config{}, *cm.reloaded[0])
 }
+func TestUpdateConfig_CompatReloadPassesResponsesToChat(t *testing.T) {
+	SetLogger(&mockLogger{})
+	store := newRealOAuth2Store(t)
+	cfg := newTestOAuth2Config(store, configtables.MCPServerAuthModeHeaders, false)
+	cfg.ClientConfig.Compat = configstore.CompatConfig{
+		ConvertTextToChat:                   true,
+		ConvertChatToResponses:              true,
+		ShouldDropParams:                    true,
+		ShouldConvertParams:                 true,
+		AzureDeepseek:                       true,
+		ForceReasoningOnlyModelsToResponses: true,
+	}
+	cm := &recordingCompatConfigManager{}
+	h := &ConfigHandler{store: cfg, configManager: cm}
+
+	ctx := putConfigCtx(`{"client_config":{"log_retention_days":7,"compat":{"convert_responses_to_chat":true}}}`)
+	h.updateConfig(ctx)
+	require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	require.Len(t, cm.reloaded, 1, "changing the Responses-to-Chat toggle must reload compat")
+	assert.True(t, cm.reloaded[0].ConvertResponsesToChat)
+}
 
 const compatAllOffPayload = `{"client_config":{"log_retention_days":7,"compat":{"convert_text_to_chat":false,"convert_chat_to_responses":false,"should_drop_params":false,"should_convert_params":false,"azure_deepseek":false,"force_reasoning_only_models_to_responses":false}}}`
 

@@ -570,6 +570,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_vertex_use_session_routing_column"}, run: migrationAddVertexUseSessionRoutingColumn},
 	{IDs: []string{"add_rss_feeds_table"}, run: migrationAddRSSFeedsTable},
 	{IDs: []string{"add_rss_feeds_icon_url_column"}, run: migrationAddRSSFeedsIconURLColumn},
+	{IDs: []string{"add_compat_convert_responses_to_chat_column"}, run: migrationAddCompatConvertResponsesToChatColumn},
 }
 
 // warpLogEmbeddingColumns are the semantic-search configuration columns added
@@ -2089,6 +2090,7 @@ func migrationDropAllowDirectKeysColumn(ctx context.Context, db *gorm.DB, logger
 					Compat: CompatConfig{
 						ConvertTextToChat:      cc.CompatConvertTextToChat,
 						ConvertChatToResponses: cc.CompatConvertChatToResponses,
+						ConvertResponsesToChat: cc.CompatConvertResponsesToChat,
 						ShouldDropParams:       cc.CompatShouldDropParams,
 						ShouldConvertParams:    cc.CompatShouldConvertParams,
 					},
@@ -9400,6 +9402,7 @@ func migrationReplaceEnableLiteLLMWithCompatColumns(ctx context.Context, db *gor
 			for _, col := range []string{
 				"compat_convert_text_to_chat",
 				"compat_convert_chat_to_responses",
+				"compat_convert_responses_to_chat",
 				"compat_should_drop_params",
 				"compat_should_convert_params",
 			} {
@@ -9464,6 +9467,39 @@ func migrationDefaultCompatShouldConvertParamsFalse(ctx context.Context, db *gor
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error running default_compat_should_convert_params_false migration: %s", err.Error())
+	}
+	return nil
+}
+
+func migrationAddCompatConvertResponsesToChatColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_compat_convert_responses_to_chat_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mig := tx.Migrator()
+
+			if !mig.HasColumn(&tables.TableClientConfig{}, "compat_convert_responses_to_chat") {
+				if err := mig.AddColumn(&tables.TableClientConfig{}, "compat_convert_responses_to_chat"); err != nil {
+					return err
+				}
+			}
+
+			return tx.Exec("UPDATE config_client SET compat_convert_responses_to_chat = FALSE WHERE compat_convert_responses_to_chat IS NULL").Error
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mig := tx.Migrator()
+			if mig.HasColumn(&tables.TableClientConfig{}, "compat_convert_responses_to_chat") {
+				return mig.DropColumn(&tables.TableClientConfig{}, "compat_convert_responses_to_chat")
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running add_compat_convert_responses_to_chat_column migration: %s", err.Error())
 	}
 	return nil
 }
@@ -10602,6 +10638,7 @@ func migrationRefreshConfigHashAfterMCPExternalServerURLRemoval(ctx context.Cont
 					Compat: CompatConfig{
 						ConvertTextToChat:      cc.CompatConvertTextToChat,
 						ConvertChatToResponses: cc.CompatConvertChatToResponses,
+						ConvertResponsesToChat: cc.CompatConvertResponsesToChat,
 						ShouldDropParams:       cc.CompatShouldDropParams,
 						ShouldConvertParams:    cc.CompatShouldConvertParams,
 					},

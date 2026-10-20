@@ -171,6 +171,7 @@ Compatibility flags that let Bifrost silently adapt request/response shapes for 
 |-------|------|---------|-------------|
 | `compat.convert_text_to_chat` | boolean | `false` | Wrap legacy `/v1/completions` text requests as chat messages |
 | `compat.convert_chat_to_responses` | boolean | `false` | Translate chat completions to Responses API format |
+| `compat.convert_responses_to_chat` | boolean | `false` | Convert OpenAI Responses requests to chat completions only when the model lacks native Responses support |
 | `compat.should_drop_params` | boolean | `false` | Silently drop unsupported parameters instead of erroring |
 | `compat.should_convert_params` | boolean | `false` | Auto-convert parameter values across provider schemas |
 | `compat.azure_deepseek` | boolean | `false` | Convert Azure DeepSeek responses requests to chat completions so reasoning is preserved for coding harnesses |

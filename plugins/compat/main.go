@@ -20,6 +20,7 @@ const PluginName = "compat"
 type Config struct {
 	ConvertTextToChat                   bool `json:"convert_text_to_chat"`
 	ConvertChatToResponses              bool `json:"convert_chat_to_responses"`
+	ConvertResponsesToChat              bool `json:"convert_responses_to_chat"`
 	ShouldDropParams                    bool `json:"should_drop_params"`
 	ShouldConvertParams                 bool `json:"should_convert_params"`
 	AzureDeepseek                       bool `json:"azure_deepseek"`
@@ -27,12 +28,12 @@ type Config struct {
 	ConvertDecisionToResponses          bool `json:"convert_decision_to_responses"`
 }
 
-// UnmarshalJSON defaults all bool fields to true when absent from JSON, except
-// ConvertDecisionToResponses: emulating a decision through a chat model is opt-in.
+// UnmarshalJSON defaults all bool fields to true when absent, except opt-in response conversions.
 func (c *Config) UnmarshalJSON(data []byte) error {
 	type config struct {
 		ConvertTextToChat                   *bool `json:"convert_text_to_chat"`
 		ConvertChatToResponses              *bool `json:"convert_chat_to_responses"`
+		ConvertResponsesToChat              *bool `json:"convert_responses_to_chat"`
 		ShouldDropParams                    *bool `json:"should_drop_params"`
 		ShouldConvertParams                 *bool `json:"should_convert_params"`
 		AzureDeepseek                       *bool `json:"azure_deepseek"`
@@ -45,6 +46,7 @@ func (c *Config) UnmarshalJSON(data []byte) error {
 	}
 	c.ConvertTextToChat = s.ConvertTextToChat == nil || *s.ConvertTextToChat
 	c.ConvertChatToResponses = s.ConvertChatToResponses == nil || *s.ConvertChatToResponses
+	c.ConvertResponsesToChat = s.ConvertResponsesToChat != nil && *s.ConvertResponsesToChat
 	c.ShouldDropParams = s.ShouldDropParams == nil || *s.ShouldDropParams
 	c.ShouldConvertParams = s.ShouldConvertParams == nil || *s.ShouldConvertParams
 	c.AzureDeepseek = s.AzureDeepseek == nil || *s.AzureDeepseek
@@ -55,7 +57,7 @@ func (c *Config) UnmarshalJSON(data []byte) error {
 
 // IsEnabled returns true if any compat feature is enabled
 func (c Config) IsEnabled() bool {
-	return c.ConvertTextToChat || c.ConvertChatToResponses || c.ShouldDropParams || c.ShouldConvertParams || c.AzureDeepseek || c.ForceReasoningOnlyModelsToResponses || c.ConvertDecisionToResponses
+	return c.ConvertTextToChat || c.ConvertChatToResponses || c.ConvertResponsesToChat || c.ShouldDropParams || c.ShouldConvertParams || c.AzureDeepseek || c.ForceReasoningOnlyModelsToResponses || c.ConvertDecisionToResponses
 }
 
 // CompatPlugin provides LiteLLM-compatible request/response transformations.
@@ -67,9 +69,10 @@ func (c Config) IsEnabled() bool {
 // anything PreLLMHook needs to hand to PostLLMHook travels on the request's
 // BifrostContext instead.
 type CompatPlugin struct {
-	config       Config
-	logger       schemas.Logger
-	modelCatalog *modelcatalog.ModelCatalog
+	config                       Config
+	logger                       schemas.Logger
+	modelCatalog                 *modelcatalog.ModelCatalog
+	customProviderConfigResolver func(provider schemas.ModelProvider) *schemas.CustomProviderConfig
 }
 
 // Init creates a new compat plugin instance with model catalog support.
@@ -77,11 +80,17 @@ type CompatPlugin struct {
 // chat completion natively. If the model catalog is nil, the plugin will
 // convert all text completion requests to chat completion and all chat
 // completion requests to responses.
-func Init(config Config, logger schemas.Logger, mc *modelcatalog.ModelCatalog) (*CompatPlugin, error) {
+func Init(
+	config Config,
+	logger schemas.Logger,
+	mc *modelcatalog.ModelCatalog,
+	customProviderConfigResolver func(provider schemas.ModelProvider) *schemas.CustomProviderConfig,
+) (*CompatPlugin, error) {
 	return &CompatPlugin{
-		config:       config,
-		logger:       logger,
-		modelCatalog: mc,
+		config:                       config,
+		logger:                       logger,
+		modelCatalog:                 mc,
+		customProviderConfigResolver: customProviderConfigResolver,
 	}, nil
 }
 
@@ -135,6 +144,7 @@ func (p *CompatPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 
 	convertTextToChatOverride, convertTextToChatOverrideEnabled := ctx.Value(schemas.BifrostContextKeyCompatConvertTextToChat).(bool)
 	convertChatToResponsesOverride, convertChatToResponsesOverrideEnabled := ctx.Value(schemas.BifrostContextKeyCompatConvertChatToResponses).(bool)
+	convertResponsesToChatOverride, convertResponsesToChatOverrideEnabled := ctx.Value(schemas.BifrostContextKeyCompatConvertResponsesToChat).(bool)
 	shouldDropParamsOverride, shouldDropParamsOverrideEnabled := ctx.Value(schemas.BifrostContextKeyCompatShouldDropParams).(bool)
 	shouldConvertParamsOverride, shouldConvertParamsOverrideEnabled := ctx.Value(schemas.BifrostContextKeyCompatShouldConvertParams).(bool)
 	azureDeepseekOverride, azureDeepseekOverrideEnabled := ctx.Value(schemas.BifrostContextKeyCompatAzureDeepseek).(bool)
@@ -149,14 +159,32 @@ func (p *CompatPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 	// Text completion → chat conversion
 	if (convertTextToChatOverrideEnabled && convertTextToChatOverride) || p.config.ConvertTextToChat {
 		if (modifiedReq.RequestType == schemas.TextCompletionRequest || modifiedReq.RequestType == schemas.TextCompletionStreamRequest) && modifiedReq.TextCompletionRequest != nil {
-			p.markForConversion(ctx, modifiedReq.TextCompletionRequest.Provider, modifiedReq.TextCompletionRequest.Model, schemas.TextCompletionRequest, schemas.ChatCompletionRequest)
+			p.markForConversion(ctx, modifiedReq.TextCompletionRequest.Provider, modifiedReq.TextCompletionRequest.Model, schemas.TextCompletionRequest, schemas.ChatCompletionRequest, schemas.ChatCompletionRequest, convertTextToChatOverrideEnabled && convertTextToChatOverride)
 		}
 	}
 
 	// Chat completion → responses conversion
 	if (convertChatToResponsesOverrideEnabled && convertChatToResponsesOverride) || p.config.ConvertChatToResponses {
 		if (modifiedReq.RequestType == schemas.ChatCompletionRequest || modifiedReq.RequestType == schemas.ChatCompletionStreamRequest) && modifiedReq.ChatRequest != nil {
-			p.markForConversion(ctx, modifiedReq.ChatRequest.Provider, modifiedReq.ChatRequest.Model, schemas.ChatCompletionRequest, schemas.ResponsesRequest)
+			p.markForConversion(ctx, modifiedReq.ChatRequest.Provider, modifiedReq.ChatRequest.Model, schemas.ChatCompletionRequest, schemas.ResponsesRequest, schemas.ResponsesRequest, convertChatToResponsesOverrideEnabled && convertChatToResponsesOverride)
+		}
+	}
+
+	// Responses → chat completion conversion
+	if (convertResponsesToChatOverrideEnabled && convertResponsesToChatOverride) || p.config.ConvertResponsesToChat {
+		if (modifiedReq.RequestType == schemas.ResponsesRequest || modifiedReq.RequestType == schemas.ResponsesStreamRequest) && modifiedReq.ResponsesRequest != nil {
+			forced := convertResponsesToChatOverrideEnabled && convertResponsesToChatOverride
+			if !forced && !responsesToChatFallbackApplies(ctx) {
+				ctx.Log(schemas.LogLevelDebug, "skipping responses -> chat completions fallback: caller does not speak the OpenAI Responses wire")
+			} else {
+				currentType := schemas.ResponsesRequest
+				targetType := schemas.ChatCompletionRequest
+				if modifiedReq.RequestType == schemas.ResponsesStreamRequest {
+					currentType = schemas.ResponsesStreamRequest
+					targetType = schemas.ChatCompletionStreamRequest
+				}
+				p.markForConversion(ctx, modifiedReq.ResponsesRequest.Provider, modifiedReq.ResponsesRequest.Model, currentType, targetType, schemas.ChatCompletionRequest, forced)
+			}
 		}
 	}
 
@@ -263,21 +291,66 @@ func (p *CompatPlugin) Cleanup() error {
 	return nil
 }
 
-// markForConversion checks if the model supports the current request type; if not, mark for conversion
-func (p *CompatPlugin) markForConversion(ctx *schemas.BifrostContext, provider schemas.ModelProvider, model string, currentType schemas.RequestType, targetType schemas.RequestType) {
+// integrationTypeOpenAI mirrors integrations.RouteConfigTypeOpenAI, duplicated as a
+// literal because the transport imports this plugin, not the other way round.
+const integrationTypeOpenAI = "openai"
+
+// responsesToChatFallbackApplies reports whether the caller's wire survives downgrading
+// its Responses request to chat completions. Core leaves the chat -> Responses re-assembly
+// to the provider, so only callers on the OpenAI Responses wire get a usable stream back.
+// Anthropic Messages and Gemini GenerateContent are internally ResponsesRequest too, but
+// their routes cannot render chat chunks. An absent value means a direct Go SDK caller.
+func responsesToChatFallbackApplies(ctx *schemas.BifrostContext) bool {
+	integration, ok := ctx.Value(schemas.BifrostContextKeyIntegrationType).(string)
+	if !ok || integration == "" {
+		return true
+	}
+	return integration == integrationTypeOpenAI
+}
+
+// markForConversion checks if the model supports the current request type; if not, mark for conversion.
+// When explicitly enabled per-request via x-bf-compat and the model catalog has no
+// capability entry for the model, we still force the fallback conversion.
+func (p *CompatPlugin) markForConversion(ctx *schemas.BifrostContext, provider schemas.ModelProvider, model string, currentType schemas.RequestType, targetType schemas.RequestType, changeType schemas.RequestType, forceIfUnknown bool) {
 	shouldConvert := false
-	if p.modelCatalog != nil {
-		if !p.modelCatalog.IsRequestTypeSupported(model, provider, currentType) && p.modelCatalog.IsRequestTypeSupported(model, provider, targetType) {
+
+	if customConfig := p.getCustomProviderConfig(provider); customConfig != nil {
+		currentSupported := customConfig.IsOperationAllowed(currentType)
+		targetSupported := customConfig.IsOperationAllowed(targetType)
+		if !currentSupported && targetSupported {
+			shouldConvert = true
+		} else if currentSupported || !targetSupported {
+			shouldConvert = false
+		}
+	} else if p.modelCatalog != nil {
+		catalogCurrentType := currentType
+		catalogTargetType := targetType
+		if catalogCurrentType == schemas.ResponsesStreamRequest {
+			catalogCurrentType = schemas.ResponsesRequest
+		}
+		if catalogTargetType == schemas.ChatCompletionStreamRequest {
+			catalogTargetType = schemas.ChatCompletionRequest
+		}
+		currentSupported, currentKnown := p.isRequestTypeSupported(model, provider, catalogCurrentType)
+		targetSupported, targetKnown := p.isRequestTypeSupported(model, provider, catalogTargetType)
+		if !currentKnown || !targetKnown {
+			if forceIfUnknown {
+				shouldConvert = true
+			}
+		} else if !currentSupported && targetSupported {
+			shouldConvert = true
+		} else if forceIfUnknown && !currentSupported && !targetSupported {
 			shouldConvert = true
 		}
-	} else {
+	} else if forceIfUnknown {
+		shouldConvert = true
+	} else if p.logger != nil {
 		p.logger.Debug("compat: model calalog is nil")
 		ctx.Log(schemas.LogLevelDebug, fmt.Sprintf("model catalog unavailable, skipping %s -> %s conversion check for model %s", currentType, targetType, model))
 	}
 
 	if shouldConvert {
-		ctx.SetValue(schemas.BifrostContextKeyChangeRequestType, targetType)
-		ctx.Log(schemas.LogLevelInfo, fmt.Sprintf("model %s (%s) does not support %s, converting request to %s", model, provider, currentType, targetType))
+		ctx.SetValue(schemas.BifrostContextKeyChangeRequestType, changeType)
 	}
 }
 
@@ -329,4 +402,24 @@ func (p *CompatPlugin) markReasoningWithToolsForResponses(ctx *schemas.BifrostCo
 	}
 	ctx.SetValue(schemas.BifrostContextKeyChangeRequestType, schemas.ResponsesRequest)
 	ctx.Log(schemas.LogLevelInfo, fmt.Sprintf("model %s (%s) does not support reasoning with tool calls on %s, converting request to %s", model, provider, schemas.ChatCompletionRequest, schemas.ResponsesRequest))
+}
+
+func (p *CompatPlugin) getCustomProviderConfig(provider schemas.ModelProvider) *schemas.CustomProviderConfig {
+	if p == nil || p.customProviderConfigResolver == nil {
+		return nil
+	}
+	return p.customProviderConfigResolver(provider)
+}
+
+func (p *CompatPlugin) isRequestTypeSupported(model string, provider schemas.ModelProvider, requestType schemas.RequestType) (supported bool, known bool) {
+	if p == nil || p.modelCatalog == nil {
+		return false, false
+	}
+	defer func() {
+		if recover() != nil {
+			supported = false
+			known = false
+		}
+	}()
+	return p.modelCatalog.IsRequestTypeSupported(model, provider, requestType), true
 }

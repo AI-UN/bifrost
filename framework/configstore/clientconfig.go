@@ -51,6 +51,7 @@ type EnvKeyInfo struct {
 type CompatConfig struct {
 	ConvertTextToChat                   bool `json:"convert_text_to_chat"`
 	ConvertChatToResponses              bool `json:"convert_chat_to_responses"`
+	ConvertResponsesToChat              bool `json:"convert_responses_to_chat"`
 	ShouldDropParams                    bool `json:"should_drop_params"`
 	ShouldConvertParams                 bool `json:"should_convert_params"`
 	AzureDeepseek                       bool `json:"azure_deepseek"`
@@ -58,12 +59,12 @@ type CompatConfig struct {
 	ConvertDecisionToResponses          bool `json:"convert_decision_to_responses"`
 }
 
-// UnmarshalJSON defaults all bool fields to true when absent from JSON, except
-// ConvertDecisionToResponses: emulating a decision through a chat model is opt-in.
+// UnmarshalJSON defaults all bool fields to true when absent, except opt-in response conversions.
 func (c *CompatConfig) UnmarshalJSON(data []byte) error {
 	type compatConfig struct {
 		ConvertTextToChat                   *bool `json:"convert_text_to_chat"`
 		ConvertChatToResponses              *bool `json:"convert_chat_to_responses"`
+		ConvertResponsesToChat              *bool `json:"convert_responses_to_chat"`
 		ShouldDropParams                    *bool `json:"should_drop_params"`
 		ShouldConvertParams                 *bool `json:"should_convert_params"`
 		AzureDeepseek                       *bool `json:"azure_deepseek"`
@@ -76,6 +77,7 @@ func (c *CompatConfig) UnmarshalJSON(data []byte) error {
 	}
 	c.ConvertTextToChat = s.ConvertTextToChat == nil || *s.ConvertTextToChat
 	c.ConvertChatToResponses = s.ConvertChatToResponses == nil || *s.ConvertChatToResponses
+	c.ConvertResponsesToChat = s.ConvertResponsesToChat != nil && *s.ConvertResponsesToChat
 	c.ShouldDropParams = s.ShouldDropParams == nil || *s.ShouldDropParams
 	c.ShouldConvertParams = s.ShouldConvertParams == nil || *s.ShouldConvertParams
 	c.AzureDeepseek = s.AzureDeepseek == nil || *s.AzureDeepseek
@@ -233,6 +235,9 @@ func (c *ClientConfig) GenerateClientConfigHash() (string, error) {
 	}
 	if c.Compat.ConvertChatToResponses {
 		hash.Write([]byte("compatConvertChatToResponses:true"))
+	}
+	if c.Compat.ConvertResponsesToChat {
+		hash.Write([]byte("compatConvertResponsesToChat:true"))
 	}
 	if c.Compat.ShouldDropParams {
 		hash.Write([]byte("compatShouldDropParams:true"))
