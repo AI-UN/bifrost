@@ -36,11 +36,11 @@ func TestCPAWebSocketHeadersUseSelectedKey(t *testing.T) {
 	config := &schemas.ProviderConfig{
 		NetworkConfig: schemas.NetworkConfig{
 			BaseURL: "https://cpa.example",
-			ExtraHeaders: map[string]string{
+			ExtraHeaders: schemas.NewSecretVarMap(map[string]string{
 				"authorization": "Bearer stale-key",
 				"Originator":    "codex_cli_rs",
 				"X-CPA-Test":    "configured",
-			},
+			}),
 		},
 	}
 	provider, err := NewCPAProvider(config, testLogger{})
@@ -67,7 +67,7 @@ func TestCPAWebSocketHeadersUseSelectedKey(t *testing.T) {
 		}
 		headers["X-CPA-Test"] = "request-local"
 	}
-	if config.NetworkConfig.ExtraHeaders["X-CPA-Test"] != "configured" {
+	if config.NetworkConfig.ExtraHeaders["X-CPA-Test"].Val != "configured" {
 		t.Error("WebSocket headers must not mutate the provider configuration")
 	}
 }
