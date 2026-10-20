@@ -15,6 +15,12 @@ That distinction matters at startup. Bifrost uses `source_of_truth` and per-sect
 `config_hash` is auto-managed. Do not set it manually in `config.json` or API payloads.
 </Note>
 
+<Warning>
+This fork's active `patched` branch no longer includes the optional multinode configuration-sync patch. The patch is retained separately on `feat/oss-multinode-config-sync`; `source_of_truth: "config_store"`, revision-based mutations, and the `/ready` endpoint are not available in this integration.
+
+Before upgrading a deployment that used `source_of_truth: "config_store"`, back up the config database and review the file-backed runtime sections before selecting `split` or `config.json`. The old mode ignored those sections, while split mode can apply changed file definitions at startup. Keep the existing database backend and path; an existing `config_revisions` table may remain unused and does not need to be dropped. Helm readiness probes should use `/health`.
+</Warning>
+
 ---
 
 ## Configuration Setups
