@@ -599,6 +599,25 @@ func TestCreateBaseProvider_CustomTypesafeBase(t *testing.T) {
 	}
 }
 
+func TestCreateBaseProvider_CustomCPABase(t *testing.T) {
+	bifrost := &Bifrost{logger: NewDefaultLogger(schemas.LogLevelError)}
+	provider, err := bifrost.createBaseProvider("my-cpa", &schemas.ProviderConfig{
+		NetworkConfig: schemas.NetworkConfig{
+			BaseURL:                        "http://127.0.0.1:1",
+			DefaultRequestTimeoutInSeconds: 1,
+		},
+		CustomProviderConfig: &schemas.CustomProviderConfig{
+			BaseProviderType: schemas.CPA,
+		},
+	})
+	if err != nil {
+		t.Fatalf("cpa must be a supported custom provider base: %v", err)
+	}
+	if provider.GetProviderKey() != schemas.ModelProvider("my-cpa") {
+		t.Fatalf("expected custom provider key my-cpa, got %q", provider.GetProviderKey())
+	}
+}
+
 func TestHandleProviderRequest_OCROperationNotAllowed(t *testing.T) {
 	providerConfig := &schemas.ProviderConfig{
 		NetworkConfig: schemas.NetworkConfig{

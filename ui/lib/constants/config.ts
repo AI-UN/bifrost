@@ -75,6 +75,7 @@ export const ModelPlaceholders = {
 	typesafe: "e.g. jev-1.13.0, jev-latest, jev-preview",
 	siliconflow: "deepseek-ai/DeepSeek-V3.2",
 	"siliconflow-cn": "deepseek-ai/DeepSeek-V3.2",
+	cpa: "e.g. claude-opus-4-8, gpt-5.6-sol, gemini-3-pro",
 };
 
 export const isKeyRequiredByProvider: Record<ProviderName, boolean> = {
@@ -117,6 +118,7 @@ export const isKeyRequiredByProvider: Record<ProviderName, boolean> = {
 	typesafe: true,
 	siliconflow: true,
 	"siliconflow-cn": true,
+	cpa: true,
 };
 
 export const DefaultNetworkConfig = {

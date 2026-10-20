@@ -34,6 +34,7 @@ const PROVIDER_DISPLAY_NAMES: Record<string, string> = {
   "siliconflow-cn": "SiliconFlow CN",
   zai: "Z.AI",
   zhipu: "Zhipu AI",
+  cpa: "CLI Proxy API",
 };
 
 /**

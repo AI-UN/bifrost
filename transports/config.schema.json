@@ -748,6 +748,9 @@
         },
         "zhipu": {
           "$ref": "#/$defs/provider"
+        },
+        "cpa": {
+          "$ref": "#/$defs/provider"
         }
       },
       "additionalProperties": true
@@ -12844,7 +12847,8 @@
             "siliconflow",
             "siliconflow-cn",
             "zai",
-            "zhipu"
+            "zhipu",
+            "cpa"
           ],
           "description": "Base provider type to extend"
         },
