@@ -295,6 +295,17 @@ export const PROVIDER_SUPPORTED_REQUESTS: Record<BaseProvider, string[]> = {
 		"embedding",
 	],
 	typesafe: ["list_models", "decisions"],
+	zai: ["chat_completion", "chat_completion_stream", "responses", "responses_stream", "count_tokens", "image_generation"],
+	zhipu: [
+		"chat_completion",
+		"chat_completion_stream",
+		"responses",
+		"responses_stream",
+		"count_tokens",
+		"embedding",
+		"rerank",
+		"image_generation",
+	],
 };
 
 export const IS_ENTERPRISE = process.env.BIFROST_IS_ENTERPRISE === "true";
