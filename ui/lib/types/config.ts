@@ -7,7 +7,18 @@ import { SecretVar } from "./schemas";
 export type KnownProvider = (typeof KnownProvidersNames)[number];
 
 // Base provider names - all supported base providers
-export const BaseProviderNames = ["openai", "anthropic", "cohere", "gemini", "bedrock", "replicate", "fireworks", "zai", "zhipu", "typesafe"] as const;
+export const BaseProviderNames = [
+	"openai",
+	"anthropic",
+	"cohere",
+	"gemini",
+	"bedrock",
+	"replicate",
+	"fireworks",
+	"zai",
+	"zhipu",
+	"typesafe",
+] as const;
 
 export type BaseProvider = (typeof BaseProviderNames)[number];
 
