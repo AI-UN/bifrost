@@ -221,6 +221,7 @@ func TestSiliconFlowProviderUnsupportedOperations(t *testing.T) {
 				name   string
 				invoke func() *schemas.BifrostError
 			}{
+				{name: "ModelRetrieve", invoke: func() *schemas.BifrostError { _, err := provider.ModelRetrieve(nil, key, nil); return err }},
 				{name: "TranscriptionStream", invoke: func() *schemas.BifrostError {
 					_, err := provider.TranscriptionStream(nil, nil, nil, key, nil)
 					return err
