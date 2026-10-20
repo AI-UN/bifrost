@@ -1092,7 +1092,7 @@ func HandleOpenAIChatCompletionRequestWithConverter(
 	url string,
 	request *schemas.BifrostChatRequest,
 	authHeader map[string]string,
-	extraHeaders map[string]string,
+	extraHeaders map[string]schemas.SecretVar,
 	sendBackRawRequest bool,
 	sendBackRawResponse bool,
 	providerName schemas.ModelProvider,

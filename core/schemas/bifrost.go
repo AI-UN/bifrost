@@ -102,6 +102,8 @@ var SupportedBaseProviders = []ModelProvider{
 	OpenAI,
 	HuggingFace,
 	Replicate,
+	ZAI,
+	Zhipu,
 	Typesafe,
 }
 
