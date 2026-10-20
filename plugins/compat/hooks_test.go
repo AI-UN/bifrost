@@ -185,7 +185,7 @@ func TestReasoningWithToolsResponsesRouting(t *testing.T) {
 			"no-reasoning-with-tools": {"reasoning", "tools"},
 			"reasoning-with-tools":    {"reasoning", "tools", "reasoning_with_tool_calls"},
 		})
-		p, err := Init(Config{ShouldDropParams: true, ForceReasoningOnlyModelsToResponses: enabled}, bifrost.NewNoOpLogger(), modelcatalog.NewTestCatalogWithDatasheet(ds))
+		p, err := Init(Config{ShouldDropParams: true, ForceReasoningOnlyModelsToResponses: enabled}, bifrost.NewNoOpLogger(), modelcatalog.NewTestCatalogWithDatasheet(ds), nil)
 		if err != nil {
 			t.Fatalf("Init: %v", err)
 		}
@@ -332,7 +332,7 @@ func TestDecisionToResponsesEmulationOptIn(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			p, err := Init(Config{ConvertDecisionToResponses: tt.enabled}, bifrost.NewNoOpLogger(), nil)
+			p, err := Init(Config{ConvertDecisionToResponses: tt.enabled}, bifrost.NewNoOpLogger(), nil, nil)
 			if err != nil {
 				t.Fatalf("Init: %v", err)
 			}

@@ -570,6 +570,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_vertex_use_session_routing_column"}, run: migrationAddVertexUseSessionRoutingColumn},
 	{IDs: []string{"add_rss_feeds_table"}, run: migrationAddRSSFeedsTable},
 	{IDs: []string{"add_rss_feeds_icon_url_column"}, run: migrationAddRSSFeedsIconURLColumn},
+	{IDs: []string{"add_compat_convert_responses_to_chat_column"}, run: migrationAddCompatConvertResponsesToChatColumn},
 }
 
 // warpLogEmbeddingColumns are the semantic-search configuration columns added

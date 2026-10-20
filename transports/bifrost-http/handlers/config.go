@@ -904,6 +904,7 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 		compatCfg := &compat.Config{
 			ConvertTextToChat:                   newCompat.ConvertTextToChat,
 			ConvertChatToResponses:              newCompat.ConvertChatToResponses,
+			ConvertResponsesToChat:              newCompat.ConvertResponsesToChat,
 			ShouldDropParams:                    newCompat.ShouldDropParams,
 			ShouldConvertParams:                 newCompat.ShouldConvertParams,
 			AzureDeepseek:                       newCompat.AzureDeepseek,

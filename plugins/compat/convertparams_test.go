@@ -35,7 +35,7 @@ func newConvertTestPlugin(t *testing.T, cfg Config) *CompatPlugin {
 		ID:      "anthropic-key",
 		Aliases: schemas.KeyAliases{"team-claude": {ModelID: "claude-haiku-4-5-20251001"}},
 	}})
-	p, err := Init(cfg, bifrost.NewNoOpLogger(), mc)
+	p, err := Init(cfg, bifrost.NewNoOpLogger(), mc, nil)
 	if err != nil {
 		t.Fatalf("Init: %v", err)
 	}
@@ -169,22 +169,6 @@ func TestConvertUnsupportedParamValues_FitsReasoningBudget(t *testing.T) {
 			t.Errorf("changes = %v, want none", changes)
 		}
 	})
-}
-
-// newConvertTestPlugin builds a plugin whose catalog knows one gemini row with
-// a 65536 output-token limit.
-func newConvertTestPlugin(t *testing.T, cfg Config) *CompatPlugin {
-	t.Helper()
-	ds := datasheet.NewTestStore(nil)
-	ds.SetPricingRowsForTest([]configstoreTables.TableModelPricing{
-		{Model: "gemini-test-flash", Provider: string(schemas.Gemini), Mode: "chat", MaxOutputTokens: new(65536)},
-		{Model: "gemini-nocap-flash", Provider: string(schemas.Gemini), Mode: "chat"},
-	})
-	p, err := Init(cfg, bifrost.NewNoOpLogger(), modelcatalog.NewTestCatalogWithDatasheet(ds), nil)
-	if err != nil {
-		t.Fatalf("Init: %v", err)
-	}
-	return p
 }
 
 // TestPluginConvertParamsFitsMaxOutputTokens is the user-reported case:
