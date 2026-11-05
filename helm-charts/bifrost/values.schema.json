@@ -1797,7 +1797,9 @@
                         "databricks",
                         "cloudflare",
                         "byteplus",
-                        "baseten"
+                        "baseten",
+                        "siliconflow",
+                        "siliconflow-cn"
                       ]
                     },
                     "embedding_model": {
