@@ -4546,7 +4546,8 @@
                         "huggingface",
                         "databricks",
                         "cloudflare",
-                        "byteplus"
+                        "byteplus",
+                        "deepinfra"
                       ]
                     },
                     "embedding_model": {
