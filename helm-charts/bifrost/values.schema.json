@@ -1506,7 +1506,9 @@
                         "sgl",
                         "huggingface",
                         "databricks",
-                        "cloudflare"
+                        "cloudflare",
+                        "siliconflow",
+                        "siliconflow-cn"
                       ]
                     },
                     "embedding_model": {
