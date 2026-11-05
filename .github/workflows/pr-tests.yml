@@ -80,6 +80,7 @@ jobs:
             ark.ap-southeast.bytepluses.com:443
             api.cloudflare.com:443
             api.cohere.ai:443
+            api.deepinfra.com:443
             api.deepseek.com:443
             api.elevenlabs.io:443
             api.fireworks.ai:443
