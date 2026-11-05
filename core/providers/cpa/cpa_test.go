@@ -438,6 +438,28 @@ func TestPassthroughDialect(t *testing.T) {
 	}
 }
 
+func TestPassthroughRequestForDialect(t *testing.T) {
+	req := &schemas.BifrostPassthroughRequest{Path: "/v1beta/models/gemini-3-pro:generateContent"}
+	geminiReq := passthroughRequestForDialect(req, dialectGemini)
+	if geminiReq == req {
+		t.Fatal("Gemini passthrough request must adapt the version path for its versioned base URL")
+	}
+	if geminiReq.Path != "/models/gemini-3-pro:generateContent" {
+		t.Fatalf("Gemini path = %q, want /models/gemini-3-pro:generateContent", geminiReq.Path)
+	}
+	if req.Path != "/v1beta/models/gemini-3-pro:generateContent" {
+		t.Fatalf("original request path mutated to %q", req.Path)
+	}
+
+	openAIReq := passthroughRequestForDialect(req, dialectOpenAI)
+	if openAIReq != req {
+		t.Fatal("OpenAI passthrough request should be forwarded without a copy")
+	}
+	if got := passthroughPathForDialect(dialectGemini, "/v1beta"); got != "" {
+		t.Fatalf("exact Gemini API version path = %q, want empty", got)
+	}
+}
+
 // TestDialectConfigIsolation: the sub-provider constructors mutate the config they
 // are handed, so they must not share one. A shared config would leave whichever
 // provider is built last owning everyone's base URL.

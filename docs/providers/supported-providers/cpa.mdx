@@ -39,6 +39,24 @@ One provider entry, rather than three, matters for two reasons:
 | Image edit | ✅ | 🟡 | Streaming only for the OpenAI-dialect image models |
 | Image variation | ❌ | - | CPA publishes no `/v1/images/variations` route |
 | Embeddings, rerank, OCR, audio, video, batch, files, containers, cached content | ❌ | ❌ | No CPA route |
+| Passthrough | ✅ | ✅ | `/cpa_passthrough`; dialect follows the request path |
+
+## Passthrough
+
+CPA passthrough is available at `/cpa_passthrough`. Bifrost strips only that prefix and forwards
+the remaining path and body unchanged, so the path selects CPA's wire dialect just as it does for
+native requests:
+
+| Client dialect | Example request path |
+| --- | --- |
+| OpenAI | `POST /cpa_passthrough/v1/chat/completions` |
+| Anthropic | `POST /cpa_passthrough/v1/messages` |
+| Gemini | `POST /cpa_passthrough/v1beta/models/{model}:generateContent` |
+
+Requests stream when the body contains `"stream": true`; Gemini's
+`/v1beta/models/{model}:streamGenerateContent` path also selects streaming. The provider's
+`passthrough.allowed_routes` policy is checked against the stripped CPA API path, for example
+`/v1/chat/completions` or `/v1beta/models/*:generateContent`.
 
 ## Setup & configuration
 
