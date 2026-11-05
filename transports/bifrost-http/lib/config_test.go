@@ -24420,6 +24420,12 @@ func TestValidateCustomProvider_BaseProviderTypes(t *testing.T) {
 		CustomProviderConfig: &schemas.CustomProviderConfig{BaseProviderType: schemas.Typesafe},
 	}, "my-typesafe"))
 	require.NoError(t, ValidateCustomProvider(configstore.ProviderConfig{
+		CustomProviderConfig: &schemas.CustomProviderConfig{BaseProviderType: schemas.ZAI},
+	}, "my-zai"))
+	require.NoError(t, ValidateCustomProvider(configstore.ProviderConfig{
+		CustomProviderConfig: &schemas.CustomProviderConfig{BaseProviderType: schemas.Zhipu},
+	}, "my-zhipu"))
+	require.NoError(t, ValidateCustomProvider(configstore.ProviderConfig{
 		CustomProviderConfig: &schemas.CustomProviderConfig{BaseProviderType: schemas.Typesafe, IsKeyLess: true},
 	}, "my-typesafe-keyless"))
 

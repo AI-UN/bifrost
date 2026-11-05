@@ -32,6 +32,8 @@ const PROVIDER_DISPLAY_NAMES: Record<string, string> = {
   xai: "xAI",
   siliconflow: "SiliconFlow",
   "siliconflow-cn": "SiliconFlow CN",
+  zai: "Z.AI",
+  zhipu: "Zhipu AI",
 };
 
 /**
