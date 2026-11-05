@@ -266,6 +266,17 @@ func NewElevenlabsPassthroughRouter(client *bifrost.Bifrost, handlerStore lib.Ha
 	})
 }
 
+// NewCPAPassthroughRouter creates a passthrough router for /cpa_passthrough.
+// CPA selects the OpenAI, Anthropic or Gemini dialect from the stripped API path.
+func NewCPAPassthroughRouter(client *bifrost.Bifrost, handlerStore lib.HandlerStore, accessResolver AccessResolver, logger schemas.Logger) *PassthroughRouter {
+	return NewPassthroughRouter(client, handlerStore, accessResolver, logger, &PassthroughConfig{
+		Provider: schemas.CPA,
+		StripPrefix: []string{
+			"/cpa_passthrough",
+		},
+	})
+}
+
 // NewGenAIPassthroughRouter creates a passthrough router for /genai_passthrough.
 func NewGenAIPassthroughRouter(client *bifrost.Bifrost, handlerStore lib.HandlerStore, accessResolver AccessResolver, logger schemas.Logger) *PassthroughRouter {
 	return NewPassthroughRouter(client, handlerStore, accessResolver, logger, &PassthroughConfig{
