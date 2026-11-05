@@ -35,7 +35,7 @@ func newConvertTestPlugin(t *testing.T, cfg Config) *CompatPlugin {
 		ID:      "anthropic-key",
 		Aliases: schemas.KeyAliases{"team-claude": {ModelID: "claude-haiku-4-5-20251001"}},
 	}})
-	p, err := Init(cfg, bifrost.NewNoOpLogger(), mc)
+	p, err := Init(cfg, bifrost.NewNoOpLogger(), mc, nil)
 	if err != nil {
 		t.Fatalf("Init: %v", err)
 	}

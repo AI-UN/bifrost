@@ -71,7 +71,7 @@ func TestCloneBifrostReq_FallbackSeesOriginalTools(t *testing.T) {
 		"primary-model":  {"tools"},
 		"fallback-model": {"tools", "web_search", "cache_control", "tool_choice"},
 	})
-	p, err := Init(Config{ShouldDropParams: true, ShouldConvertParams: true}, bifrost.NewNoOpLogger(), modelcatalog.NewTestCatalogWithDatasheet(ds))
+	p, err := Init(Config{ShouldDropParams: true, ShouldConvertParams: true}, bifrost.NewNoOpLogger(), modelcatalog.NewTestCatalogWithDatasheet(ds), nil)
 	if err != nil {
 		t.Fatalf("Init: %v", err)
 	}
