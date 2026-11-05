@@ -299070,6 +299070,133 @@
             }
           }
         }
+        ,
+        {
+          "name": "cpa/{{cpaChatModel}} passthrough OpenAI chat",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text() || '';",
+                  "pm.test('CPA OpenAI passthrough returns HTTP 200: ' + body, function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + body).to.eql(200);",
+                  "});",
+                  "var json = {};",
+                  "try { json = pm.response.json() || {}; } catch (e) { json = {}; }",
+                  "pm.test('CPA OpenAI passthrough returns a chat completion: ' + body, function () {",
+                  "  pm.expect(json.choices, 'failed: ' + body).to.be.an('array').that.is.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"{{cpaChatModel}}\",\n  \"messages\": [\n    { \"role\": \"user\", \"content\": \"Reply with exactly: ok\" }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/cpa_passthrough/v1/chat/completions",
+              "host": ["{{baseUrl}}"],
+              "path": ["cpa_passthrough", "v1", "chat", "completions"]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "cpa/{{cpaChatModel}} passthrough OpenAI streaming chat",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text() || '';",
+                  "pm.test('CPA OpenAI streaming passthrough returns HTTP 200: ' + body, function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + body).to.eql(200);",
+                  "});",
+                  "pm.test('CPA OpenAI streaming passthrough returns SSE data: ' + body.slice(0, 400), function () {",
+                  "  pm.expect(body, 'failed: ' + body.slice(0, 400)).to.include('data:');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"{{cpaChatModel}}\",\n  \"messages\": [\n    { \"role\": \"user\", \"content\": \"Reply with exactly: ok\" }\n  ],\n  \"stream\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/cpa_passthrough/v1/chat/completions",
+              "host": ["{{baseUrl}}"],
+              "path": ["cpa_passthrough", "v1", "chat", "completions"]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "cpa/{{cpaClaudeModel}} passthrough Anthropic messages",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text() || '';",
+                  "pm.test('CPA Anthropic passthrough returns HTTP 200: ' + body, function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + body).to.eql(200);",
+                  "});",
+                  "var json = {};",
+                  "try { json = pm.response.json() || {}; } catch (e) { json = {}; }",
+                  "pm.test('CPA Anthropic passthrough returns a message: ' + body, function () {",
+                  "  pm.expect(json.type, 'failed: ' + body).to.eql('message');",
+                  "  pm.expect(json.content, 'failed: ' + body).to.be.an('array').that.is.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"{{cpaClaudeModel}}\",\n  \"max_tokens\": 64,\n  \"messages\": [\n    { \"role\": \"user\", \"content\": \"Reply with exactly: ok\" }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/cpa_passthrough/v1/messages",
+              "host": ["{{baseUrl}}"],
+              "path": ["cpa_passthrough", "v1", "messages"]
+            }
+          },
+          "response": []
+        }
       ]
     }
   ]
