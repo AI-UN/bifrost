@@ -20,6 +20,7 @@ const BUILT_IN_PASSTHROUGH_PREFIXES: Record<string, string> = {
 	openai: "/openai_passthrough",
 	anthropic: "/anthropic_passthrough",
 	azure: "/azure_passthrough",
+	cpa: "/cpa_passthrough",
 	gemini: GENAI_PASSTHROUGH_PREFIX,
 	vertex: GENAI_PASSTHROUGH_PREFIX,
 };
@@ -28,6 +29,7 @@ const BUILT_IN_PASSTHROUGH_PREFIXES: Record<string, string> = {
 const CUSTOM_BASE_PASSTHROUGH_PREFIXES: Record<string, string> = {
 	openai: "/openai_passthrough",
 	anthropic: "/anthropic_passthrough",
+	cpa: "/cpa_passthrough",
 	gemini: GENAI_PASSTHROUGH_PREFIX,
 	bedrock: "/bedrock_passthrough",
 };

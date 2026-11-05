@@ -133,6 +133,33 @@ func passthroughDialect(path string) dialect {
 	}
 }
 
+// passthroughPathForDialect removes the Gemini version segment that CPA routes keep
+// in their URL. The delegated Gemini provider's base URL already includes /v1beta.
+func passthroughPathForDialect(d dialect, path string) string {
+	if d != dialectGemini {
+		return path
+	}
+	if path == geminiAPIVersionPath {
+		return ""
+	}
+	if strings.HasPrefix(path, geminiAPIVersionPath+"/") {
+		return strings.TrimPrefix(path, geminiAPIVersionPath)
+	}
+	return path
+}
+
+// passthroughRequestForDialect returns req with its path adapted for dialect d,
+// copying only when the path changes so the caller's request is never mutated.
+func passthroughRequestForDialect(req *schemas.BifrostPassthroughRequest, d dialect) *schemas.BifrostPassthroughRequest {
+	path := passthroughPathForDialect(d, req.Path)
+	if path == req.Path {
+		return req
+	}
+	adapted := *req
+	adapted.Path = path
+	return &adapted
+}
+
 // dialectConfig clones config for one sub-provider, retargeting its base URL and
 // forcing its reported identity to cpa.
 //
