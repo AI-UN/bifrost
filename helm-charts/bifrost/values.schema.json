@@ -1807,7 +1807,8 @@
                         "databricks",
                         "cloudflare",
                         "byteplus",
-                        "baseten"
+                        "baseten",
+                        "deepinfra"
                       ]
                     },
                     "embedding_model": {
