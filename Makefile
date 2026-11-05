@@ -2126,7 +2126,7 @@ NEWMAN_HTMLEXTRA_VERSION ?= 1.23.1
 # Every provider fork the harness knows how to run. Also the provider set the
 # status table lists, including the deferred cache-parity pass, so it lives in
 # one place rather than being restated per newman invocation.
-HARNESS_PROVIDERS := openai anthropic bedrock bedrock_mantle gemini vertex azure passthrough openrouter huggingface groq xai mistral cohere deepseek siliconflow siliconflow-cn zai zhipu
+HARNESS_PROVIDERS := openai anthropic bedrock bedrock_mantle gemini vertex azure passthrough openrouter huggingface groq xai mistral cohere deepseek siliconflow siliconflow-cn zai zhipu deepinfra
 
 # Second parallelism axis. Each provider fork is sharded again by modality class so the run is not
 # bound by one provider's whole sequential item list: openai alone is ~1264 requests, and its
@@ -2285,6 +2285,7 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 		printf '  %-18s %s\n' "CHATGPT_ACCESS_TOKEN" "Env-sourced: ChatGPT sign-in access token for the Codex passthrough cases (forwarded as chatgptAccessToken; they skip when unset)."; \
 		printf '  %-18s %s\n' "ZAI_API_KEY"      "Env-sourced Z.AI key; optional ZAI_BASE_URL, ZAI_MODEL, and ZAI_IMAGE_MODEL override collection defaults."; \
 		printf '  %-18s %s\n' "ZHIPU_API_KEY"    "Env-sourced Zhipu AI key; optional ZHIPU_BASE_URL, ZHIPU_MODEL, ZHIPU_EMBEDDING_MODEL, and ZHIPU_RERANK_MODEL override collection defaults."; \
+		printf '  %-18s %s\n' "DEEPINFRA_API_KEY" "Env-sourced DeepInfra key, forwarded to Newman as deepinfraKey."; \
 		printf '\n%s\n' "$(CYAN)Token Parity Matrix$(NC) ('Cross-Cut Round 33', generated - FOLDER or FEATURE=\"token parity\" to target it)"; \
 		printf '  %s\n' "Runs the same 3-round conversation directly against each provider AND through Bifrost, asserts usage lands in the same"; \
 		printf '  %s\n' "range, and writes tmp/harness-token-parity.md. Reuses the SAME env vars tests/integrations/python/config.json already reads"; \
@@ -2902,6 +2903,7 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 				$${ZHIPU_RERANK_MODEL:+--env-var "zhipuRerankModel=$$ZHIPU_RERANK_MODEL"} \
 				$${ZAI_IMAGE_MODEL:+--env-var "zaiImageModel=$$ZAI_IMAGE_MODEL"} \
 				$${ZHIPU_EMBEDDING_MODEL:+--env-var "zhipuEmbeddingModel=$$ZHIPU_EMBEDDING_MODEL"} \
+				$${DEEPINFRA_API_KEY:+--env-var "deepinfraKey=$$DEEPINFRA_API_KEY"} \
 				$${AWS_ACCESS_KEY_ID:+--env-var "bedrockDirectAccessKeyId=$$AWS_ACCESS_KEY_ID"} \
 				$${AWS_SECRET_ACCESS_KEY:+--env-var "bedrockDirectSecretAccessKey=$$AWS_SECRET_ACCESS_KEY"} \
 				$${AWS_REGION:+--env-var "bedrockDirectRegion=$$AWS_REGION"} \
@@ -3188,6 +3190,7 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 				$${ZHIPU_RERANK_MODEL:+--env-var "zhipuRerankModel=$$ZHIPU_RERANK_MODEL"} \
 				$${ZAI_IMAGE_MODEL:+--env-var "zaiImageModel=$$ZAI_IMAGE_MODEL"} \
 				$${ZHIPU_EMBEDDING_MODEL:+--env-var "zhipuEmbeddingModel=$$ZHIPU_EMBEDDING_MODEL"} \
+				$${DEEPINFRA_API_KEY:+--env-var "deepinfraKey=$$DEEPINFRA_API_KEY"} \
 				$${AWS_ACCESS_KEY_ID:+--env-var "bedrockDirectAccessKeyId=$$AWS_ACCESS_KEY_ID"} \
 				$${AWS_SECRET_ACCESS_KEY:+--env-var "bedrockDirectSecretAccessKey=$$AWS_SECRET_ACCESS_KEY"} \
 				$${AWS_REGION:+--env-var "bedrockDirectRegion=$$AWS_REGION"} \
@@ -3261,6 +3264,7 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 				$${ZHIPU_RERANK_MODEL:+--env-var "zhipuRerankModel=$$ZHIPU_RERANK_MODEL"} \
 				$${ZAI_IMAGE_MODEL:+--env-var "zaiImageModel=$$ZAI_IMAGE_MODEL"} \
 				$${ZHIPU_EMBEDDING_MODEL:+--env-var "zhipuEmbeddingModel=$$ZHIPU_EMBEDDING_MODEL"} \
+				$${DEEPINFRA_API_KEY:+--env-var "deepinfraKey=$$DEEPINFRA_API_KEY"} \
 				$${AWS_ACCESS_KEY_ID:+--env-var "bedrockDirectAccessKeyId=$$AWS_ACCESS_KEY_ID"} \
 				$${AWS_SECRET_ACCESS_KEY:+--env-var "bedrockDirectSecretAccessKey=$$AWS_SECRET_ACCESS_KEY"} \
 				$${AWS_REGION:+--env-var "bedrockDirectRegion=$$AWS_REGION"} \
@@ -3321,6 +3325,7 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 				$${CHATGPT_ACCESS_TOKEN:+--env-var "chatgptAccessToken=$$CHATGPT_ACCESS_TOKEN"} \
 				$${ANTHROPIC_API_KEY:+--env-var "anthropicKey=$$ANTHROPIC_API_KEY"} \
 				$${GEMINI_API_KEY:+--env-var "genaiKey=$$GEMINI_API_KEY"} \
+				$${DEEPINFRA_API_KEY:+--env-var "deepinfraKey=$$DEEPINFRA_API_KEY"} \
 				$(if $(ENV_FILE),--environment $(ENV_FILE),) \
 				--reporters cli,json \
 				--reporter-json-export tmp/newman-report-serial.json > tmp/newman-cli-serial.log 2>&1; \

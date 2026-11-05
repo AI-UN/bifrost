@@ -40,6 +40,7 @@ Ensure the Bifrost server is running and the chosen provider(s) are configured (
 - **SiliconFlow** – Two independent services, configured as two providers. `siliconflow` is the international service and defaults to `https://api.siliconflow.com`; `siliconflow-cn` is the mainland China service and defaults to `https://api.siliconflow.cn`. Each needs its own API key from its own control plane — `network_config.base_url` does not switch regions. Both default to `deepseek-ai/DeepSeek-V3.2` for chat; the China env file uses China-only embedding and rerank models.
 - **Z.AI** – Uses the `ZAI_API_KEY` environment-backed provider key and defaults to `https://api.z.ai/api/paas/v4`; the Postman environment carries chat/response model placeholders only.
 - **Zhipu AI** – Uses the `ZHIPU_API_KEY` environment-backed provider key and defaults to `https://open.bigmodel.cn/api/paas/v4`; `embedding_model` is set to `embedding-3` because Zhipu also exposes embeddings and rerank.
+- **DeepInfra** – Configure `DEEPINFRA_API_KEY` in the Bifrost provider config; the Makefile forwards it as `deepinfraKey` for the direct upstream baseline. The environment defaults to DeepSeek-V3.1 for chat and Responses, Qwen3-Embedding-8B for embeddings, and Qwen3-Reranker-8B for rerank.
 
 ## Files
 
@@ -53,6 +54,7 @@ All Bifrost providers are included except **sgl** and **ollama** (excluded in `r
 - `bifrost-v1-cohere.postman_environment.json`
 - `bifrost-v1-elevenlabs.postman_environment.json`
 - `bifrost-v1-gemini.postman_environment.json`
+- `bifrost-v1-deepinfra.postman_environment.json`
 - `bifrost-v1-groq.postman_environment.json`
 - `bifrost-v1-huggingface.postman_environment.json`
 - `bifrost-v1-minimax.postman_environment.json`

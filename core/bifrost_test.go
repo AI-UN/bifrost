@@ -2026,6 +2026,26 @@ func TestUpdateProvider(t *testing.T) {
 		}
 	})
 
+	t.Run("LazyInitializesDeepInfraWithoutExplicitConfig", func(t *testing.T) {
+		account := NewMockAccount()
+		bifrost, err := Init(context.Background(), schemas.BifrostConfig{
+			Account: account,
+			Logger:  NewDefaultLogger(schemas.LogLevelError),
+		})
+		if err != nil {
+			t.Fatalf("Failed to initialize Bifrost: %v", err)
+		}
+		defer bifrost.Shutdown()
+
+		provider := bifrost.getProviderByKey(schemas.DeepInfra)
+		if provider == nil {
+			t.Fatal("DeepInfra provider was not lazily initialized without an explicit config")
+		}
+		if provider.GetProviderKey() != schemas.DeepInfra {
+			t.Errorf("DeepInfra provider has wrong key: got %s, want %s", provider.GetProviderKey(), schemas.DeepInfra)
+		}
+	})
+
 	t.Run("MultipleProviderUpdates", func(t *testing.T) {
 		// Test updating multiple different providers
 		account := NewMockAccount()

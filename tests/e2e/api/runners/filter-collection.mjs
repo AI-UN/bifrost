@@ -170,6 +170,7 @@ const PROVIDER_KEYWORDS = {
   zai: ["zai/", "z.ai"],
   zhipu: ["zhipu", "bigmodel.cn"],
   cpa: ["cpa/", "cliproxy"],
+  deepinfra: ["deepinfra/", "api.deepinfra.com"],
 };
 
 // Haystack = item JSON + ancestor folder names. Folder names encode the harness
@@ -348,6 +349,10 @@ const itemMatchesProvider = (item, ancestorNames, provider = PROVIDER) => {
   const isZAI = haystack.includes("zai/") || haystack.includes("z.ai");
   if (provider === "zai") return isZAI;
   if (isZAI) return false;
+  // DeepInfra routes deepseek and Qwen model IDs through its own namespace and host;
+  // keep these requests in the DeepInfra partition rather than another model family.
+  const isDeepInfra = haystack.includes("deepinfra/") || haystack.includes("api.deepinfra.com");
+  if (isDeepInfra) return provider === "deepinfra";
   // Vertex rows run Gemini models (model "vertex/gemini-..."), so they'd otherwise be claimed
   // by the gemini partition too - same collision class as openrouter/bedrock_mantle above.
   // Route them exclusively to vertex. Vertex Model Garden rows ("vertex/minimaxai/minimax-m2-maas")

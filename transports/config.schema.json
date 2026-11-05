@@ -4555,7 +4555,8 @@
                         "byteplus",
                         "siliconflow",
                         "siliconflow-cn",
-                        "zhipu"
+                        "zhipu",
+                        "deepinfra"
                       ]
                     },
                     "embedding_model": {
