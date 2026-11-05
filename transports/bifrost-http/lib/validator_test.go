@@ -1433,6 +1433,26 @@ func TestValidateConfigSchema_SemanticCachePlugin_Valid(t *testing.T) {
 	}
 }
 
+func TestValidateConfigSchema_SemanticCachePlugin_DeepInfraProviderValid(t *testing.T) {
+	validConfig := `{
+		"plugins": [
+			{
+				"enabled": true,
+				"name": "semantic_cache",
+				"config": {
+					"provider": "deepinfra",
+					"embedding_model": "Qwen/Qwen3-Embedding-8B",
+					"dimension": 4096
+				}
+			}
+		]
+	}`
+
+	if err := ValidateConfigSchema([]byte(validConfig), loadLocalSchema(t)); err != nil {
+		t.Errorf("expected DeepInfra semantic cache config to pass validation, got error: %v", err)
+	}
+}
+
 func TestValidateConfigSchema_SemanticCachePlugin_MissingProvider(t *testing.T) {
 	// Missing required field: provider for semantic mode (dimension > 1)
 	invalidConfig := `{
