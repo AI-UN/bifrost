@@ -205,13 +205,15 @@ func (provider *CPAProvider) ImageEditStream(ctx *schemas.BifrostContext, postHo
 
 // Passthrough forwards a raw request, choosing the dialect from its path.
 func (provider *CPAProvider) Passthrough(ctx *schemas.BifrostContext, key schemas.Key, req *schemas.BifrostPassthroughRequest) (*schemas.BifrostPassthroughResponse, *schemas.BifrostError) {
-	return provider.dialectProvider(ctx, passthroughDialect(req.Path)).Passthrough(ctx, key, req)
+	d := passthroughDialect(req.Path)
+	return provider.dialectProvider(ctx, d).Passthrough(ctx, key, passthroughRequestForDialect(req, d))
 }
 
 // PassthroughStream forwards a raw streaming request, choosing the dialect from its
 // path.
 func (provider *CPAProvider) PassthroughStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, req *schemas.BifrostPassthroughRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
-	return provider.dialectProvider(ctx, passthroughDialect(req.Path)).PassthroughStream(ctx, postHookRunner, postHookSpanFinalizer, key, req)
+	d := passthroughDialect(req.Path)
+	return provider.dialectProvider(ctx, d).PassthroughStream(ctx, postHookRunner, postHookSpanFinalizer, key, passthroughRequestForDialect(req, d))
 }
 
 // ---------------------------------------------------------------------------

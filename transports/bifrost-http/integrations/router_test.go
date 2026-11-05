@@ -1224,6 +1224,40 @@ func passthroughTestStore() *mockHandlerStore {
 	}}
 }
 
+type cpaPassthroughTestAccount struct {
+	baseURL     string
+	passthrough *schemas.PassthroughPolicy
+}
+
+func (a cpaPassthroughTestAccount) GetConfiguredProviders() ([]schemas.ModelProvider, error) {
+	return []schemas.ModelProvider{schemas.CPA}, nil
+}
+
+func (a cpaPassthroughTestAccount) GetKeysForProvider(_ context.Context, provider schemas.ModelProvider) ([]schemas.Key, error) {
+	if provider != schemas.CPA {
+		return nil, nil
+	}
+	return []schemas.Key{{
+		ID:     "cpa-passthrough-test-key",
+		Value:  *schemas.NewSecretVar("sk-cpa-passthrough-test"),
+		Models: schemas.WhiteList{"*"},
+		Weight: 1,
+	}}, nil
+}
+
+func (a cpaPassthroughTestAccount) GetConfigForProvider(provider schemas.ModelProvider) (*schemas.ProviderConfig, error) {
+	if provider != schemas.CPA {
+		return nil, fmt.Errorf("unsupported provider %s", provider)
+	}
+	network := schemas.DefaultNetworkConfig
+	network.BaseURL = a.baseURL
+	return &schemas.ProviderConfig{
+		NetworkConfig:            network,
+		ConcurrencyAndBufferSize: schemas.DefaultConcurrencyAndBufferSize,
+		Passthrough:              a.passthrough,
+	}, nil
+}
+
 type passthroughUpstreamHit struct {
 	path   string
 	apiKey string
@@ -1249,6 +1283,7 @@ func TestStripPassthroughPrefix(t *testing.T) {
 		{name: "single prefix with userinfo separator does not match", path: "/anthropic_passthrough@evil.example/x", prefixes: []string{"/anthropic_passthrough"}, wantOK: false},
 		{name: "unrelated path does not match", path: "/openai_passthrough/v1/models", prefixes: []string{"/anthropic_passthrough"}, wantOK: false},
 		{name: "runware v1 remainder kept", path: "/runware_passthrough/v1", prefixes: []string{"/runware_passthrough"}, want: "/v1", wantOK: true},
+		{name: "cpa passthrough remainder kept", path: "/cpa_passthrough/v1/chat/completions", prefixes: []string{"/cpa_passthrough"}, want: "/v1/chat/completions", wantOK: true},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1530,6 +1565,98 @@ func TestHandlePassthrough_ProviderPolicy(t *testing.T) {
 	require.Equal(t, []string{"POST /v1/messages"}, hits, "only the allowed route may reach the upstream")
 }
 
+// TestHandlePassthrough_CPADialects routes all three native paths through CPA, while its normal
+// provider policy still gates which remainder can reach the shared upstream.
+func TestHandlePassthrough_CPADialects(t *testing.T) {
+	var mu sync.Mutex
+	var hits []string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		hits = append(hits, r.Method+" "+r.URL.RequestURI())
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer upstream.Close()
+
+	policy := &schemas.PassthroughPolicy{AllowedRoutes: []schemas.PassthroughRouteRule{
+		{Methods: []string{fasthttp.MethodPost}, Path: "/v1/chat/completions"},
+		{Methods: []string{fasthttp.MethodPost}, Path: "/v1/messages"},
+		{Methods: []string{fasthttp.MethodPost}, Path: "/v1beta/models/*:generateContent"},
+	}}
+	client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{
+		Account: cpaPassthroughTestAccount{baseURL: upstream.URL, passthrough: policy},
+		Logger:  bifrost.NewDefaultLogger(schemas.LogLevelError),
+	})
+	require.NoError(t, err)
+	defer client.Shutdown()
+
+	r := router.New()
+	NewCPAPassthroughRouter(client, &mockHandlerStore{}, nil, &testLogger{}).RegisterRoutes(r, func(next fasthttp.RequestHandler) fasthttp.RequestHandler { return next })
+	for _, tc := range []struct {
+		name, uri, body string
+		wantStatus      int
+	}{
+		{
+			name:       "OpenAI path is stripped",
+			uri:        "/cpa_passthrough/v1/chat/completions?beta=true",
+			body:       `{"model":"gpt-5.6-sol","messages":[{"role":"user","content":"hello"}]}`,
+			wantStatus: fasthttp.StatusOK,
+		},
+		{
+			name:       "Anthropic path is stripped",
+			uri:        "/cpa_passthrough/v1/messages",
+			body:       `{"model":"claude-opus-4-8","max_tokens":16,"messages":[{"role":"user","content":"hello"}]}`,
+			wantStatus: fasthttp.StatusOK,
+		},
+		{
+			name:       "Gemini path is stripped",
+			uri:        "/cpa_passthrough/v1beta/models/gemini-3-pro:generateContent",
+			body:       `{"contents":[{"role":"user","parts":[{"text":"hello"}]}]}`,
+			wantStatus: fasthttp.StatusOK,
+		},
+		{
+			name:       "provider policy denies an unlisted path",
+			uri:        "/cpa_passthrough/v1/files",
+			body:       `{"model":"gpt-5.6-sol"}`,
+			wantStatus: fasthttp.StatusForbidden,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var ctx fasthttp.RequestCtx
+			ctx.Request.Header.SetMethod(fasthttp.MethodPost)
+			ctx.Request.SetRequestURI(tc.uri)
+			ctx.Request.Header.SetContentType("application/json")
+			ctx.Request.SetBodyString(tc.body)
+			r.Handler(&ctx)
+			require.Equal(t, tc.wantStatus, ctx.Response.StatusCode(), "body: %s", ctx.Response.Body())
+		})
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	require.Equal(t, []string{
+		"POST /v1/chat/completions?beta=true",
+		"POST /v1/messages",
+		"POST /v1beta/models/gemini-3-pro:generateContent",
+	}, hits, "the request remainder is forwarded intact for each CPA dialect, and policy-denied paths never reach upstream")
+}
+
+func TestGetPassthroughProviderAllowsCustomCPABase(t *testing.T) {
+	const customCPA schemas.ModelProvider = "cpa-passthrough-sidecar"
+	schemas.RegisterKnownProvider(customCPA)
+	t.Cleanup(func() { schemas.UnregisterKnownProvider(customCPA) })
+	store := &mockHandlerStore{customProviders: map[schemas.ModelProvider]mockCustomProvider{
+		customCPA: {base: schemas.CPA, passthrough: true},
+	}}
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.Set("x-model-provider", string(customCPA))
+
+	got, err := getPassthroughProvider(ctx, store, schemas.CPA, true)
+	require.NoError(t, err)
+	assert.Equal(t, customCPA, got)
+}
+
 // directKeyHandlerStore is the shared mock store with direct keys allowed.
 type directKeyHandlerStore struct{ *mockHandlerStore }
 
@@ -1647,6 +1774,20 @@ func TestBedrockPassthroughRouterTargetsBedrockAtItsOwnPrefix(t *testing.T) {
 	assert.Equal(t, schemas.Bedrock, r.passthroughCfg.Provider)
 	assert.Equal(t, []string{"/bedrock_passthrough"}, r.passthroughCfg.StripPrefix)
 	assert.Empty(t, r.passthroughCfg.AllowedRoutes, "the operation allow-list lives in the provider, which also holds the signing credentials")
+}
+
+// CPA uses one route for three wire dialects, so its prefix must leave the complete API path for
+// CPA's passthrough dispatcher to choose OpenAI, Anthropic or Gemini.
+func TestCPAPassthroughRouterTargetsCPAAtItsOwnPrefix(t *testing.T) {
+	cfg := NewCPAPassthroughRouter(nil, &mockHandlerStore{}, nil, &testLogger{}).passthroughCfg
+	require.NotNil(t, cfg)
+	assert.Equal(t, schemas.CPA, cfg.Provider)
+	assert.Equal(t, []string{"/cpa_passthrough"}, cfg.StripPrefix)
+	assert.Nil(t, cfg.StreamingPath, "generic path/body detection covers streamGenerateContent and stream:true")
+	assert.True(t, cfg.streams(http.MethodPost, "/v1beta/models/gemini-3-pro:streamGenerateContent", false))
+	assert.True(t, cfg.streams(http.MethodPost, "/v1/chat/completions", true))
+	assert.True(t, cfg.streams(http.MethodPost, "/v1/messages", true))
+	assert.False(t, cfg.streams(http.MethodPost, "/v1/messages", false))
 }
 
 // The Bedrock passthrough streams exactly the operation whose AWS response is an event stream.

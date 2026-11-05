@@ -41,6 +41,7 @@ Ensure the Bifrost server is running and the chosen provider(s) are configured (
 - **Z.AI** – Uses the `ZAI_API_KEY` environment-backed provider key and defaults to `https://api.z.ai/api/paas/v4`; the Postman environment carries chat/response model placeholders only.
 - **Zhipu AI** – Uses the `ZHIPU_API_KEY` environment-backed provider key and defaults to `https://open.bigmodel.cn/api/paas/v4`; `embedding_model` is set to `embedding-3` because Zhipu also exposes embeddings and rerank.
 - **DeepInfra** – Configure `DEEPINFRA_API_KEY` in the Bifrost provider config; the Makefile forwards it as `deepinfraKey` for the direct upstream baseline. The environment defaults to DeepSeek-V3.1 for chat and Responses, Qwen3-Embedding-8B for embeddings, and Qwen3-Reranker-8B for rerank.
+- **CLI Proxy API** – Self-hosted. The shared profile (`tests/integrations/python/config.json`) points the `cpa` provider at `http://localhost:8317` with `env.CPA_API_KEY`; start a CPA server there or edit the profile's `base_url` before running CPA cases.
 
 ## Files
 

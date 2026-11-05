@@ -26,6 +26,8 @@ When you use passthrough endpoints, the request still flows through Bifrost core
   Default provider: `bedrock` (restricted to three operations, see [Bedrock Passthrough](#bedrock-passthrough))
 - `/sagemaker_passthrough`
   Default provider: `sagemaker` (restricted to endpoint invocations, see [SageMaker Passthrough](#sagemaker-passthrough))
+- `/cpa_passthrough`
+  Default provider: `cpa` (dialect follows the retained API path: OpenAI `/v1`, Anthropic `/v1/messages`, Gemini `/v1beta`)
 
 ---
 
@@ -108,6 +110,12 @@ Claude Code OAuth sign-in (`Authorization: Bearer sk-ant-oat…`) is handled sep
   - URL path containing `/projects/{PROJECT_ID}/locations/{LOCATION}/`
   - Request body `model` containing a Vertex resource path
   - OAuth token pattern typically used for Vertex (`Bearer ya29...`)
+
+### CPA Passthrough
+
+- Uses `cpa` as the default provider and keeps the API path after stripping `/cpa_passthrough`, so `/v1/chat/completions`, `/v1/messages` and `/v1beta/models/...` dispatch to the OpenAI, Anthropic and Gemini dialects respectively.
+- The generic stream decision follows `stream: true` in the request body or `stream` in the path; Gemini's `:streamGenerateContent` path is detected directly. An `Accept: text/event-stream` header is forwarded but does not by itself select Bifrost's streaming handler.
+- The provider's passthrough policy applies to the stripped CPA API path.
 
 ---
 
