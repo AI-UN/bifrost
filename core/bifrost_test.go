@@ -2007,6 +2007,29 @@ func TestUpdateProvider(t *testing.T) {
 		}
 	})
 
+	t.Run("LazyInitializesZAIAndZhipuWithoutAccountConfig", func(t *testing.T) {
+		account := NewMockAccount()
+		bifrost, err := Init(context.Background(), schemas.BifrostConfig{
+			Account: account,
+			Logger:  NewDefaultLogger(schemas.LogLevelError),
+		})
+		if err != nil {
+			t.Fatalf("Failed to initialize Bifrost: %v", err)
+		}
+		defer bifrost.Shutdown()
+
+		for _, providerKey := range []schemas.ModelProvider{schemas.ZAI, schemas.Zhipu} {
+			provider := bifrost.getProviderByKey(providerKey)
+			if provider == nil {
+				t.Errorf("getProviderByKey(%s) returned nil without account config", providerKey)
+				continue
+			}
+			if provider.GetProviderKey() != providerKey {
+				t.Errorf("provider key mismatch: got %s, want %s", provider.GetProviderKey(), providerKey)
+			}
+		}
+	})
+
 	t.Run("MultipleProviderUpdates", func(t *testing.T) {
 		// Test updating multiple different providers
 		account := NewMockAccount()
