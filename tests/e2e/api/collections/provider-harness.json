@@ -300,10 +300,12 @@
           "    __ends('/audio/speech') ||",
           "    __ends('/audio/transcriptions') ||",
           "    __ends('/images/generations');",
+          "  __isInference = __isInference || __ends('/v1/rerank');",
           "  if (!__isInference) { return; }",
           "  var __isDirectProvider =",
           "    __u.indexOf('https://api.openai.com/') === 0 ||",
           "    __u.indexOf('https://api.anthropic.com/') === 0 ||",
+          "    __u.indexOf('https://api.deepinfra.com/') === 0 ||",
           "    __u.indexOf('https://generativelanguage.googleapis.com/') === 0 ||",
           "    __u.indexOf('-aiplatform.googleapis.com/') !== -1 ||",
           "    __u.indexOf('https://bedrock-runtime.') === 0;",
@@ -330,6 +332,7 @@
           "  // a Bedrock id can contain one. Only standard provider names count as a prefix: a namespaced",
           "  // model such as meta-llama/Llama-3.1-8B names no provider, and a custom provider is not known here.",
           "  var __standard = ['openai', 'azure', 'anthropic', 'bedrock', 'bedrock_mantle', 'cohere', 'vertex', 'mistral', 'ollama', 'opencode-go', 'opencode-zen', 'groq', 'sgl', 'parasail', 'perplexity', 'cerebras', 'deepseek', 'gemini', 'openrouter', 'elevenlabs', 'huggingface', 'nebius', 'xai', 'replicate', 'vllm', 'runway', 'runware', 'fireworks', 'sarvam', 'wafer', 'github-copilot', 'databricks', 'cloudflare', 'typesafe', 'minimax', 'byteplus'];",
+          "  __standard.push('deepinfra');",
           "  var __model = null;",
           "  try {",
           "    var __raw = pm.request && pm.request.body && pm.request.body.mode === 'raw' ? pm.request.body.raw : '';",
@@ -570,6 +573,27 @@
     {
       "key": "azureBatchDeployment",
       "value": "replace-me-global-batch-deployment",
+      "type": "string"
+    }
+    ,
+    {
+      "key": "deepinfraKey",
+      "value": "replace-me",
+      "type": "string"
+    },
+    {
+      "key": "deepinfraChatModel",
+      "value": "deepseek-ai/DeepSeek-V3.1",
+      "type": "string"
+    },
+    {
+      "key": "deepinfraEmbeddingModel",
+      "value": "Qwen/Qwen3-Embedding-8B",
+      "type": "string"
+    },
+    {
+      "key": "deepinfraRerankModel",
+      "value": "Qwen/Qwen3-Reranker-8B",
       "type": "string"
     }
   ],
@@ -298476,6 +298500,266 @@
                 "v1beta",
                 "models",
                 "gemini-3.1-flash-image:generateContent"
+              ]
+            }
+          },
+          "response": []
+        }
+      ]
+    }
+    ,
+    {
+      "name": "DeepInfra",
+      "description": "DeepInfra chat, Responses, embedding, and rerank requests through Bifrost's unified API. Requires a configured DeepInfra provider key.",
+      "item": [
+        {
+          "name": "DeepInfra direct API /v1/chat/completions",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var raw = pm.response.text() || '';",
+                  "pm.test('DeepInfra direct chat: HTTP 200', function () { pm.expect(pm.response.code, 'unexpected status: ' + raw).to.eql(200); });",
+                  "var body; try { body = pm.response.json(); } catch (e) { body = null; }",
+                  "pm.test('DeepInfra direct chat returns assistant text', function () { pm.expect(body && body.choices && body.choices[0] && body.choices[0].message && body.choices[0].message.content, raw).to.be.a('string').and.not.empty; });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{deepinfraKey}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"{{deepinfraChatModel}}\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with a brief greeting.\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "https://api.deepinfra.com/v1/chat/completions",
+              "protocol": "https",
+              "host": [
+                "api",
+                "deepinfra",
+                "com"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "description": "Direct upstream baseline for the same chat model; requires DEEPINFRA_API_KEY."
+          },
+          "response": []
+        },
+        {
+          "name": "DeepInfra /v1/chat/completions non-streaming",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('DeepInfra chat completion: HTTP 200', function () { pm.expect(pm.response.code, 'unexpected status: ' + pm.response.text()).to.eql(200); });",
+                  "var body; try { body = pm.response.json(); } catch (e) { body = null; } var dump = pm.response.text() || '';",
+                  "pm.test('DeepInfra chat returns assistant text', function () { pm.expect(body && body.choices && body.choices[0] && body.choices[0].message && body.choices[0].message.content, dump).to.be.a('string').and.not.empty; });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"deepinfra/{{deepinfraChatModel}}\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with a brief greeting.\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "DeepInfra /v1/chat/completions streaming",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('DeepInfra chat stream: HTTP 200', function () { pm.expect(pm.response.code, 'unexpected status: ' + pm.response.text()).to.eql(200); });",
+                  "var streamBody = pm.response.text() || '';",
+                  "pm.test('DeepInfra chat stream includes SSE data', function () { pm.expect(streamBody, streamBody).to.include('data:'); });",
+                  "pm.test('DeepInfra chat stream completes', function () { pm.expect(streamBody, streamBody).to.include('data: [DONE]'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"deepinfra/{{deepinfraChatModel}}\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with a brief greeting.\"\n    }\n  ],\n  \"stream\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "DeepInfra /v1/embeddings",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('DeepInfra embedding: HTTP 200', function () { pm.expect(pm.response.code, 'unexpected status: ' + pm.response.text()).to.eql(200); });",
+                  "var body; try { body = pm.response.json(); } catch (e) { body = null; } var dump = pm.response.text() || '';",
+                  "pm.test('DeepInfra embedding returns a vector', function () { pm.expect(body && body.data && body.data[0] && body.data[0].embedding, dump).to.be.an('array').and.not.empty; });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"deepinfra/{{deepinfraEmbeddingModel}}\",\n  \"input\": [\n    \"A short sentence to embed.\"\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/embeddings",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "embeddings"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "DeepInfra /v1/responses",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('DeepInfra Responses: HTTP 200', function () { pm.expect(pm.response.code, 'unexpected status: ' + pm.response.text()).to.eql(200); });",
+                  "var body; try { body = pm.response.json(); } catch (e) { body = null; } var dump = pm.response.text() || '';",
+                  "pm.test('DeepInfra Responses returns output items', function () { pm.expect(body && body.output, dump).to.be.an('array').and.not.empty; });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"deepinfra/{{deepinfraChatModel}}\",\n  \"input\": \"Reply with a brief greeting.\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "DeepInfra /v1/rerank",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('DeepInfra rerank: HTTP 200', function () { pm.expect(pm.response.code, 'unexpected status: ' + pm.response.text()).to.eql(200); });",
+                  "var body; try { body = pm.response.json(); } catch (e) { body = null; } var dump = pm.response.text() || '';",
+                  "pm.test('DeepInfra rerank returns ranked results', function () { pm.expect(body && body.results, dump).to.be.an('array').and.not.empty; pm.expect(body.results[0].index, dump).to.be.a('number'); pm.expect(body.results[0].relevance_score, dump).to.be.a('number'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"deepinfra/{{deepinfraRerankModel}}\",\n  \"query\": \"Which document describes the capital of France?\",\n  \"documents\": [\n    \"Paris is the capital of France.\",\n    \"Berlin is the capital of Germany.\"\n  ],\n  \"top_n\": 2\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/rerank",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "rerank"
               ]
             }
           },
