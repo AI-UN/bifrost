@@ -86,6 +86,8 @@ jobs:
             api.deepseek.com:443
             api.elevenlabs.io:443
             api.fireworks.ai:443
+            api.z.ai:443
+            open.bigmodel.cn:443
             api.github.com:443
             api.githubcopilot.com:443
             api.business.githubcopilot.com:443
