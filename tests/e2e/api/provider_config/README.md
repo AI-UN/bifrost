@@ -37,6 +37,7 @@ Ensure the Bifrost server is running and the chosen provider(s) are configured (
 - **Cohere** – Requires a valid Cohere API key in Bifrost provider config. Key format and auth may differ from other providers; 401 is expected if the key is missing or invalid.
 - **Vertex** – Requires `region` in the key config for embeddings and other operations. Set this in Bifrost provider config (project, region, credentials). Embeddings typically require a supported region such as `us-central1`.
 - **Replicate** – Set `replicate_owner` (e.g. via environment or Postman env) when running Replicate tests; otherwise API calls may fail.
+- **CLI Proxy API** – Self-hosted. The shared profile (`tests/integrations/python/config.json`) points the `cpa` provider at `http://localhost:8317` with `env.CPA_API_KEY`; start a CPA server there or edit the profile's `base_url` before running CPA cases.
 
 ## Files
 
