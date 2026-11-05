@@ -92,6 +92,7 @@ const (
 	BytePlus      ModelProvider = "byteplus"
 	SiliconFlow   ModelProvider = "siliconflow"
 	SiliconFlowCN ModelProvider = "siliconflow-cn"
+	CPA           ModelProvider = "cpa"
 )
 
 // SupportedBaseProviders is the list of base providers allowed for custom providers.
@@ -105,6 +106,7 @@ var SupportedBaseProviders = []ModelProvider{
 	Replicate,
 	ZAI,
 	Zhipu,
+	CPA,
 	Typesafe,
 }
 
@@ -152,6 +154,7 @@ var StandardProviders = []ModelProvider{
 	BytePlus,
 	SiliconFlow,
 	SiliconFlowCN,
+	CPA,
 }
 
 // RequestType represents the type of request being made to a provider.

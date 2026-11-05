@@ -42,6 +42,7 @@ export const KnownProvidersNames = [
 	"typesafe",
 	"siliconflow",
 	"siliconflow-cn",
+	"cpa",
 ] as const;
 
 // Local Provider type derived from KNOWN_PROVIDERS constant
@@ -205,6 +206,7 @@ export const ProviderLabels: Record<ProviderName, string> = {
 	typesafe: "TypeSafe",
 	siliconflow: "SiliconFlow",
 	"siliconflow-cn": "SiliconFlow CN",
+	cpa: "CLI Proxy API",
 } as const;
 
 // Helper function to get provider label, supporting custom providers
