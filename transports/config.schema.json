@@ -4808,7 +4808,8 @@
                         "cloudflare",
                         "byteplus",
                         "baseten",
-                        "kimchi"
+                        "kimchi",
+                        "deepinfra"
                       ]
                     },
                     "embedding_model": {
