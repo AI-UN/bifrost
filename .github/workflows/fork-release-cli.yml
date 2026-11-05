@@ -190,6 +190,25 @@ jobs:
           go-version: 'stable'
           check-latest: true
 
+      # build-executables.sh writes checksums with `shasum -a 256`. Upstream cross-compiles
+      # Windows on Linux, where shasum exists; this job builds natively on Windows, whose
+      # Git Bash ships only sha256sum (same output format), so forward to it.
+      - name: Provide shasum on Windows
+        if: runner.os == 'Windows'
+        run: |
+          shim_dir="$(cygpath -u "$RUNNER_TEMP")/shasum-shim"
+          mkdir -p "$shim_dir"
+          cat > "$shim_dir/shasum" <<'EOF'
+          #!/usr/bin/env bash
+          if [[ "${1:-}" == "-a" ]]; then
+            [[ "${2:-}" == "256" ]] || { echo "shasum shim: only -a 256 is supported" >&2; exit 2; }
+            shift 2
+          fi
+          exec sha256sum "$@"
+          EOF
+          chmod +x "$shim_dir/shasum"
+          cygpath -w "$shim_dir" >> "$GITHUB_PATH"
+
       - name: Build executable
         env:
           LOCAL_WORKSPACE_BUILD: "true"
