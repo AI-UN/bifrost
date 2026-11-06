@@ -165,6 +165,8 @@ const PROVIDER_KEYWORDS = {
   // Not a provider: MCP management rows (OAuth discovery, client registration) name no model, so no
   // provider fork selects them. PROVIDER=mcp runs them, together with FEATURE to narrow the set.
   mcp: ["mcp"],
+  siliconflow: ["siliconflow", "siliconflow.com"],
+  "siliconflow-cn": ["siliconflow-cn", "siliconflow.cn"],
 };
 
 // Haystack = item JSON + ancestor folder names. Folder names encode the harness
@@ -322,6 +324,19 @@ const itemMatchesProvider = (item, ancestorNames, provider = PROVIDER) => {
   const isMantle = haystack.includes("bedrock_mantle") || haystack.includes("bedrock-mantle");
   if (provider === "bedrock_mantle") return isMantle;
   if (isMantle) return false;
+  // SiliconFlow China rows (model "siliconflow-cn/...", host api.siliconflow.cn) contain the
+  // substring "siliconflow", so they'd otherwise be claimed by the international siliconflow
+  // partition too - same collision class as bedrock/bedrock_mantle above. Route them
+  // exclusively to siliconflow-cn so an international-filtered run never reaches the China
+  // service, which is a separate account with a separate key.
+  const isSiliconFlowCN = PROVIDER_KEYWORDS["siliconflow-cn"].some((k) => haystack.includes(k));
+  if (provider === "siliconflow-cn") return isSiliconFlowCN;
+  if (isSiliconFlowCN) return false;
+  // SiliconFlow image rows name black-forest-labs FLUX models, which are also in
+  // PROVIDER_KEYWORDS.replicate ("flux", "black-forest-labs"), so a replicate-filtered run
+  // would otherwise try to reach SiliconFlow. Route them away from replicate; the reverse
+  // direction needs no guard because real Replicate rows never say "siliconflow".
+  if (haystack.includes("siliconflow") && provider === "replicate") return false;
   // Vertex rows run Gemini models (model "vertex/gemini-..."), so they'd otherwise be claimed
   // by the gemini partition too - same collision class as openrouter/bedrock_mantle above.
   // Route them exclusively to vertex. Vertex Model Garden rows ("vertex/minimaxai/minimax-m2-maas")
