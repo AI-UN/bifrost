@@ -774,3 +774,71 @@ func TestBifrostContextFromContext(t *testing.T) {
 		}
 	})
 }
+
+func TestOpencodeSessionCache(t *testing.T) {
+	t.Run("scoped restricted writes preserve the winner", func(t *testing.T) {
+		ctx := NewBifrostContext(context.Background(), NoDeadline)
+		ctx.SetValue(BifrostContextKeyRequestID, "request-a")
+		ctx.SetValue(BifrostContextKeyAuthCredential, "original-credential")
+		ctx.BlockRestrictedWrites()
+		name := "session-test"
+		scoped := ctx.WithPluginScope(&name)
+		defer scoped.ReleasePluginScope()
+
+		got := scoped.GetOrStoreOpencodeSession(func() string {
+			scoped.SetValue(BifrostContextKeyAuthCredential, "must-not-replace")
+			return scoped.Value(BifrostContextKeyRequestID).(string) + ":session"
+		})
+		if got != "request-a:session" || ctx.Value(BifrostContextKeyOpencodeSession) != got {
+			t.Fatalf("scoped cache did not reach the request root: %q", got)
+		}
+		if ctx.Value(BifrostContextKeyAuthCredential) != "original-credential" {
+			t.Fatal("session caching bypassed the guard for another reserved key")
+		}
+		scoped.SetValue(BifrostContextKeyOpencodeSession, "must-not-replace")
+		if again := ctx.GetOrStoreOpencodeSession(func() string {
+			t.Fatal("cached session unexpectedly recomputed")
+			return ""
+		}); again != got {
+			t.Fatalf("cached session changed: %q", again)
+		}
+	})
+
+	t.Run("cleared value can be recomputed", func(t *testing.T) {
+		ctx := NewBifrostContext(context.Background(), NoDeadline)
+		ctx.GetOrStoreOpencodeSession(func() string { return "old-session" })
+		ctx.ClearValue(BifrostContextKeyOpencodeSession)
+		if got := ctx.GetOrStoreOpencodeSession(func() string { return "new-session" }); got != "new-session" {
+			t.Fatalf("clear left an unusable cache entry: %q", got)
+		}
+	})
+
+	t.Run("concurrent candidates return one session", func(t *testing.T) {
+		ctx := NewBifrostContext(context.Background(), NoDeadline)
+		ctx.SetValue(BifrostContextKeyRequestID, "request-a")
+		ctx.BlockRestrictedWrites()
+		const callers = 16
+		start := make(chan struct{})
+		values := make(chan string, callers)
+		var wg sync.WaitGroup
+		for i := range callers {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				<-start
+				values <- ctx.GetOrStoreOpencodeSession(func() string {
+					return fmt.Sprintf("%s:%d", ctx.Value(BifrostContextKeyRequestID), i)
+				})
+			}()
+		}
+		close(start)
+		wg.Wait()
+		close(values)
+		winner := <-values
+		for value := range values {
+			if value != winner {
+				t.Fatalf("one request returned different sessions: %q and %q", winner, value)
+			}
+		}
+	})
+}

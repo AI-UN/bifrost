@@ -55,6 +55,7 @@ var reservedKeys = map[BifrostContextKey]struct{}{
 	BifrostContextKeyMCPAgentServedRoute:     {},
 	BifrostContextKeyMCPInstructionsText:     {},
 	BifrostContextKeyStreamBodyExhausted:     {},
+	BifrostContextKeyOpencodeSession:         {},
 }
 
 // isReservedKey reports whether key is a reserved context key whose writes are
@@ -640,6 +641,35 @@ func (bc *BifrostContext) ConsumeStreamCommitWatch() bool {
 	ready, _ = bc.userValues[BifrostContextKeyStreamCommitWatch].(bool)
 	bc.userValues[BifrostContextKeyStreamCommitWatch] = nil
 	return ready
+}
+
+// GetOrStoreOpencodeSession caches the OpenCode upstream session for this request,
+// including while plugin post-hooks restrict writes. It cannot write any other
+// reserved key. Concurrent callers may compute candidates, but all return the
+// same stored value; suppliers must be side-effect free and may read the context.
+func (bc *BifrostContext) GetOrStoreOpencodeSession(supplier func() string) string {
+	if bc.valueDelegate != nil {
+		return bc.valueDelegate.GetOrStoreOpencodeSession(supplier)
+	}
+	bc.valuesMu.RLock()
+	if val, ok := bc.userValues[BifrostContextKeyOpencodeSession].(string); ok {
+		bc.valuesMu.RUnlock()
+		return val
+	}
+	bc.valuesMu.RUnlock()
+
+	val := supplier()
+
+	bc.valuesMu.Lock()
+	defer bc.valuesMu.Unlock()
+	if stored, ok := bc.userValues[BifrostContextKeyOpencodeSession].(string); ok {
+		return stored
+	}
+	if bc.userValues == nil {
+		bc.userValues = make(map[any]any, 16)
+	}
+	bc.userValues[BifrostContextKeyOpencodeSession] = val
+	return val
 }
 
 // SetRoutingInfoSnapshot writes the routed-identity RoutingInfo snapshot,

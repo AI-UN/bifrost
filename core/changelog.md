@@ -1,0 +1,1 @@
+- feat: opencode - emit the resolved `x-opencode-session` on unary and streaming Chat and Responses calls, scoped to the authenticated virtual key or user instead of the raw credential (thanks [@sstreichan](https://github.com/sstreichan)!)

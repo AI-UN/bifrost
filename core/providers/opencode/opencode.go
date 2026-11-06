@@ -5,6 +5,7 @@ package opencode
 
 import (
 	"context"
+	"maps"
 	"strings"
 	"time"
 
@@ -89,6 +90,102 @@ func (p *opencodeProvider) GetProviderKey() schemas.ModelProvider {
 	return p.providerKey
 }
 
+// inferenceExtraHeaders returns the static network-config extra headers merged
+// with the resolved x-opencode-session header for this request, plus the
+// caller's original forwarded map when it had to be sanitized. The caller must
+// defer restoreForwardedExtraHeaders(ctx, original) until the provider call has
+// built its upstream request. The session is resolved once per
+// request and namespaced per granted identity (see ResolveOpencodeSession), so
+// every inference call — chat, responses, and their streaming variants —
+// carries the same upstream session identity, keeping zen→go fallbacks and
+// retries identical. The resolved header always overrides case-variant static
+// config values. ListModels intentionally does not use this helper: the gateway
+// only requires the header on inference calls.
+//
+// The caller-forwarded x-opencode-session in BifrostContextKeyExtraHeaders is
+// removed from that context before the shared OpenAI handlers apply it. Those
+// handlers set context extra headers over the provider map, so leaving a raw
+// forwarded entry there would replace the resolved, scoped session on the wire.
+// The caller's map is never mutated: the stripped map is a shallow clone that
+// keeps every other entry and its values. Returning the original map lets the
+// caller restore it so a fallback to another provider, tracing, and post-hooks
+// see the caller's forwarded headers as they arrived, not the sanitized view.
+// Nothing is returned when nothing was forwarded, so the common case snapshots
+// no map and allocates no closure.
+//
+// Returns a fresh map; the shared config map is never mutated.
+func (p *opencodeProvider) inferenceExtraHeaders(ctx *schemas.BifrostContext) (map[string]schemas.SecretVar, map[string][]string) {
+	session := ResolveOpencodeSession(ctx)
+	originalForwarded := stripForwardedOpencodeSessionHeader(ctx)
+	if session == "" {
+		return p.networkConfig.ExtraHeaders, originalForwarded
+	}
+	merged := make(map[string]schemas.SecretVar, len(p.networkConfig.ExtraHeaders)+1)
+	maps.Copy(merged, p.networkConfig.ExtraHeaders)
+	// The resolved session always wins over a statically configured value: a
+	// static session would collapse every request onto one upstream
+	// conversation, defeating the per-request identity this feature provides.
+	// Drop any case-variant of the session header from the static config so
+	// the map carries exactly one key and the resolved value reaches the wire.
+	for k := range merged {
+		if strings.EqualFold(k, OpencodeSessionHeader) {
+			delete(merged, k)
+		}
+	}
+	// The session is a literal header value, not a config reference: build the
+	// SecretVar directly so an "env."- or "vault."-looking session is forwarded
+	// as written instead of being resolved from the environment or a vault.
+	merged[OpencodeSessionHeader] = schemas.SecretVar{Val: session}
+	return merged, originalForwarded
+}
+
+// stripForwardedOpencodeSessionHeader removes every case-variant of the
+// x-opencode-session entry from the per-request forwarded extra headers, so the
+// shared handlers cannot apply a raw forwarded value over the resolved session.
+// The context map is replaced with a shallow clone; the caller's map and the
+// value slices it holds are left untouched. It returns the caller's original
+// map so the caller can put it back after the provider has built its upstream
+// request, or nil when no entry existed and nothing was stripped.
+func stripForwardedOpencodeSessionHeader(ctx *schemas.BifrostContext) map[string][]string {
+	if ctx == nil {
+		return nil
+	}
+	headers, ok := ctx.Value(schemas.BifrostContextKeyExtraHeaders).(map[string][]string)
+	if !ok || !hasForwardedOpencodeSessionHeader(headers) {
+		return nil
+	}
+	stripped := make(map[string][]string, len(headers))
+	for key, values := range headers {
+		if strings.EqualFold(key, OpencodeSessionHeader) {
+			continue
+		}
+		stripped[key] = values
+	}
+	ctx.SetValue(schemas.BifrostContextKeyExtraHeaders, stripped)
+	return headers
+}
+
+// restoreForwardedExtraHeaders puts the caller's original forwarded map back
+// after the provider has built its upstream request. A nil original means
+// nothing was stripped and nothing is written.
+func restoreForwardedExtraHeaders(ctx *schemas.BifrostContext, original map[string][]string) {
+	if original == nil {
+		return
+	}
+	ctx.SetValue(schemas.BifrostContextKeyExtraHeaders, original)
+}
+
+// hasForwardedOpencodeSessionHeader reports whether any forwarded extra-header
+// key names the OpenCode session header, whatever its spelling.
+func hasForwardedOpencodeSessionHeader(headers map[string][]string) bool {
+	for key := range headers {
+		if strings.EqualFold(key, OpencodeSessionHeader) {
+			return true
+		}
+	}
+	return false
+}
+
 // ListModels performs a list models request to the Opencode API.
 func (p *opencodeProvider) ListModels(ctx *schemas.BifrostContext, keys []schemas.Key, request *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
 	return openai.HandleOpenAIListModelsRequest(
@@ -116,13 +213,18 @@ func (p *opencodeProvider) TextCompletionStream(ctx *schemas.BifrostContext, pos
 
 // ChatCompletion performs a chat completion request to the Opencode API.
 func (p *opencodeProvider) ChatCompletion(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostChatRequest) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
+	// The shared handler applies context extra headers synchronously while it
+	// builds the upstream request, so the caller's map can be put back as soon
+	// as it returns.
+	extraHeaders, originalForwarded := p.inferenceExtraHeaders(ctx)
+	defer restoreForwardedExtraHeaders(ctx, originalForwarded)
 	return openai.HandleOpenAIChatCompletionRequest(
 		ctx,
 		p.client,
 		p.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/v1/chat/completions"),
 		request,
 		openai.BearerAuthHeader(key),
-		p.networkConfig.ExtraHeaders,
+		extraHeaders,
 		providerUtils.ShouldSendBackRawRequest(ctx, p.sendBackRawRequest),
 		providerUtils.ShouldSendBackRawResponse(ctx, p.sendBackRawResponse),
 		p.GetProviderKey(),
@@ -135,13 +237,17 @@ func (p *opencodeProvider) ChatCompletion(ctx *schemas.BifrostContext, key schem
 
 // ChatCompletionStream performs a streaming chat completion request to the Opencode API.
 func (p *opencodeProvider) ChatCompletionStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostChatRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+	// The shared handler sets the upstream headers before it starts streaming,
+	// so restoring when it returns a channel does not affect the request.
+	extraHeaders, originalForwarded := p.inferenceExtraHeaders(ctx)
+	defer restoreForwardedExtraHeaders(ctx, originalForwarded)
 	return openai.HandleOpenAIChatCompletionStreaming(
 		ctx,
 		p.streamingClient,
 		p.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/v1/chat/completions"),
 		request,
 		openai.BearerAuthHeader(key),
-		p.networkConfig.ExtraHeaders,
+		extraHeaders,
 		p.networkConfig.StreamIdleTimeoutInSeconds,
 		providerUtils.ShouldSendBackRawRequest(ctx, p.sendBackRawRequest),
 		providerUtils.ShouldSendBackRawResponse(ctx, p.sendBackRawResponse),
@@ -168,13 +274,15 @@ func (p *opencodeProvider) Responses(ctx *schemas.BifrostContext, key schemas.Ke
 		return chatResponse.ToBifrostResponsesResponse(), nil
 	}
 
+	extraHeaders, originalForwarded := p.inferenceExtraHeaders(ctx)
+	defer restoreForwardedExtraHeaders(ctx, originalForwarded)
 	return openai.HandleOpenAIResponsesRequest(
 		ctx,
 		p.client,
 		p.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/v1/responses"),
 		request,
 		openai.BearerAuthHeader(key),
-		p.networkConfig.ExtraHeaders,
+		extraHeaders,
 		providerUtils.ShouldSendBackRawRequest(ctx, p.sendBackRawRequest),
 		providerUtils.ShouldSendBackRawResponse(ctx, p.sendBackRawResponse),
 		p.providerKey,
@@ -198,13 +306,17 @@ func (p *opencodeProvider) ResponsesStream(ctx *schemas.BifrostContext, postHook
 		)
 	}
 
+	// The shared handler sets the upstream headers before it starts streaming,
+	// so restoring when it returns a channel does not affect the request.
+	extraHeaders, originalForwarded := p.inferenceExtraHeaders(ctx)
+	defer restoreForwardedExtraHeaders(ctx, originalForwarded)
 	return openai.HandleOpenAIResponsesStreaming(
 		ctx,
 		p.streamingClient,
 		p.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/v1/responses"),
 		request,
 		openai.BearerAuthHeader(key),
-		p.networkConfig.ExtraHeaders,
+		extraHeaders,
 		p.networkConfig.StreamIdleTimeoutInSeconds,
 		providerUtils.ShouldSendBackRawRequest(ctx, p.sendBackRawRequest),
 		providerUtils.ShouldSendBackRawResponse(ctx, p.sendBackRawResponse),

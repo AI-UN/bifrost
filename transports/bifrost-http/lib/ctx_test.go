@@ -22,9 +22,11 @@ import (
 	"unicode/utf8"
 
 	bifrost "github.com/maximhq/bifrost/core"
+	"github.com/maximhq/bifrost/core/providers/opencode"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
+	"github.com/maximhq/bifrost/framework/grant"
 	"github.com/maximhq/bifrost/framework/kvstore"
 	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
@@ -3042,5 +3044,95 @@ func TestConvertToBifrostContext_MarksExtraFieldsInHeaders(t *testing.T) {
 	cancel()
 	if !ExtraFieldsInHeaders(headersCtx) {
 		t.Fatal("headers mode must mark the request")
+	}
+}
+
+func TestOpencodeSessionHTTPIngress(t *testing.T) {
+	const credential = "sk-bf-gateway-credential-must-stay-local"
+	type observedRequest struct {
+		session string
+		trace   string
+	}
+	observed := make(chan observedRequest, 1)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		observed <- observedRequest{session: r.Header.Get("x-opencode-session"), trace: r.Header.Get("x-trace-id")}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"id":"chatcmpl-ingress","object":"chat.completion","model":"test","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]}`)
+	}))
+	defer upstream.Close()
+	provider, err := opencode.NewOpencodeGoProvider(&schemas.ProviderConfig{
+		NetworkConfig: schemas.NetworkConfig{
+			BaseURL: upstream.URL, AllowPrivateNetwork: true, DefaultRequestTimeoutInSeconds: 5,
+		},
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, tc := range []struct {
+		name      string
+		header    string
+		allowlist []string
+	}{
+		{name: "raw header without forwarding", header: "x-opencode-session"},
+		{name: "raw header with forwarding", header: "x-opencode-session", allowlist: []string{"x-opencode-session", "x-trace-id"}},
+		{name: "prefixed extra header", header: "x-bf-eh-x-opencode-session"},
+		{name: "prefixed allowed extra header", header: "x-bf-eh-x-opencode-session", allowlist: []string{"x-opencode-session", "x-trace-id"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var matcher *HeaderMatcher
+			if len(tc.allowlist) != 0 {
+				matcher = NewHeaderMatcher(&configstoreTables.GlobalHeaderFilterConfig{Allowlist: tc.allowlist})
+			}
+			run := func(rowID, session string) string {
+				t.Helper()
+				httpCtx := &fasthttp.RequestCtx{}
+				httpCtx.Request.Header.Set(tc.header, session)
+				httpCtx.Request.Header.Set("x-bf-vk", credential)
+				httpCtx.Request.Header.Set("x-bf-eh-x-trace-id", "trace-preserved")
+				ctx, cancel := ConvertToBifrostContext(httpCtx, testHandlerStore{matcher: matcher})
+				defer cancel()
+				g := grant.New()
+				g.SetIdentity(grant.NewIdentity(
+					grant.NewCredential(grant.CredentialVirtualKey, credential),
+					nil, &schemas.EntityRef{ID: rowID}, nil, nil, nil, nil,
+				))
+				ctx.SetGrant(g)
+				response, bifrostErr := provider.ChatCompletion(ctx, schemas.Key{Value: *schemas.NewSecretVar("upstream-only-key")}, &schemas.BifrostChatRequest{
+					Provider: schemas.OpencodeGo, Model: "test",
+					Input: []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hello")}}},
+				})
+				if bifrostErr != nil {
+					t.Fatalf("inference failed: %v", bifrostErr)
+				}
+				if response == nil || len(response.Choices) != 1 || response.Choices[0].Message == nil ||
+					response.Choices[0].Message.Content == nil || response.Choices[0].Message.Content.ContentStr == nil ||
+					*response.Choices[0].Message.Content.ContentStr != "ok" {
+					t.Fatalf("unexpected chat output: %#v", response)
+				}
+				got := <-observed
+				if strings.Contains(got.session, credential) {
+					t.Fatal("gateway credential was forwarded in the session")
+				}
+				if got.trace != "trace-preserved" {
+					t.Fatalf("unrelated forwarded header changed: %q", got.trace)
+				}
+				return got.session
+			}
+			first := run("vk-row-a", "conversation-a")
+			if first != "vk:vk-row-a:conversation-a" {
+				t.Fatalf("resolved upstream session = %q", first)
+			}
+			if continued := run("vk-row-a", "conversation-a"); continued != first {
+				t.Fatalf("conversation session changed across requests: %q != %q", continued, first)
+			}
+			if otherTenant := run("vk-row-b", "conversation-a"); otherTenant == first {
+				t.Fatal("different virtual-key identities shared an upstream session")
+			}
+			if next := run("vk-row-a", "conversation-b"); next == first {
+				t.Fatal("new conversations shared an upstream session")
+			}
+		})
 	}
 }

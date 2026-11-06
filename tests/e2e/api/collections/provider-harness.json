@@ -300768,6 +300768,306 @@
           "response": []
         }
       ]
+    },
+    {
+      "name": "322. OpenCode session affinity for opencode-go (opencode-session-affinity)",
+      "description": "opencode-go/mimo-v2.5 sends a stable client x-opencode-session header upstream on Chat Completions and Responses, unary and streaming. Requests 1-4 send the raw x-opencode-session header (no x-bf-eh- prefix) and share one per-run value. The last row omits the header to pin the original missing-header regression. Session scope is authenticated-identity based, not credential based; the Go wire tests cover namespace secrecy that the harness cannot observe.",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// One stable session value per run; all four session rows share it.",
+              "if (!pm.collectionVariables.get('opencodeSessionAffinityId')) {",
+              "  pm.collectionVariables.set('opencodeSessionAffinityId', 'opencode-affinity-' + Date.now() + '-' + Math.floor(Math.random() * 1e9));",
+              "}"
+            ]
+          }
+        }
+      ],
+      "item": [
+        {
+          "name": "opencode-go mimo-v2.5 /v1/chat/completions unary stable x-opencode-session - opencode-session-affinity",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('chat unary: 200 with assistant content - opencode-session-affinity', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.choices && j.choices[0] && j.choices[0].message, pm.response.text()).to.be.an('object');",
+                  "  var text = typeof j.choices[0].message.content === 'string' ? j.choices[0].message.content.trim().toLowerCase() : '';",
+                  "  pm.expect(text, 'expected normalized assistant text ok: ' + pm.response.text()).to.equal('ok');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-eh-user-agent",
+                "value": "bifrost-provider-harness/1.0"
+              },
+              {
+                "key": "x-opencode-session",
+                "value": "{{opencodeSessionAffinityId}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"opencode-go/mimo-v2.5\",\"messages\":[{\"role\":\"user\",\"content\":\"Reply with the single word: ok\"}],\"max_tokens\":32,\"reasoning_effort\":\"none\"}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "opencode-go mimo-v2.5 /v1/chat/completions stream stable x-opencode-session - opencode-session-affinity",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('chat stream: 200, SSE [DONE] and assistant deltas - opencode-session-affinity', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
+                  "  var body = pm.response.text() || '';",
+                  "  pm.expect(body, 'expected SSE frames: ' + body.slice(0, 400)).to.include('data:');",
+                  "  pm.expect(body, 'expected [DONE]: ' + body.slice(-400)).to.include('[DONE]');",
+                  "  var text = '';",
+                  "  body.split('\\n').forEach(function (line) {",
+                  "    if (line.indexOf('data:') !== 0) { return; }",
+                  "    var payload = line.slice(5).trim();",
+                  "    if (!payload || payload === '[DONE]') { return; }",
+                  "    try {",
+                  "      var chunk = JSON.parse(payload);",
+                  "      if (chunk.choices && chunk.choices[0] && chunk.choices[0].delta && typeof chunk.choices[0].delta.content === 'string') { text += chunk.choices[0].delta.content; }",
+                  "    } catch (e) {}",
+                  "  });",
+                  "  pm.expect(text.trim().toLowerCase(), 'expected normalized assistant delta text ok: ' + body.slice(0, 800)).to.equal('ok');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-eh-user-agent",
+                "value": "bifrost-provider-harness/1.0"
+              },
+              {
+                "key": "x-opencode-session",
+                "value": "{{opencodeSessionAffinityId}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"opencode-go/mimo-v2.5\",\"messages\":[{\"role\":\"user\",\"content\":\"Reply with the single word: ok\"}],\"max_tokens\":32,\"stream\":true,\"reasoning_effort\":\"none\"}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "opencode-go mimo-v2.5 /v1/responses unary stable x-opencode-session - opencode-session-affinity",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('responses unary: 200 with output text - opencode-session-affinity', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
+                  "  var j = pm.response.json();",
+                  "  var text = typeof j.output_text === 'string' ? j.output_text : '';",
+                  "  if (!text && Array.isArray(j.output)) {",
+                  "    j.output.forEach(function (item) {",
+                  "      if (item && item.type === 'message' && Array.isArray(item.content)) {",
+                  "        item.content.forEach(function (part) { if (part && part.type === 'output_text' && typeof part.text === 'string') { text += part.text; } });",
+                  "      }",
+                  "    });",
+                  "  }",
+                  "  pm.expect(text.trim().toLowerCase(), 'expected normalized output text ok: ' + pm.response.text()).to.equal('ok');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-eh-user-agent",
+                "value": "bifrost-provider-harness/1.0"
+              },
+              {
+                "key": "x-opencode-session",
+                "value": "{{opencodeSessionAffinityId}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"opencode-go/mimo-v2.5\",\"input\":\"Reply with the single word: ok\",\"max_output_tokens\":32,\"reasoning\":{\"effort\":\"none\"}}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "opencode-go mimo-v2.5 /v1/responses stream stable x-opencode-session - opencode-session-affinity",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('responses stream: 200, response.completed and output deltas - opencode-session-affinity', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
+                  "  var body = pm.response.text() || '';",
+                  "  pm.expect(body, 'expected SSE frames: ' + body.slice(0, 400)).to.include('data:');",
+                  "  pm.expect(body, 'expected response.completed: ' + body.slice(-400)).to.include('response.completed');",
+                  "  var text = '';",
+                  "  body.split('\\n').forEach(function (line) {",
+                  "    if (line.indexOf('data:') !== 0) { return; }",
+                  "    var payload = line.slice(5).trim();",
+                  "    if (!payload || payload === '[DONE]') { return; }",
+                  "    try {",
+                  "      var evt = JSON.parse(payload);",
+                  "      if (evt.type === 'response.output_text.delta' && typeof evt.delta === 'string') { text += evt.delta; }",
+                  "    } catch (e) {}",
+                  "  });",
+                  "  pm.expect(text.trim().toLowerCase(), 'expected normalized output_text delta ok: ' + body.slice(0, 800)).to.equal('ok');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-eh-user-agent",
+                "value": "bifrost-provider-harness/1.0"
+              },
+              {
+                "key": "x-opencode-session",
+                "value": "{{opencodeSessionAffinityId}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"opencode-go/mimo-v2.5\",\"input\":\"Reply with the single word: ok\",\"max_output_tokens\":32,\"stream\":true,\"reasoning\":{\"effort\":\"none\"}}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "opencode-go mimo-v2.5 /v1/chat/completions unary no session header probe - opencode-session-affinity",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('chat unary without a session header: 200 with assistant content - opencode-session-affinity', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.choices && j.choices[0] && j.choices[0].message, pm.response.text()).to.be.an('object');",
+                  "  var text = typeof j.choices[0].message.content === 'string' ? j.choices[0].message.content.trim().toLowerCase() : '';",
+                  "  pm.expect(text, 'expected normalized assistant text ok: ' + pm.response.text()).to.equal('ok');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-eh-user-agent",
+                "value": "bifrost-provider-harness/1.0"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"opencode-go/mimo-v2.5\",\"messages\":[{\"role\":\"user\",\"content\":\"Reply with the single word: ok\"}],\"max_tokens\":32,\"reasoning_effort\":\"none\"}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }
