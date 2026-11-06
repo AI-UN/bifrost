@@ -8,6 +8,10 @@ fork_set_workflow_defaults
 
 DRY_RUN="${DRY_RUN:-false}"
 UPSTREAM_TAG="${UPSTREAM_TAG:-}"
+# Branch a release tag is cut from. Defaults to the patch source; a preserved
+# stable branch (for example release/v2.4.0-oss) re-releases an older upstream
+# tag without replaying newer upstream/main history onto it.
+RELEASE_SOURCE_BRANCH="${RELEASE_SOURCE_BRANCH:-$PATCH_BRANCH}"
 REPO_SLUG="${GITHUB_REPOSITORY:-}"
 SYNC_CONFLICT_TITLE="[fork-sync-conflict] ${PATCH_BRANCH} cannot rebase onto upstream/${UPSTREAM_BRANCH}"
 TAG_CONFLICT_TITLE_PREFIX="[fork-tag-conflict]"
@@ -93,7 +97,7 @@ rebase_stopped_sha() {
 
 rebase_conflict_details() {
   local target_ref="$1"
-  local patch_source_ref="origin/${PATCH_BRANCH}"
+  local patch_source_ref="origin/${2:-$PATCH_BRANCH}"
   local patch_source_head=""
   local target_head=""
   local merge_base=""
@@ -135,6 +139,7 @@ build_rebase_conflict_body() {
   local heading="$1"
   local context="$2"
   local target_ref="$3"
+  local source_branch="${4:-$PATCH_BRANCH}"
   local run=""
 
   run="$(run_url)"
@@ -146,13 +151,13 @@ ${context}
 
 ### Durable resolution
 
-Each run resets generated branches from \`origin/${PATCH_BRANCH}\`, so manual
+Each run resets generated branches from \`origin/${source_branch}\`, so manual
 resolutions on \`${GENERATED_BRANCH}\` or temporary release branches are
 discarded. The durable fix is to rebase every patch branch onto
 \`${target_ref}\`, resolve conflicts there, then rebuild and push
-\`${PATCH_BRANCH}\`.
+\`${source_branch}\`.
 
-$(rebase_conflict_details "$target_ref")
+$(rebase_conflict_details "$target_ref" "$source_branch")
 EOF
 }
 
@@ -253,10 +258,11 @@ rebase_patch_source() {
   local target_ref="$1"
   local work_branch="$2"
   local skip_if_ancestor="${3:-false}"
+  local source_branch="${4:-$PATCH_BRANCH}"
 
-  git checkout -B "$work_branch" "origin/${PATCH_BRANCH}"
+  git checkout -B "$work_branch" "origin/${source_branch}"
   if [[ "$skip_if_ancestor" == "true" ]] && git merge-base --is-ancestor "$target_ref" "HEAD"; then
-    echo "${target_ref} is already an ancestor of origin/${PATCH_BRANCH}; no rebase needed."
+    echo "${target_ref} is already an ancestor of origin/${source_branch}; no rebase needed."
     return 0
   fi
   git rebase --rebase-merges "$target_ref"
@@ -319,6 +325,24 @@ fork_tag_exists() {
     || git ls-remote --exit-code --tags origin "refs/tags/${fork_tag}" >/dev/null 2>&1
 }
 
+# A release tag names the upstream transport version it ships, so the source's
+# transports/version must match the tag. Rebasing replays every source commit the
+# tag lacks, upstream ones included: a source anchored on a newer upstream/main
+# would otherwise ship that newer code under the older tag's name.
+release_source_version_matches() {
+  local upstream_tag="$1"
+  local source_branch="$2"
+  local expected=""
+  local actual=""
+  expected="$(fork_transport_version_from_tag "$upstream_tag")"
+  actual="$(git show "origin/${source_branch}:transports/version" 2>/dev/null | tr -d '[:space:]')" || actual=""
+  if [[ "$actual" == "$expected" ]]; then
+    return 0
+  fi
+  echo "origin/${source_branch} carries transports/version '${actual:-<missing>}', not '${expected}' from ${upstream_tag}." >&2
+  return 1
+}
+
 sync_release_tag() {
   local upstream_tag="$1"
   local fork_tag=""
@@ -347,9 +371,18 @@ sync_release_tag() {
     return 0
   fi
 
+  if ! release_source_version_matches "$upstream_tag" "$RELEASE_SOURCE_BRANCH"; then
+    if [[ -n "$UPSTREAM_TAG" ]]; then
+      echo "Refusing to create ${fork_tag}: pass a release_source branch built on ${upstream_tag}." >&2
+      return 1
+    fi
+    echo "Skipping ${fork_tag}: ${RELEASE_SOURCE_BRANCH} has moved past ${upstream_tag}; the next upstream tag releases it."
+    return 0
+  fi
+
   release_branch="fork-release/${fork_tag}"
-  echo "Rebasing ${PATCH_BRANCH} onto ${upstream_tag} for ${fork_tag}"
-  if rebase_patch_source "$upstream_tag" "$release_branch"; then
+  echo "Rebasing ${RELEASE_SOURCE_BRANCH} onto ${upstream_tag} for ${fork_tag}"
+  if rebase_patch_source "$upstream_tag" "$release_branch" false "$RELEASE_SOURCE_BRANCH"; then
     git tag -a "$fork_tag" -m "Fork release ${fork_tag} from ${upstream_tag}"
     close_issue_if_open "$title" "Resolved by successful tag creation: $(run_url)"
     SYNCED_UPSTREAM_TAG="$upstream_tag"
@@ -371,14 +404,14 @@ sync_release_tag() {
   fi
 
   conflict_context="$(cat <<EOF
-The fork sync workflow could not rebase ${PATCH_BRANCH} onto upstream tag ${upstream_tag} to create ${fork_tag}.
+The fork sync workflow could not rebase ${RELEASE_SOURCE_BRANCH} onto upstream tag ${upstream_tag} to create ${fork_tag}.
 
-- Patch source: ${PATCH_BRANCH}
+- Release source: ${RELEASE_SOURCE_BRANCH}
 - Upstream tag: ${upstream_tag}
 - Fork tag: ${fork_tag}
 EOF
 )"
-  body="$(build_rebase_conflict_body "Fork release tag conflict" "$conflict_context" "$upstream_tag")"
+  body="$(build_rebase_conflict_body "Fork release tag conflict" "$conflict_context" "$upstream_tag" "$RELEASE_SOURCE_BRANCH")"
   git rebase --abort || true
   create_or_update_issue "$title" "$body"
   return 1
