@@ -643,19 +643,16 @@ func (bc *BifrostContext) ConsumeStreamCommitWatch() bool {
 	return ready
 }
 
-// GetOrStoreReservedValue atomically loads a reserved context value if one is
-// already present, otherwise calls supplier, stores the result under key, and
-// returns it. The supplier is invoked only on a cache miss. Unlike SetValue,
-// this bypasses the blockRestrictedWrites guard — it is the write-side twin of
-// setReservedValue, used by Bifrost internals for reserved keys that must land
-// even while plugins' post-hooks have restricted writes (e.g. streaming chunk
-// post-hooks). Internal use only.
-func (bc *BifrostContext) GetOrStoreReservedValue(key BifrostContextKey, supplier func() any) any {
+// GetOrStoreOpencodeSession caches the OpenCode upstream session for this request,
+// including while plugin post-hooks restrict writes. It cannot write any other
+// reserved key. Concurrent callers may compute candidates, but all return the
+// same stored value; suppliers must be side-effect free and may read the context.
+func (bc *BifrostContext) GetOrStoreOpencodeSession(supplier func() string) string {
 	if bc.valueDelegate != nil {
-		return bc.valueDelegate.GetOrStoreReservedValue(key, supplier)
+		return bc.valueDelegate.GetOrStoreOpencodeSession(supplier)
 	}
 	bc.valuesMu.RLock()
-	if val, ok := bc.userValues[key]; ok {
+	if val, ok := bc.userValues[BifrostContextKeyOpencodeSession].(string); ok {
 		bc.valuesMu.RUnlock()
 		return val
 	}
@@ -665,14 +662,13 @@ func (bc *BifrostContext) GetOrStoreReservedValue(key BifrostContextKey, supplie
 
 	bc.valuesMu.Lock()
 	defer bc.valuesMu.Unlock()
-	// Re-check: a concurrent caller may have stored a value while we computed.
-	if val, ok := bc.userValues[key]; ok {
-		return val
+	if stored, ok := bc.userValues[BifrostContextKeyOpencodeSession].(string); ok {
+		return stored
 	}
 	if bc.userValues == nil {
 		bc.userValues = make(map[any]any, 16)
 	}
-	bc.userValues[key] = val
+	bc.userValues[BifrostContextKeyOpencodeSession] = val
 	return val
 }
 
