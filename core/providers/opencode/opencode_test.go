@@ -561,15 +561,23 @@ func setOpencodeVirtualKey(ctx *schemas.BifrostContext, id string) {
 	ctx.SetGrant(&opencodeStubGrant{identity: &opencodeStubIdentity{virtualKeyID: id}})
 }
 
-// opencodeStubIdentity settles only which virtual key the request is attributed
-// to; everything else answers as unknown.
+// opencodeStubIdentity settles which virtual key or user the request is
+// attributed to; everything else answers as unknown.
 type opencodeStubIdentity struct {
 	virtualKeyID string
+	userID       string
 }
 
 func (i *opencodeStubIdentity) Credential() schemas.Credential { return schemas.Credential{} }
-func (i *opencodeStubIdentity) Presented() bool                { return i.virtualKeyID != "" }
-func (i *opencodeStubIdentity) User() *schemas.UserRef         { return nil }
+func (i *opencodeStubIdentity) Presented() bool {
+	return i.virtualKeyID != "" || i.userID != ""
+}
+func (i *opencodeStubIdentity) User() *schemas.UserRef {
+	if i.userID == "" {
+		return nil
+	}
+	return &schemas.UserRef{ID: i.userID}
+}
 func (i *opencodeStubIdentity) VirtualKey() *schemas.EntityRef {
 	if i.virtualKeyID == "" {
 		return nil
