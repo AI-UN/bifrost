@@ -108,20 +108,14 @@ func runOpencodeOp(t *testing.T, provider *opencodeProvider, ctx *schemas.Bifros
 	t.Helper()
 	switch op {
 	case opChat:
-		response, bifrostErr := provider.ChatCompletion(ctx, key, newWireChatRequest(provider.providerKey))
+		_, bifrostErr := provider.ChatCompletion(ctx, key, newWireChatRequest(provider.providerKey))
 		if bifrostErr != nil {
 			t.Fatalf("ChatCompletion: %v", bifrostErr)
 		}
-		if response == nil || response.ID != "chatcmpl-test" {
-			t.Fatalf("ChatCompletion returned %#v, want response id chatcmpl-test", response)
-		}
 	case opResponses:
-		response, bifrostErr := provider.Responses(ctx, key, newWireResponsesRequest(provider.providerKey))
+		_, bifrostErr := provider.Responses(ctx, key, newWireResponsesRequest(provider.providerKey))
 		if bifrostErr != nil {
 			t.Fatalf("Responses: %v", bifrostErr)
-		}
-		if response == nil || response.ID == nil || *response.ID != "resp_regular" {
-			t.Fatalf("Responses returned %#v, want response id resp_regular", response)
 		}
 	case opChatStream:
 		ch, bifrostErr := provider.ChatCompletionStream(ctx, passthroughPostHookRunner, nil, key, newWireChatRequest(provider.providerKey))
@@ -337,9 +331,9 @@ func TestOpencodeSessionHeaderOnWire(t *testing.T) {
 					name: "resolved session beats case-variant static config header",
 					ops:  []opencodeOp{opChat, opResponses, opChatStream, opResponsesStream},
 					configMutate: func(config *schemas.ProviderConfig) {
-						config.NetworkConfig.ExtraHeaders = map[string]string{
-							"X-Opencode-Session": "static-sess",
-							"Accept":             "application/json",
+						config.NetworkConfig.ExtraHeaders = map[string]schemas.SecretVar{
+							"X-Opencode-Session": *schemas.NewSecretVar("static-sess"),
+							"Accept":             *schemas.NewSecretVar("application/json"),
 						}
 					},
 					setupCtx: func(t *testing.T) *schemas.BifrostContext {

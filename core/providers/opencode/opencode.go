@@ -99,12 +99,12 @@ func (p *opencodeProvider) GetProviderKey() schemas.ModelProvider {
 // overrides case-variant static config values. ListModels intentionally does
 // not use this helper: the gateway only requires the header on inference calls.
 // Returns a fresh map; the shared config map is never mutated.
-func (p *opencodeProvider) inferenceExtraHeaders(ctx *schemas.BifrostContext) map[string]string {
+func (p *opencodeProvider) inferenceExtraHeaders(ctx *schemas.BifrostContext) map[string]schemas.SecretVar {
 	session := ResolveOpencodeSession(ctx)
 	if session == "" {
 		return p.networkConfig.ExtraHeaders
 	}
-	merged := make(map[string]string, len(p.networkConfig.ExtraHeaders)+1)
+	merged := make(map[string]schemas.SecretVar, len(p.networkConfig.ExtraHeaders)+1)
 	maps.Copy(merged, p.networkConfig.ExtraHeaders)
 	// The resolved session always wins over a statically configured value: a
 	// static session would collapse every request onto one upstream
@@ -116,7 +116,7 @@ func (p *opencodeProvider) inferenceExtraHeaders(ctx *schemas.BifrostContext) ma
 			delete(merged, k)
 		}
 	}
-	merged[OpencodeSessionHeader] = session
+	merged[OpencodeSessionHeader] = *schemas.NewSecretVar(session)
 	return merged
 }
 
