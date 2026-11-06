@@ -386,7 +386,7 @@ func newAliasDropTestPlugin(t *testing.T, supported map[string][]string, aliases
 	ds.SetSupportedParamsForTest(supported)
 	mc := modelcatalog.NewTestCatalogWithDatasheet(ds)
 	mc.SetKeyConfigForProvider(schemas.Bedrock, []schemas.Key{{ID: "bedrock-key", Aliases: aliases}})
-	p, err := Init(Config{ShouldDropParams: true}, bifrost.NewNoOpLogger(), mc)
+	p, err := Init(Config{ShouldDropParams: true}, bifrost.NewNoOpLogger(), mc, nil)
 	if err != nil {
 		t.Fatalf("Init: %v", err)
 	}
@@ -491,7 +491,7 @@ func BenchmarkPreLLMHookDropParams(b *testing.B) {
 	ds.SetSupportedParamsForTest(map[string][]string{"deepseek.v3.2": {"temperature"}})
 	mc := modelcatalog.NewTestCatalogWithDatasheet(ds)
 	mc.SetKeyConfigForProvider(schemas.Bedrock, []schemas.Key{{ID: "bedrock-key", Aliases: schemas.KeyAliases{"claude-deepseek-v3": {ModelID: "deepseek.v3.2"}}}})
-	p, err := Init(Config{ShouldDropParams: true}, bifrost.NewNoOpLogger(), mc)
+	p, err := Init(Config{ShouldDropParams: true}, bifrost.NewNoOpLogger(), mc, nil)
 	if err != nil {
 		b.Fatalf("Init: %v", err)
 	}
