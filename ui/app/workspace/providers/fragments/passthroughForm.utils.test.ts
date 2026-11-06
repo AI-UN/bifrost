@@ -26,6 +26,7 @@ describe("passthroughRoutePrefix", () => {
 		expect(passthroughRoutePrefix(provider("openai"))).toBe("/openai_passthrough");
 		expect(passthroughRoutePrefix(provider("anthropic"))).toBe("/anthropic_passthrough");
 		expect(passthroughRoutePrefix(provider("azure"))).toBe("/azure_passthrough");
+		expect(passthroughRoutePrefix(provider("cpa"))).toBe("/cpa_passthrough");
 		expect(passthroughRoutePrefix(provider("gemini"))).toBe("/genai_passthrough");
 		expect(passthroughRoutePrefix(provider("vertex"))).toBe("/genai_passthrough");
 	});
@@ -34,6 +35,7 @@ describe("passthroughRoutePrefix", () => {
 		expect(passthroughRoutePrefix(provider("my-oai", custom("openai")))).toBe("/openai_passthrough");
 		expect(passthroughRoutePrefix(provider("my-claude", custom("anthropic")))).toBe("/anthropic_passthrough");
 		expect(passthroughRoutePrefix(provider("my-gemini", custom("gemini")))).toBe("/genai_passthrough");
+		expect(passthroughRoutePrefix(provider("my-cpa", custom("cpa")))).toBe("/cpa_passthrough");
 		expect(passthroughRoutePrefix(provider("my-bedrock", custom("bedrock")))).toBe("/bedrock_passthrough");
 	});
 
