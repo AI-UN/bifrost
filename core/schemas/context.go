@@ -55,6 +55,7 @@ var reservedKeys = map[BifrostContextKey]struct{}{
 	BifrostContextKeyMCPAgentServedRoute:     {},
 	BifrostContextKeyMCPInstructionsText:     {},
 	BifrostContextKeyStreamBodyExhausted:     {},
+	BifrostContextKeyOpencodeSession:         {},
 }
 
 // isReservedKey reports whether key is a reserved context key whose writes are
@@ -640,6 +641,39 @@ func (bc *BifrostContext) ConsumeStreamCommitWatch() bool {
 	ready, _ = bc.userValues[BifrostContextKeyStreamCommitWatch].(bool)
 	bc.userValues[BifrostContextKeyStreamCommitWatch] = nil
 	return ready
+}
+
+// GetOrStoreReservedValue atomically loads a reserved context value if one is
+// already present, otherwise calls supplier, stores the result under key, and
+// returns it. The supplier is invoked only on a cache miss. Unlike SetValue,
+// this bypasses the blockRestrictedWrites guard — it is the write-side twin of
+// setReservedValue, used by Bifrost internals for reserved keys that must land
+// even while plugins' post-hooks have restricted writes (e.g. streaming chunk
+// post-hooks). Internal use only.
+func (bc *BifrostContext) GetOrStoreReservedValue(key BifrostContextKey, supplier func() any) any {
+	if bc.valueDelegate != nil {
+		return bc.valueDelegate.GetOrStoreReservedValue(key, supplier)
+	}
+	bc.valuesMu.RLock()
+	if val, ok := bc.userValues[key]; ok {
+		bc.valuesMu.RUnlock()
+		return val
+	}
+	bc.valuesMu.RUnlock()
+
+	val := supplier()
+
+	bc.valuesMu.Lock()
+	defer bc.valuesMu.Unlock()
+	// Re-check: a concurrent caller may have stored a value while we computed.
+	if val, ok := bc.userValues[key]; ok {
+		return val
+	}
+	if bc.userValues == nil {
+		bc.userValues = make(map[any]any, 16)
+	}
+	bc.userValues[key] = val
+	return val
 }
 
 // SetRoutingInfoSnapshot writes the routed-identity RoutingInfo snapshot,
