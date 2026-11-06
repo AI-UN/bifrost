@@ -27,6 +27,7 @@ export const PROVIDER_KEYWORDS = {
   "github-copilot": ["github-copilot"],
   huggingface: ["huggingface", "hugging face"],
   replicate: ["replicate", "/replicate", "flux", "black-forest-labs"],
+  deepinfra: ["deepinfra/", "api.deepinfra.com"],
 };
 
 // filter-collection asks "does this item match provider P?" once per fork, so an
@@ -52,6 +53,7 @@ export const MATCH_ORDER = [
   "xai",
   "mistral",
   "cohere",
+  "deepinfra",
   "deepseek",
 ];
 
