@@ -246,6 +246,25 @@ Same parameter mapping and message conversion as Chat Completions.
 
 ---
 
+# Session affinity
+
+For OpenCode Zen and Go, Bifrost resolves an upstream `x-opencode-session` in this order:
+
+1. The raw incoming `x-opencode-session` request header (consumed automatically by Bifrost).
+2. The per-request forwarded `x-opencode-session` value (send `x-bf-eh-x-opencode-session` through the extra-header mechanism).
+3. Bifrost's resolved session ID (`x-bf-session-id`, or the client's harness session header).
+4. A newly generated UUID for that request.
+
+The generated UUID is a request fallback, not a conversation-stable session. Send a stable session value from the client to keep related requests together. Session identifiers are trimmed; a value that is empty, exceeds Bifrost's 255-rune session limit, or contains control characters is treated as absent and the next signal in the chain applies. No global request-header allowlist is required for this session header. During OpenCode inference, explicitly forwarded session values cannot replace the resolved, safely scoped egress session. The caller's forwarding configuration is preserved for later fallback providers.
+
+The session scope is derived from the authenticated identity: the virtual-key row ID when present, otherwise the authenticated user's ID. The scope is tagged by identity type, so a virtual-key ID and a user ID with the same text do not collide, and each scope component is escaped so a `:` inside an ID cannot collide with the separator. Raw API credentials and credential values are never used as scope identifiers. The same authenticated identity and session value therefore retain the same scope across requests, including when credentials rotate.
+
+When no authenticated virtual-key or user identity is available, the normalized session is escaped without adding an identity prefix. Escaping keeps an unscoped caller from supplying a value that impersonates a scoped session.
+
+Session affinity applies to unary and streaming Chat Completions and Responses requests. List Models does not resolve or generate a session: statically configured or explicitly forwarded session headers retain the normal extra-header behavior. A client that already sends a stable session does not need to switch client providers. An honest client `User-Agent` still must be forwarded or configured separately.
+
+---
+
 # 3. List Models
 
 OpenCode's model listing endpoint returns the available models for your gateway tier. Model IDs are prefixed with the provider key in Bifrost (e.g., `opencode-go/deepseek-v4-flash`).
