@@ -724,6 +724,9 @@
         "deepseek": {
           "$ref": "#/$defs/provider_with_deepseek_config"
         },
+        "deepinfra": {
+          "$ref": "#/$defs/provider"
+        },
         "wafer": {
           "$ref": "#/$defs/provider"
         },
@@ -4555,7 +4558,8 @@
                         "cloudflare",
                         "byteplus",
                         "siliconflow",
-                        "siliconflow-cn"
+                        "siliconflow-cn",
+                        "deepinfra"
                       ]
                     },
                     "embedding_model": {
@@ -14266,6 +14270,7 @@
             "cerebras",
             "databricks",
             "deepseek",
+            "deepinfra",
             "gemini",
             "github-copilot",
             "openrouter",
