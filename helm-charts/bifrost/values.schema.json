@@ -1513,7 +1513,8 @@
                         "cloudflare",
                         "siliconflow",
                         "siliconflow-cn",
-                        "deepinfra"
+                        "deepinfra",
+                        "zhipu"
                       ]
                     },
                     "embedding_model": {

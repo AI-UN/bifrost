@@ -168,6 +168,8 @@ const PROVIDER_KEYWORDS = {
   siliconflow: ["siliconflow", "siliconflow.com"],
   "siliconflow-cn": ["siliconflow-cn", "siliconflow.cn"],
   deepinfra: ["deepinfra/", "api.deepinfra.com"],
+  zai: ["zai/", "z.ai"],
+  zhipu: ["zhipu", "bigmodel.cn"],
 };
 
 // Haystack = item JSON + ancestor folder names. Folder names encode the harness
@@ -342,6 +344,14 @@ const itemMatchesProvider = (item, ancestorNames, provider = PROVIDER) => {
   // keep these requests in the DeepInfra partition rather than another model family.
   const isDeepInfra = haystack.includes("deepinfra/") || haystack.includes("api.deepinfra.com");
   if (isDeepInfra) return provider === "deepinfra";
+  // Z.AI and Zhipu share the GLM model family; keep their regional endpoint rows exclusive
+  // so ZAI rows carrying Zhipu documentation terms do not enter the Zhipu provider shard.
+  const isZhipu = haystack.includes("zhipu") || haystack.includes("bigmodel.cn");
+  if (provider === "zhipu") return isZhipu;
+  if (isZhipu) return false;
+  const isZAI = haystack.includes("zai/") || haystack.includes("z.ai");
+  if (provider === "zai") return isZAI;
+  if (isZAI) return false;
   // Vertex rows run Gemini models (model "vertex/gemini-..."), so they'd otherwise be claimed
   // by the gemini partition too - same collision class as openrouter/bedrock_mantle above.
   // Route them exclusively to vertex. Vertex Model Garden rows ("vertex/minimaxai/minimax-m2-maas")
