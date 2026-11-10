@@ -99,12 +99,11 @@ CHANGELOG_BODY="$(strip_changelog_comments < transports/changelog.md)"
 if changelog_is_empty "$CHANGELOG_BODY" &&
   [[ -n "$UPSTREAM_REPO_SLUG" && "$UPSTREAM_SOURCE_TAG" != "$TAG_NAME" ]]; then
   echo "ℹ️ Local changelog is empty; loading transports/changelog.md from ${UPSTREAM_REPO_SLUG}@${UPSTREAM_SOURCE_TAG}"
-  if UPSTREAM_CHANGELOG_BODY="$(
-    gh api --method GET \
-      -H "Accept: application/vnd.github.raw+json" \
-      "repos/${UPSTREAM_REPO_SLUG}/contents/transports/changelog.md" \
-      -f "ref=${UPSTREAM_SOURCE_TAG}"
-  )"; then
+  # Fetched anonymously: upstream is public, and the upstream organization's IP
+  # allow list refuses authenticated requests made with this repository's token
+  # from GitHub-hosted runners.
+  UPSTREAM_CHANGELOG_URL="https://raw.githubusercontent.com/${UPSTREAM_REPO_SLUG}/refs/tags/${UPSTREAM_SOURCE_TAG}/transports/changelog.md"
+  if UPSTREAM_CHANGELOG_BODY="$(curl -fsSL --retry 3 "$UPSTREAM_CHANGELOG_URL")"; then
     CHANGELOG_BODY="$(printf '%s\n' "$UPSTREAM_CHANGELOG_BODY" | strip_changelog_comments)"
   else
     echo "❌ Failed to load upstream changelog from ${UPSTREAM_REPO_SLUG}@${UPSTREAM_SOURCE_TAG}" >&2
