@@ -278,4 +278,5 @@ export const PROVIDER_DISPLAY_NAMES: Record<string, string> = {
 	cohere: "Cohere",
 	zai: "Z.AI",
 	zhipu: "Zhipu AI",
+	cpa: "CLI Proxy API",
 };
