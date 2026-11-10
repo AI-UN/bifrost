@@ -19,7 +19,7 @@ func newTestPlugin(t *testing.T, supported map[string][]string) *CompatPlugin {
 	t.Helper()
 	ds := datasheet.NewTestStore(nil)
 	ds.SetSupportedParamsForTest(supported)
-	p, err := Init(Config{ShouldDropParams: true, AzureDeepseek: true}, bifrost.NewNoOpLogger(), modelcatalog.NewTestCatalogWithDatasheet(ds))
+	p, err := Init(Config{ShouldDropParams: true, AzureDeepseek: true}, bifrost.NewNoOpLogger(), modelcatalog.NewTestCatalogWithDatasheet(ds), nil)
 	if err != nil {
 		t.Fatalf("Init: %v", err)
 	}
@@ -187,7 +187,7 @@ func TestReasoningWithToolsResponsesRouting(t *testing.T) {
 		})
 		mc := modelcatalog.NewTestCatalogWithDatasheet(ds)
 		mc.SetKeyConfigForProvider(schemas.OpenAI, []schemas.Key{{ID: "openai-key", Aliases: schemas.KeyAliases{"team-reasoner": {ModelID: "no-reasoning-with-tools"}}}})
-		p, err := Init(Config{ShouldDropParams: true, ForceReasoningOnlyModelsToResponses: enabled}, bifrost.NewNoOpLogger(), mc)
+		p, err := Init(Config{ShouldDropParams: true, ForceReasoningOnlyModelsToResponses: enabled}, bifrost.NewNoOpLogger(), mc, nil)
 		if err != nil {
 			t.Fatalf("Init: %v", err)
 		}
@@ -342,7 +342,7 @@ func TestDecisionToResponsesEmulationOptIn(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			p, err := Init(Config{ConvertDecisionToResponses: tt.enabled}, bifrost.NewNoOpLogger(), nil)
+			p, err := Init(Config{ConvertDecisionToResponses: tt.enabled}, bifrost.NewNoOpLogger(), nil, nil)
 			if err != nil {
 				t.Fatalf("Init: %v", err)
 			}
@@ -386,7 +386,7 @@ func newAliasDropTestPlugin(t *testing.T, supported map[string][]string, aliases
 	ds.SetSupportedParamsForTest(supported)
 	mc := modelcatalog.NewTestCatalogWithDatasheet(ds)
 	mc.SetKeyConfigForProvider(schemas.Bedrock, []schemas.Key{{ID: "bedrock-key", Aliases: aliases}})
-	p, err := Init(Config{ShouldDropParams: true}, bifrost.NewNoOpLogger(), mc)
+	p, err := Init(Config{ShouldDropParams: true}, bifrost.NewNoOpLogger(), mc, nil)
 	if err != nil {
 		t.Fatalf("Init: %v", err)
 	}
@@ -491,7 +491,7 @@ func BenchmarkPreLLMHookDropParams(b *testing.B) {
 	ds.SetSupportedParamsForTest(map[string][]string{"deepseek.v3.2": {"temperature"}})
 	mc := modelcatalog.NewTestCatalogWithDatasheet(ds)
 	mc.SetKeyConfigForProvider(schemas.Bedrock, []schemas.Key{{ID: "bedrock-key", Aliases: schemas.KeyAliases{"claude-deepseek-v3": {ModelID: "deepseek.v3.2"}}}})
-	p, err := Init(Config{ShouldDropParams: true}, bifrost.NewNoOpLogger(), mc)
+	p, err := Init(Config{ShouldDropParams: true}, bifrost.NewNoOpLogger(), mc, nil)
 	if err != nil {
 		b.Fatalf("Init: %v", err)
 	}
