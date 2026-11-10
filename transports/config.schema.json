@@ -774,6 +774,12 @@
         },
         "siliconflow-cn": {
           "$ref": "#/$defs/provider"
+        },
+        "zai": {
+          "$ref": "#/$defs/provider"
+        },
+        "zhipu": {
+          "$ref": "#/$defs/provider"
         }
       },
       "additionalProperties": true
@@ -4559,7 +4565,8 @@
                         "byteplus",
                         "siliconflow",
                         "siliconflow-cn",
-                        "deepinfra"
+                        "deepinfra",
+                        "zhipu"
                       ]
                     },
                     "embedding_model": {
@@ -14288,7 +14295,9 @@
             "cloudflare",
             "typesafe",
             "siliconflow",
-            "siliconflow-cn"
+            "siliconflow-cn",
+            "zai",
+            "zhipu"
           ],
           "description": "Base provider type to extend"
         },
