@@ -1512,7 +1512,8 @@
                         "databricks",
                         "cloudflare",
                         "siliconflow",
-                        "siliconflow-cn"
+                        "siliconflow-cn",
+                        "deepinfra"
                       ]
                     },
                     "embedding_model": {

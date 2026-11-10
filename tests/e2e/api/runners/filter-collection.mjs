@@ -167,6 +167,7 @@ const PROVIDER_KEYWORDS = {
   mcp: ["mcp"],
   siliconflow: ["siliconflow", "siliconflow.com"],
   "siliconflow-cn": ["siliconflow-cn", "siliconflow.cn"],
+  deepinfra: ["deepinfra/", "api.deepinfra.com"],
 };
 
 // Haystack = item JSON + ancestor folder names. Folder names encode the harness
@@ -337,6 +338,10 @@ const itemMatchesProvider = (item, ancestorNames, provider = PROVIDER) => {
   // would otherwise try to reach SiliconFlow. Route them away from replicate; the reverse
   // direction needs no guard because real Replicate rows never say "siliconflow".
   if (haystack.includes("siliconflow") && provider === "replicate") return false;
+  // DeepInfra routes deepseek and Qwen model IDs through its own namespace and host;
+  // keep these requests in the DeepInfra partition rather than another model family.
+  const isDeepInfra = haystack.includes("deepinfra/") || haystack.includes("api.deepinfra.com");
+  if (isDeepInfra) return provider === "deepinfra";
   // Vertex rows run Gemini models (model "vertex/gemini-..."), so they'd otherwise be claimed
   // by the gemini partition too - same collision class as openrouter/bedrock_mantle above.
   // Route them exclusively to vertex. Vertex Model Garden rows ("vertex/minimaxai/minimax-m2-maas")
