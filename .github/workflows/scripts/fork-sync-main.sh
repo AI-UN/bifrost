@@ -18,6 +18,8 @@ TAG_CONFLICT_TITLE_PREFIX="[fork-tag-conflict]"
 SYNCED_UPSTREAM_TAG=""
 SYNCED_FORK_TAG=""
 AUTOMATION_SNAPSHOT_DIR=""
+CARRIED_HEAD=""
+CARRY_FAILURE_DETAILS=""
 
 cleanup() {
   if [[ -n "$AUTOMATION_SNAPSHOT_DIR" && -d "$AUTOMATION_SNAPSHOT_DIR" ]]; then
@@ -157,6 +159,8 @@ discarded. The durable fix is to rebase every patch branch onto
 \`${target_ref}\`, resolve conflicts there, then rebuild and push
 \`${source_branch}\`.
 
+${CARRY_FAILURE_DETAILS}
+
 $(rebase_conflict_details "$target_ref" "$source_branch")
 EOF
 }
@@ -254,17 +258,129 @@ write_sync_state_snapshot() {
   fi
 }
 
+# Prints the fork's changes between two commits with hunk positions stripped, so
+# the same fork edits compare equal whichever upstream commit they sit on.
+fork_delta() {
+  git diff --no-color --no-ext-diff --no-renames -U0 "$1" "$2" -- "${@:3}" | sed -e '/^@@/d' -e '/^index /d'
+}
+
+# Rebuilds the first-parent chain of origin/<source> on <target> by three-way
+# merging the upstream delta (merge base -> target) into each commit's tree, with
+# every other parent kept. `git rebase --rebase-merges` re-merges the patch
+# branches and drops their hand resolutions, so it re-conflicts on any upstream
+# advance; this keeps the resolved trees and only conflicts where upstream touches
+# the fork's own lines.
+# Returns 0 with CARRIED_HEAD set; 1 when it does not apply or conflicts (the
+# caller falls back to rebase); 2 when the clean result would change the fork's
+# own delta or break a JSON file both sides edited (nothing may be published).
+carry_upstream_delta() {
+  local target_ref="$1"
+  local source_ref="origin/${2:-$PATCH_BRANCH}"
+  local base="" target="" new="" output="" tree="" commit="" parent="" path="" work_dir=""
+  local author_name="" author_email="" author_date=""
+  local bases=() chain=() parents=() overlap=() mismatched=() invalid_json=()
+
+  CARRIED_HEAD=""
+  CARRY_FAILURE_DETAILS=""
+  mapfile -t bases < <(git merge-base --all "$source_ref" "$target_ref")
+  if (( ${#bases[@]} != 1 )); then
+    echo "Carry: ${source_ref} and ${target_ref} have ${#bases[@]} merge bases; falling back to rebase."
+    return 1
+  fi
+  base="${bases[0]}"
+  target="$(git rev-parse "${target_ref}^{commit}")" || return 1
+  mapfile -t chain < <(git rev-list --reverse --first-parent "${base}..${source_ref}")
+  if (( ${#chain[@]} == 0 )) || [[ "$(git rev-parse -q --verify "${chain[0]}^1")" != "$base" ]]; then
+    echo "Carry: the first-parent chain of ${source_ref} does not start at ${base}; falling back to rebase."
+    return 1
+  fi
+
+  new="$target"
+  for commit in "${chain[@]}"; do
+    if ! output="$(git merge-tree --write-tree --name-only --merge-base="$base" "$commit" "$target")"; then
+      echo "Carry: upstream changes conflict with $(git show -s --format='%h %s' "$commit"):"
+      printf '%s\n' "$output" | sed 1d
+      echo "Falling back to rebase."
+      return 1
+    fi
+    tree="${output%%$'\n'*}"
+    parents=(-p "$new")
+    for parent in $(git rev-list --parents -n 1 "$commit" | cut -d' ' -f3-); do
+      parents+=(-p "$parent")
+    done
+    IFS=$'\x1f' read -r author_name author_email author_date < <(git show -s --format='%an%x1f%ae%x1f%aD' "$commit")
+    new="$(git cat-file commit "$commit" | sed '1,/^$/d' \
+      | GIT_AUTHOR_NAME="$author_name" GIT_AUTHOR_EMAIL="$author_email" GIT_AUTHOR_DATE="$author_date" \
+        git commit-tree "$tree" "${parents[@]}")" || return 1
+  done
+
+  work_dir="$(mktemp -d)"
+  fork_delta "$base" "$source_ref" > "$work_dir/before"
+  fork_delta "$target" "$new" > "$work_dir/after"
+  if ! cmp -s "$work_dir/before" "$work_dir/after"; then
+    while IFS= read -r path; do
+      cmp -s <(fork_delta "$base" "$source_ref" "$path") <(fork_delta "$target" "$new" "$path") || mismatched+=("$path")
+    done < <(sort -u <(git diff --name-only --no-renames "$base" "$source_ref") <(git diff --name-only --no-renames "$target" "$new"))
+  fi
+  rm -rf "$work_dir"
+
+  mapfile -t overlap < <(comm -12 \
+    <(git diff --name-only --no-renames "$base" "$target" | sort) \
+    <(git diff --name-only --no-renames "$base" "$source_ref" | sort))
+  for path in "${overlap[@]}"; do
+    [[ "$path" == *.json ]] && git cat-file -e "${new}:${path}" 2>/dev/null || continue
+    git show "${new}:${path}" | jq empty >/dev/null 2>&1 || invalid_json+=("$path")
+  done
+
+  echo "Carry: ${#overlap[@]} file(s) changed by both upstream and ${source_ref}; review them for moved or renamed content:"
+  if (( ${#overlap[@]} > 0 )); then
+    printf '  %s\n' "${overlap[@]}"
+    if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
+      {
+        echo "### Files changed by both ${target_ref} and ${source_ref}"
+        echo
+        printf -- '- `%s`\n' "${overlap[@]}"
+        echo
+      } >> "$GITHUB_STEP_SUMMARY"
+    fi
+  fi
+
+  if (( ${#mismatched[@]} + ${#invalid_json[@]} > 0 )); then
+    CARRY_FAILURE_DETAILS="$(
+      echo "### Fork delta check failed"
+      echo
+      echo "Merging the ${target_ref} changes into ${source_ref} was textually clean, but the"
+      echo "result would alter the fork's own changes, so nothing was published. This usually"
+      echo "means upstream made the same edit (drop the fork's copy) or moved code the fork edits."
+      echo
+      (( ${#mismatched[@]} == 0 )) || printf -- '- Fork changes differ in `%s`\n' "${mismatched[@]}"
+      (( ${#invalid_json[@]} == 0 )) || printf -- '- JSON no longer parses: `%s`\n' "${invalid_json[@]}"
+    )"
+    printf '%s\n' "$CARRY_FAILURE_DETAILS" >&2
+    return 2
+  fi
+
+  CARRIED_HEAD="$new"
+  echo "Carry: rebuilt ${#chain[@]} commit(s) of ${source_ref} on ${target_ref}; fork delta unchanged."
+}
+
 rebase_patch_source() {
   local target_ref="$1"
   local work_branch="$2"
   local skip_if_ancestor="${3:-false}"
   local source_branch="${4:-$PATCH_BRANCH}"
+  local carry_status=0
 
   git checkout -B "$work_branch" "origin/${source_branch}"
   if [[ "$skip_if_ancestor" == "true" ]] && git merge-base --is-ancestor "$target_ref" "HEAD"; then
     echo "${target_ref} is already an ancestor of origin/${source_branch}; no rebase needed."
     return 0
   fi
+  carry_upstream_delta "$target_ref" "$source_branch" || carry_status=$?
+  case "$carry_status" in
+    0) git reset -q --hard "$CARRIED_HEAD" || return 1; return 0 ;;
+    2) return 1 ;;
+  esac
   git rebase --rebase-merges "$target_ref"
 }
 
