@@ -26,6 +26,8 @@ When you use passthrough endpoints, the request still flows through Bifrost core
   Default provider: `bedrock` (restricted to three operations, see [Bedrock Passthrough](#bedrock-passthrough))
 - `/sagemaker_passthrough`
   Default provider: `sagemaker` (restricted to endpoint invocations, see [SageMaker Passthrough](#sagemaker-passthrough))
+- `/cpa_passthrough`
+  Default provider: `cpa` (dialect follows the retained API path: OpenAI `/v1`, Anthropic `/v1/messages`, Gemini `/v1beta`)
 
 ---
 
@@ -129,6 +131,12 @@ Some runs are never charged to budgets or rate limits:
 - A streaming create that the client disconnects from. Bifrost never sees the run finish or records it for polling.
 
 Billing a run needs a config store, the same as batch and video accounting. A run whose create did not go through Bifrost is never billed when you poll it.
+
+### CPA Passthrough
+
+- Uses `cpa` as the default provider and keeps the API path after stripping `/cpa_passthrough`, so `/v1/chat/completions`, `/v1/messages` and `/v1beta/models/...` dispatch to the OpenAI, Anthropic and Gemini dialects respectively.
+- The generic stream decision follows `stream: true` in the request body or `stream` in the path; Gemini's `:streamGenerateContent` path is detected directly. An `Accept: text/event-stream` header is forwarded but does not by itself select Bifrost's streaming handler.
+- The provider's passthrough policy applies to the stripped CPA API path.
 
 ---
 
