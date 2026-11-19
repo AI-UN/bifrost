@@ -49,6 +49,7 @@ export const KnownProvidersNames = [
 	"soniox",
 	"siliconflow",
 	"siliconflow-cn",
+	"cpa",
 ] as const;
 
 // Local Provider type derived from KNOWN_PROVIDERS constant
@@ -223,6 +224,7 @@ export const ProviderLabels: Record<ProviderName, string> = {
 	soniox: "Soniox",
 	siliconflow: "SiliconFlow",
 	"siliconflow-cn": "SiliconFlow CN",
+	cpa: "CLI Proxy API",
 } as const;
 
 // Helper function to get provider label, supporting custom providers
