@@ -319,6 +319,8 @@
 		"convertTextToChatHelp": "Konvertiere Text-Completion-Anfragen in Chat für Modelle, die nur Chat unterstützen.",
 		"convertChatToResponses": "Chat in Responses konvertieren",
 		"convertChatToResponsesHelp": "Konvertiere Chat-Completion-Anfragen in Responses für Modelle, die nur Responses unterstützen.",
+		"convertResponsesToChat": "Responses in Chat konvertieren",
+		"convertResponsesToChatHelp": "Konvertiere Responses-API-Anfragen in Chat-Completions für Modelle, die nur Chat unterstützen.",
 		"dropUnsupportedParams": "Nicht unterstützte Parameter verwerfen",
 		"dropUnsupportedParamsHelp": "Verwirf nicht unterstützte Parameter basierend auf der Allowlist des Modellkatalogs.",
 		"convertUnsupportedParams": "Nicht unterstützte Parameterwerte konvertieren",
