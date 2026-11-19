@@ -319,6 +319,8 @@
 		"convertTextToChatHelp": "채팅만 지원하는 모델의 경우 텍스트 완성 요청을 채팅으로 변환해요.",
 		"convertChatToResponses": "채팅을 응답으로 변환",
 		"convertChatToResponsesHelp": "응답만 지원하는 모델의 경우 채팅 완료 요청을 응답으로 변환해요.",
+		"convertResponsesToChat": "응답을 채팅으로 변환",
+		"convertResponsesToChatHelp": "채팅만 지원하는 모델의 경우 Responses API 요청을 채팅 완료로 변환해요.",
 		"dropUnsupportedParams": "지원되지 않는 매개변수 삭제",
 		"dropUnsupportedParamsHelp": "모델 카탈로그 허용 목록을 기반으로 지원되지 않는 매개변수를 삭제하세요.",
 		"convertUnsupportedParams": "지원되지 않는 매개변수 값 변환",

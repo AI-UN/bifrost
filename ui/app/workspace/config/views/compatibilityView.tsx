@@ -116,11 +116,9 @@ export default function CompatibilityView() {
 				<div className="flex items-center justify-between space-x-2">
 					<div className="space-y-0.5">
 						<label htmlFor="compat-convert-responses-to-chat" className="text-sm font-medium">
-							Convert Responses to Chat
+							{t("compatibility.convertResponsesToChat")}
 						</label>
-						<p className="text-muted-foreground text-sm">
-							Convert Responses API requests to chat completions for models that only support chat.
-						</p>
+						<p className="text-muted-foreground text-sm">{t("compatibility.convertResponsesToChatHelp")}</p>
 					</div>
 					<Switch
 						id="compat-convert-responses-to-chat"

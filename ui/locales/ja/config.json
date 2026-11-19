@@ -319,6 +319,8 @@
 		"convertTextToChatHelp": "チャットのみ対応のモデル向けに、テキスト補完リクエストをチャットへ変換します。",
 		"convertChatToResponses": "Chat を Responses に変換",
 		"convertChatToResponsesHelp": "Responses のみ対応のモデル向けに、チャット補完リクエストを Responses へ変換します。",
+		"convertResponsesToChat": "Responses を Chat に変換",
+		"convertResponsesToChatHelp": "Chat のみ対応のモデル向けに、Responses API のリクエストをチャット補完へ変換します。",
 		"dropUnsupportedParams": "未対応パラメータを破棄",
 		"dropUnsupportedParamsHelp": "モデルカタログの許可リストに基づき未対応パラメータを破棄します。",
 		"convertUnsupportedParams": "未対応パラメータ値を変換",
