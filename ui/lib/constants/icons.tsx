@@ -1192,7 +1192,17 @@ export const ProviderIcons = {
 	cpa: ({ size = "md", className = "" }: IconProps) => {
 		const resolvedSize = resolveSize(size);
 
-		return <img src="/images/cpa.webp" alt="cpa" width={resolvedSize} height={resolvedSize} className={className} />;
+		return (
+			<img
+				src={withBasePath("/images/cpa.webp")}
+				alt="cpa"
+				width={resolvedSize}
+				height={resolvedSize}
+				loading="lazy"
+				decoding="async"
+				className={cn("object-contain", className)}
+			/>
+		);
 	},
 } as const;
 
