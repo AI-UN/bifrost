@@ -77,6 +77,8 @@ export const ModelPlaceholders = {
 	"github-copilot": "e.g. gpt-5.5, claude-sonnet-4-6",
 	typesafe: "e.g. jev-1.13.0, jev-latest, jev-preview",
 	soniox: "e.g. stt-async-v6, stt-rt-v6, tts-rt-v2",
+	siliconflow: "deepseek-ai/DeepSeek-V3.2",
+	"siliconflow-cn": "deepseek-ai/DeepSeek-V3.2",
 };
 
 export const isKeyRequiredByProvider: Record<ProviderName, boolean> = {
@@ -121,6 +123,8 @@ export const isKeyRequiredByProvider: Record<ProviderName, boolean> = {
 	"github-copilot": true,
 	typesafe: true,
 	soniox: true,
+	siliconflow: true,
+	"siliconflow-cn": true,
 };
 
 export const DefaultNetworkConfig = {
