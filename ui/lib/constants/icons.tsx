@@ -1079,13 +1079,13 @@ export const ProviderIcons = {
 
 		return (
 			<img
-				src="/images/siliconflow.png"
-				alt="SiliconFlow"
+				src={withBasePath("/images/siliconflow.png")}
+				alt="siliconflow"
 				width={resolvedSize}
 				height={resolvedSize}
 				loading="lazy"
 				decoding="async"
-				className={className}
+				className={cn("object-contain", className)}
 			/>
 		);
 	},
@@ -1094,13 +1094,13 @@ export const ProviderIcons = {
 
 		return (
 			<img
-				src="/images/siliconflow.png"
-				alt="SiliconFlow CN"
+				src={withBasePath("/images/siliconflow.png")}
+				alt="siliconflow-cn"
 				width={resolvedSize}
 				height={resolvedSize}
 				loading="lazy"
 				decoding="async"
-				className={className}
+				className={cn("object-contain", className)}
 			/>
 		);
 	},
