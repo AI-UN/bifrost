@@ -329,6 +329,8 @@
 		"convertTextToChatHelp": "Convertir les requêtes de complétion de texte en chat pour les modèles qui ne prennent en charge que le chat.",
 		"convertChatToResponses": "Convertir chat en responses",
 		"convertChatToResponsesHelp": "Convertir les requêtes de complétion de chat en responses pour les modèles qui ne prennent en charge que responses.",
+		"convertResponsesToChat": "Convertir responses en chat",
+		"convertResponsesToChatHelp": "Convertir les requêtes de l'API responses en complétions de chat pour les modèles qui ne prennent en charge que chat.",
 		"dropUnsupportedParams": "Ignorer les paramètres non pris en charge",
 		"dropUnsupportedParamsHelp": "Ignore les paramètres non pris en charge selon la liste d’autorisation du catalogue de modèles.",
 		"convertUnsupportedParams": "Convertir les valeurs de paramètres non prises en charge",

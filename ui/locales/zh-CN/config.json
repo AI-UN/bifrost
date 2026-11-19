@@ -329,6 +329,8 @@
 		"convertTextToChatHelp": "将文本补全请求转换为聊天，以适配仅支持聊天的模型。",
 		"convertChatToResponses": "将 Chat 转换为 Responses",
 		"convertChatToResponsesHelp": "将聊天补全请求转换为 responses，以适配仅支持 responses 的模型。",
+		"convertResponsesToChat": "将 Responses 转换为 Chat",
+		"convertResponsesToChatHelp": "将 Responses API 请求转换为 chat completions，以适配仅支持 chat 的模型。",
 		"dropUnsupportedParams": "丢弃不支持的参数",
 		"dropUnsupportedParamsHelp": "根据模型目录允许列表丢弃不支持的参数。",
 		"convertUnsupportedParams": "转换不支持的参数值",
