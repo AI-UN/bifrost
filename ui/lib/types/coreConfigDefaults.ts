@@ -23,6 +23,7 @@ export const DefaultCoreConfig: CoreConfig = {
 	compat: {
 		convert_text_to_chat: false,
 		convert_chat_to_responses: false,
+		convert_responses_to_chat: false,
 		should_drop_params: false,
 		should_convert_params: false,
 		azure_deepseek: false,
