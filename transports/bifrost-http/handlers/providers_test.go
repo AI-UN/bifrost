@@ -240,6 +240,8 @@ func TestAddProvider_CustomProviderBaseTypes(t *testing.T) {
 	}{
 		{name: "typesafe base accepted", provider: "my-typesafe", base: schemas.Typesafe, wantStatus: fasthttp.StatusOK},
 		{name: "vertex base rejected", provider: "my-vertex", base: schemas.Vertex, wantStatus: fasthttp.StatusBadRequest},
+		{name: "Z.AI base accepted", provider: "my-zai", base: schemas.ZAI, wantStatus: fasthttp.StatusOK},
+		{name: "Zhipu base accepted", provider: "my-zhipu", base: schemas.Zhipu, wantStatus: fasthttp.StatusOK},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
