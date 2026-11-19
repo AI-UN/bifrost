@@ -404,6 +404,11 @@ create_config() {
       "network_config": { "base_url": "http://127.0.0.1:8000", "default_request_timeout_in_seconds": 30 },
       "concurrency_and_buffer_size": { "concurrency": 1, "buffer_size": 1 }
     },
+    "deepinfra": {
+      "keys": [{ "name": "mocker-deepinfra-key", "value": "Bearer mocker-key", "weight": 1, "models": ["*"] }],
+      "network_config": { "base_url": "http://127.0.0.1:8000", "default_request_timeout_in_seconds": 30 },
+      "concurrency_and_buffer_size": { "concurrency": 1, "buffer_size": 1 }
+    },
     "elevenlabs": {
       "keys": [{ "name": "mocker-elevenlabs-key", "value": "Bearer mocker-key", "weight": 1, "models": ["*"] }],
       "network_config": { "base_url": "http://127.0.0.1:8000", "default_request_timeout_in_seconds": 30 },
