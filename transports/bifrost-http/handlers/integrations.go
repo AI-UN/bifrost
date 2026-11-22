@@ -53,6 +53,7 @@ func NewIntegrationHandler(client *bifrost.Bifrost, handlerStore lib.HandlerStor
 		integrations.NewSageMakerPassthroughRouter(client, handlerStore, accessResolver, logger),
 		integrations.NewRunwarePassthroughRouter(client, handlerStore, accessResolver, logger),
 		integrations.NewElevenlabsPassthroughRouter(client, handlerStore, accessResolver, logger),
+		integrations.NewCPAPassthroughRouter(client, handlerStore, accessResolver, logger),
 		integrations.NewCursorRouter(client, handlerStore, accessResolver, logger),
 	}
 
