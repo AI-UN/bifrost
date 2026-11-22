@@ -1003,10 +1003,14 @@
           "$ref": "#/$defs/provider"
         },
         "siliconflow-cn": {
+          "$ref": "#/$defs/provider"
+        },
         "zai": {
           "$ref": "#/$defs/provider"
         },
         "zhipu": {
+          "$ref": "#/$defs/provider"
+        },
         "cpa": {
           "$ref": "#/$defs/provider"
         }
@@ -4825,8 +4829,8 @@
                         "baseten",
                         "kimchi",
                         "siliconflow",
-                        "siliconflow-cn"
-                        "deepinfra"
+                        "siliconflow-cn",
+                        "deepinfra",
                         "zhipu"
                       ]
                     },
@@ -15284,9 +15288,9 @@
             "cloudflare",
             "typesafe",
             "siliconflow",
-            "siliconflow-cn"
+            "siliconflow-cn",
             "zai",
-            "zhipu"
+            "zhipu",
             "cpa"
           ],
           "description": "Base provider type to extend"
