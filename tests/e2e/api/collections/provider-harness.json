@@ -271957,6 +271957,87 @@
               }
             }
           ]
+        },
+        {
+          "name": "deepseek/deepseek-v4-flash-anthropic /anthropic/v1/messages stream order: forced eager tool with a deferred tool keeps the tool block before message_delta(tool_use) - #10370",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"deepseek/deepseek-v4-flash-anthropic\",\n  \"max_tokens\": 1024,\n  \"stream\": true,\n  \"thinking\": {\n    \"type\": \"disabled\"\n  },\n  \"tools\": [\n    {\n      \"name\": \"lookup_city_code\",\n      \"description\": \"Look up the IATA code for a city.\",\n      \"input_schema\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"city\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"city\"\n        ]\n      }\n    },\n    {\n      \"name\": \"get_weather\",\n      \"description\": \"Get the current weather for a city.\",\n      \"defer_loading\": true,\n      \"input_schema\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"city\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"city\"\n        ]\n      }\n    }\n  ],\n  \"tool_choice\": {\n    \"type\": \"tool\",\n    \"name\": \"lookup_city_code\"\n  },\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Use lookup_city_code to look up the IATA code for Paris.\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('gateway tool search stream order: 200', function () {",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 400)).to.eql(200);",
+                  "});",
+                  "var events = txt.split('\\n').filter(function (l) { return l.indexOf('data: ') === 0; }).map(function (l) {",
+                  "  try { return JSON.parse(l.slice(6)); } catch (e) { return null; }",
+                  "}).filter(function (e) { return e; });",
+                  "var startIdx = -1, blockIdx = null, deltaIdx = -1, stopIdx = -1;",
+                  "events.forEach(function (e, i) {",
+                  "  if (e.type === 'content_block_start' && e.content_block && e.content_block.type === 'tool_use') {",
+                  "    if (startIdx !== -1) { return; }",
+                  "    startIdx = i;",
+                  "    blockIdx = e.index;",
+                  "  }",
+                  "  if (blockIdx !== null && e.index === blockIdx && e.type === 'content_block_delta' && e.delta && e.delta.type === 'input_json_delta' && deltaIdx === -1) { deltaIdx = i; }",
+                  "  if (blockIdx !== null && e.index === blockIdx && e.type === 'content_block_stop' && stopIdx === -1) { stopIdx = i; }",
+                  "});",
+                  "pm.test('gateway tool search stream order: the forced eager tool streams a tool block start, delta and stop', function () {",
+                  "  pm.expect(startIdx, 'no tool_use content_block_start: ' + txt.slice(0, 800)).to.be.at.least(0);",
+                  "  if (startIdx < 0) { return; }",
+                  "  pm.expect(events[startIdx].content_block.name, 'the block must be the forced client tool, not the injected search: ' + JSON.stringify(events[startIdx].content_block)).to.eql('lookup_city_code');",
+                  "  pm.expect(deltaIdx, 'no input_json_delta for the tool block: ' + JSON.stringify(events).slice(0, 1200)).to.be.at.least(0);",
+                  "  pm.expect(stopIdx, 'the tool block never stopped: ' + JSON.stringify(events).slice(0, 1200)).to.be.at.least(0);",
+                  "  pm.expect(startIdx < deltaIdx && deltaIdx < stopIdx, 'block events out of order start=' + startIdx + ' delta=' + deltaIdx + ' stop=' + stopIdx).to.be.true;",
+                  "});",
+                  "var terminals = [];",
+                  "events.forEach(function (e, i) {",
+                  "  if (e.type === 'message_delta' && e.delta && e.delta.stop_reason) { terminals.push({ at: i, reason: e.delta.stop_reason }); }",
+                  "});",
+                  "var stops = [];",
+                  "events.forEach(function (e, i) { if (e.type === 'message_stop') { stops.push(i); } });",
+                  "pm.test('gateway tool search stream order: one terminal reason tool_use after the block, then message_stop', function () {",
+                  "  pm.expect(terminals.length, 'want exactly one message_delta carrying a stop_reason: ' + JSON.stringify(terminals) + ' stream=' + txt.slice(-800)).to.eql(1);",
+                  "  if (terminals.length !== 1) { return; }",
+                  "  pm.expect(terminals[0].reason, 'stop_reason: ' + JSON.stringify(terminals)).to.eql('tool_use');",
+                  "  pm.expect(terminals[0].at > stopIdx, 'message_delta(stop_reason) came before the held tool block finished (delta at ' + terminals[0].at + ', block stop at ' + stopIdx + '): ' + txt.slice(0, 1200)).to.be.true;",
+                  "  pm.expect(stops.length, 'want exactly one message_stop: ' + txt.slice(-800)).to.eql(1);",
+                  "  if (stops.length !== 1) { return; }",
+                  "  pm.expect(stops[0] > terminals[0].at, 'message_stop must follow the terminal message_delta').to.be.true;",
+                  "});"
+                ]
+              }
+            }
+          ]
         }
       ]
     },

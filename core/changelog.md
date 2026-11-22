@@ -1,0 +1,1 @@
+- fix: Anthropic streams emit buffered client tool blocks before the stop reason when gateway tool search is active ([#10370](https://github.com/maximhq/bifrost/issues/10370)).

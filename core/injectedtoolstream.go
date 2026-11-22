@@ -615,6 +615,7 @@ type injectedResponsesStream struct {
 	replay      []schemas.ResponsesMessage                // completed items to send back as next turn's input
 	injected    []schemas.ChatAssistantMessageToolCall
 	hasInjected bool
+	stopDelta   *schemas.BifrostResponsesStreamResponse
 	more        bool
 }
 
@@ -639,6 +640,12 @@ func (s *injectedResponsesStream) onEvent(ev *schemas.BifrostResponsesStreamResp
 		return []responsesEmit{{event: s.renumber(ev, nil)}}
 	case schemas.ResponsesStreamResponseTypeCompleted, schemas.ResponsesStreamResponseTypeIncomplete:
 		return s.onTurnEnd(ev)
+	case "message_delta":
+		if ev.Response != nil && ev.Response.StopReason != nil && *ev.Response.StopReason != "" {
+			// A stop belongs to the client stream only after held items are released and no internal turn follows.
+			s.stopDelta = ev
+			return nil
+		}
 	case schemas.ResponsesStreamResponseTypeFailed, schemas.ResponsesStreamResponseTypeError:
 		failed := s.renumber(ev, nil)
 		if failed.Response != nil {
@@ -658,7 +665,7 @@ func (s *injectedResponsesStream) onEvent(ev *schemas.BifrostResponsesStreamResp
 		// permitted turn nothing is re-asked, so the client calls stay, as in chat.
 		if s.depth < s.set.maxDepth && !s.sentCall {
 			s.dropClientCalls()
-			emits = s.releaseHeld()
+			emits = s.releaseHeld(emits)
 		}
 	}
 	upstreamIndex, route, known := s.routeOf(ev)
@@ -684,7 +691,7 @@ func (s *injectedResponsesStream) onEvent(ev *schemas.BifrostResponsesStreamResp
 						s.sentCall = true
 					}
 				}
-				emits = append(emits, s.releaseHeld()...)
+				emits = s.releaseHeld(emits)
 				s.live = true
 			}
 		}
@@ -767,8 +774,7 @@ func (s *injectedResponsesStream) dropClientCalls() {
 }
 
 // releaseHeld sends the held events that still belong to the client, in arrival order.
-func (s *injectedResponsesStream) releaseHeld() []responsesEmit {
-	var emits []responsesEmit
+func (s *injectedResponsesStream) releaseHeld(emits []responsesEmit) []responsesEmit {
 	for _, ev := range s.held {
 		upstream, route, known := s.routeFor(ev)
 		if !known || route == routeDropped || route == routeInjected {
@@ -805,13 +811,22 @@ func (s *injectedResponsesStream) onTurnEnd(ev *schemas.BifrostResponsesStreamRe
 		turnUsage = ev.Response.Usage.ToBifrostLLMUsage()
 	}
 	s.usage = schemas.MergeBifrostLLMUsage(s.usage, turnUsage)
+	stopDelta := s.stopDelta
+	s.stopDelta = nil
 	if len(s.injected) > 0 && s.depth < s.set.maxDepth && !s.sentCall {
 		s.more = true
 		return nil
 	}
 	s.more = false
 
-	emits := s.releaseHeld()
+	var emits []responsesEmit
+	if stopDelta != nil {
+		emits = make([]responsesEmit, 0, len(s.held)+2)
+	}
+	emits = s.releaseHeld(emits)
+	if stopDelta != nil {
+		emits = append(emits, responsesEmit{event: s.renumber(stopDelta, nil)})
+	}
 	terminal := s.renumber(ev, nil)
 	response := schemas.BifrostResponsesResponse{}
 	if ev.Response != nil {
