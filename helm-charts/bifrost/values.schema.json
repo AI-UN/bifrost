@@ -1804,6 +1804,7 @@
                         "baseten",
                         "siliconflow",
                         "siliconflow-cn"
+                        "deepinfra"
                       ]
                     },
                     "embedding_model": {
