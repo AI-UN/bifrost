@@ -70,6 +70,10 @@ ClientConfig:
         convert_chat_to_responses:
           type: boolean
           description: Convert chat completion requests to responses
+        convert_responses_to_chat:
+          type: boolean
+          default: false
+          description: Convert OpenAI Responses requests to chat completions only when the model lacks native Responses support
         should_drop_params:
           type: boolean
           description: Drop unsupported parameters based on model catalog
