@@ -1003,6 +1003,10 @@
           "$ref": "#/$defs/provider"
         },
         "siliconflow-cn": {
+        "zai": {
+          "$ref": "#/$defs/provider"
+        },
+        "zhipu": {
           "$ref": "#/$defs/provider"
         }
       },
@@ -4822,6 +4826,7 @@
                         "siliconflow",
                         "siliconflow-cn"
                         "deepinfra"
+                        "zhipu"
                       ]
                     },
                     "embedding_model": {
@@ -15279,6 +15284,8 @@
             "typesafe",
             "siliconflow",
             "siliconflow-cn"
+            "zai",
+            "zhipu"
           ],
           "description": "Base provider type to extend"
         },

@@ -814,7 +814,6 @@ func TestExecuteRequestWithRetries_529RetriesSameKeyWithoutRotation(t *testing.T
 
 	result, err := executeRequestWithRetries(ctx, config, handler, keyProvider,
 		schemas.ChatCompletionRequest, schemas.Anthropic, "claude-sonnet-4-5", nil, logger)
-
 	if err != nil {
 		t.Fatalf("expected 529 to be retried to success, got error: %v", err)
 	}
@@ -1233,11 +1232,13 @@ func (p *passthroughBodyRewritingPlugin) Cleanup() error  { return nil }
 func (p *passthroughBodyRewritingPlugin) PreRequestHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) error {
 	return nil
 }
+
 func (p *passthroughBodyRewritingPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
 	rewritten := *req.PassthroughRequest
 	rewritten.Body = p.body
 	return &schemas.BifrostRequest{RequestType: req.RequestType, PassthroughRequest: &rewritten}, nil, nil
 }
+
 func (p *passthroughBodyRewritingPlugin) PostLLMHook(ctx *schemas.BifrostContext, resp *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
 	return resp, bifrostErr, nil
 }
@@ -1861,7 +1862,6 @@ func TestExecuteRequestWithRetries_KeyRotation(t *testing.T) {
 
 		result, err := executeRequestWithRetries(ctx, config, handler, keyProvider,
 			schemas.ChatCompletionRequest, schemas.OpenAI, "gpt-4", nil, logger)
-
 		if err != nil {
 			t.Fatalf("expected success, got error: %v", err)
 		}
@@ -1909,7 +1909,6 @@ func TestExecuteRequestWithRetries_KeyRotation(t *testing.T) {
 
 		result, err := executeRequestWithRetries(ctx, config, handler, keyProvider,
 			schemas.ChatCompletionRequest, schemas.OpenAI, "gpt-4", nil, logger)
-
 		if err != nil {
 			t.Fatalf("expected success, got error: %v", err)
 		}
@@ -1982,7 +1981,6 @@ func TestExecuteRequestWithRetries_KeyRotation(t *testing.T) {
 
 		result, err := executeRequestWithRetries(cleanCtx, config, handler, nil,
 			schemas.ChatCompletionRequest, schemas.OpenAI, "gpt-4", nil, logger)
-
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -2139,6 +2137,29 @@ func TestUpdateProvider(t *testing.T) {
 		}
 		if provider.GetProviderKey() != schemas.DeepInfra {
 			t.Errorf("DeepInfra provider has wrong key: got %s, want %s", provider.GetProviderKey(), schemas.DeepInfra)
+		}
+	})
+
+	t.Run("LazyInitializesZAIAndZhipuWithoutAccountConfig", func(t *testing.T) {
+		account := NewMockAccount()
+		bifrost, err := Init(context.Background(), schemas.BifrostConfig{
+			Account: account,
+			Logger:  NewDefaultLogger(schemas.LogLevelError),
+		})
+		if err != nil {
+			t.Fatalf("Failed to initialize Bifrost: %v", err)
+		}
+		defer bifrost.Shutdown()
+
+		for _, providerKey := range []schemas.ModelProvider{schemas.ZAI, schemas.Zhipu} {
+			provider := bifrost.getProviderByKey(providerKey)
+			if provider == nil {
+				t.Errorf("getProviderByKey(%s) returned nil without account config", providerKey)
+				continue
+			}
+			if provider.GetProviderKey() != providerKey {
+				t.Errorf("provider key mismatch: got %s, want %s", provider.GetProviderKey(), providerKey)
+			}
 		}
 	})
 
@@ -3626,9 +3647,11 @@ func (f *fakeRoutingPlugin) PreRequestHook(ctx *schemas.BifrostContext, req *sch
 	}
 	return nil
 }
+
 func (f *fakeRoutingPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
 	return req, nil, nil
 }
+
 func (f *fakeRoutingPlugin) PostLLMHook(ctx *schemas.BifrostContext, resp *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
 	return resp, bifrostErr, nil
 }
@@ -3794,6 +3817,7 @@ func (p *modelRewritingPlugin) PreRequestHook(ctx *schemas.BifrostContext, req *
 	req.SetModel(p.routedModel)
 	return nil
 }
+
 func (p *modelRewritingPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -3803,6 +3827,7 @@ func (p *modelRewritingPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *sche
 	_, p.sawRoutedModel, _ = req.GetRequestFields()
 	return req, nil, nil
 }
+
 func (p *modelRewritingPlugin) PostLLMHook(ctx *schemas.BifrostContext, resp *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
 	return resp, bifrostErr, nil
 }
@@ -4494,7 +4519,6 @@ func TestExecuteRequestWithRetries_EmptyStreamReturnsClosedChannel(t *testing.T)
 		nil,
 		logger,
 	)
-
 	if err != nil {
 		t.Fatalf("Expected no error, got %v", err)
 	}
@@ -5232,7 +5256,8 @@ func TestPrepareResponsesRequest_NormalizesEmbeddedToolSchemasForKimi(t *testing
 		wantType schemas.ResponsesToolType
 		build    func(t *testing.T, params *schemas.ToolFunctionParameters) *schemas.BifrostResponsesRequest
 	}{
-		{"additional_tools item hoisted for Converse", schemas.Bedrock, "us.moonshotai.kimi-k3", schemas.ResponsesToolTypeFunction,
+		{
+			"additional_tools item hoisted for Converse", schemas.Bedrock, "us.moonshotai.kimi-k3", schemas.ResponsesToolTypeFunction,
 			func(t *testing.T, params *schemas.ToolFunctionParameters) *schemas.BifrostResponsesRequest {
 				declared, err := json.Marshal([]schemas.ResponsesTool{sendMessage(params)})
 				if err != nil {
@@ -5242,7 +5267,8 @@ func TestPrepareResponsesRequest_NormalizesEmbeddedToolSchemasForKimi(t *testing
 					Type:            new(schemas.ResponsesMessageTypeAdditionalTools),
 					AdditionalTools: declared,
 				}}}
-			}},
+			},
+		},
 		{"namespace flattened for Converse", schemas.Bedrock, "us.moonshotai.kimi-k3", schemas.ResponsesToolTypeFunction, namespaced},
 		{"namespace kept by an OpenAI-compatible wire", schemas.OpenAI, "kimi-k3", schemas.ResponsesToolTypeNamespace, namespaced},
 	}
@@ -5869,6 +5895,7 @@ func (p *allowedKeysPlugin) Cleanup() error  { return nil }
 func (p *allowedKeysPlugin) PreRequestHook(*schemas.BifrostContext, *schemas.BifrostRequest) error {
 	return nil
 }
+
 func (p *allowedKeysPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
 	provider, _, _ := req.GetRequestFields()
 	if ids, ok := p.allowed[provider]; ok {
@@ -5876,6 +5903,7 @@ func (p *allowedKeysPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas
 	}
 	return req, nil, nil
 }
+
 func (p *allowedKeysPlugin) PostLLMHook(_ *schemas.BifrostContext, resp *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
 	return resp, bifrostErr, nil
 }
@@ -8631,6 +8659,7 @@ func (p *scenarioPolicyRefuser) Cleanup() error  { return nil }
 func (p *scenarioPolicyRefuser) PreRequestHook(*schemas.BifrostContext, *schemas.BifrostRequest) error {
 	return nil
 }
+
 func (p *scenarioPolicyRefuser) PreLLMHook(_ *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
 	if provider, _, _ := req.GetRequestFields(); provider != p.refuses {
 		return req, nil, nil
@@ -8641,6 +8670,7 @@ func (p *scenarioPolicyRefuser) PreLLMHook(_ *schemas.BifrostContext, req *schem
 		Error:      &schemas.ErrorField{Message: fmt.Sprintf("Provider '%s' is not allowed for virtual key 'vk'", p.refuses)},
 	}}, nil
 }
+
 func (p *scenarioPolicyRefuser) PostLLMHook(_ *schemas.BifrostContext, resp *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
 	return resp, bifrostErr, nil
 }
@@ -8720,9 +8750,11 @@ func (p *scenarioErrorRetainer) Cleanup() error  { return nil }
 func (p *scenarioErrorRetainer) PreRequestHook(*schemas.BifrostContext, *schemas.BifrostRequest) error {
 	return nil
 }
+
 func (p *scenarioErrorRetainer) PreLLMHook(_ *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
 	return req, nil, nil
 }
+
 func (p *scenarioErrorRetainer) PostLLMHook(_ *schemas.BifrostContext, resp *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
 	p.mu.Lock()
 	if p.retained == nil && bifrostErr != nil {
@@ -8963,8 +8995,10 @@ func TestUpdateMCPMaxProtocolVersion_LikeOtherGlobalMCPSettings(t *testing.T) {
 		t.Fatal("without an MCP manager the update must be refused, as UpdateMCPToolSyncInterval is")
 	}
 
-	with, err := Init(context.Background(), schemas.BifrostConfig{Account: NewMockAccount(), Logger: NewNoOpLogger(),
-		MCPConfig: &schemas.MCPConfig{MaxProtocolVersion: schemas.MCPProtocolVersion20250618}})
+	with, err := Init(context.Background(), schemas.BifrostConfig{
+		Account: NewMockAccount(), Logger: NewNoOpLogger(),
+		MCPConfig: &schemas.MCPConfig{MaxProtocolVersion: schemas.MCPProtocolVersion20250618},
+	})
 	if err != nil {
 		t.Fatalf("Init failed: %v", err)
 	}
@@ -9216,6 +9250,7 @@ func (p *recordingEndpointsPlugin) PreRelayHook(_ *schemas.BifrostContext, req *
 	}
 	return req, nil, nil
 }
+
 func (p *recordingEndpointsPlugin) PostRelayHook(_ *schemas.BifrostContext, resp *schemas.BifrostRelayResponse, bErr *schemas.BifrostError) (*schemas.BifrostRelayResponse, *schemas.BifrostError, error) {
 	*p.order = append(*p.order, "post:"+p.name)
 	return resp, bErr, nil

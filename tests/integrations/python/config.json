@@ -26,6 +26,7 @@
   "providers": {
     "siliconflow": {
     "deepinfra": {
+    "zai": {
       "send_back_raw_request": true,
       "send_back_raw_response": true,
       "store_raw_request_response": true,
@@ -33,6 +34,8 @@
         {
           "name": "SiliconFlow API Key",
           "value": "env.SILICONFLOW_API_KEY",
+          "name": "Z.AI API Key",
+          "value": "env.ZAI_API_KEY",
           "weight": 1,
           "models": ["*"]
         }
@@ -42,6 +45,7 @@
       }
     },
     "siliconflow-cn": {
+    "zhipu": {
       "send_back_raw_request": true,
       "send_back_raw_response": true,
       "store_raw_request_response": true,
@@ -51,6 +55,8 @@
           "value": "env.SILICONFLOWCN_API_KEY",
           "name": "DeepInfra API Key",
           "value": "env.DEEPINFRA_API_KEY",
+          "name": "Zhipu AI API Key",
+          "value": "env.ZHIPU_API_KEY",
           "weight": 1,
           "models": ["*"]
         }

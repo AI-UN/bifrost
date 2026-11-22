@@ -87,6 +87,8 @@ const (
 	Sarvam        ModelProvider = "sarvam"
 	Wafer         ModelProvider = "wafer"
 	GithubCopilot ModelProvider = "github-copilot"
+	ZAI           ModelProvider = "zai"
+	Zhipu         ModelProvider = "zhipu"
 	Databricks    ModelProvider = "databricks"
 	Cloudflare    ModelProvider = "cloudflare"
 	Typesafe      ModelProvider = "typesafe"
@@ -109,6 +111,8 @@ var SupportedBaseProviders = []ModelProvider{
 	OpenAI,
 	HuggingFace,
 	Replicate,
+	ZAI,
+	Zhipu,
 	Typesafe,
 }
 
@@ -147,6 +151,8 @@ var StandardProviders = []ModelProvider{
 	Sarvam,
 	Wafer,
 	GithubCopilot,
+	ZAI,
+	Zhipu,
 	Databricks,
 	Cloudflare,
 	Typesafe,
