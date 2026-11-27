@@ -47,6 +47,7 @@ export const KnownProvidersNames = [
 	"github-copilot",
 	"typesafe",
 	"soniox",
+	"cpa",
 	"siliconflow",
 	"siliconflow-cn",
 ] as const;
@@ -221,6 +222,7 @@ export const ProviderLabels: Record<ProviderName, string> = {
 	"github-copilot": "GitHub Copilot",
 	typesafe: "TypeSafe",
 	soniox: "Soniox",
+	cpa: "CLI Proxy API",
 	siliconflow: "SiliconFlow",
 	"siliconflow-cn": "SiliconFlow CN",
 } as const;
