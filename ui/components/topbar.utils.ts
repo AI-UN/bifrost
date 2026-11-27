@@ -82,6 +82,7 @@ const routeTitleI18nKeys: Partial<Record<string, ParseKeys<"shell">>> = {
 	"/workspace/governance/rbac": "titles.rolesPermissions",
 	"/workspace/guardrails/configuration": "titles.guardrailRules",
 	"/workspace/guardrails/providers": "titles.guardrailProviders",
+	"/workspace/guardrails/incidents": "titles.guardrailIncidents",
 	"/workspace/logs": "titles.llmLogs",
 	"/workspace/logs/connectors": "titles.logConnectors",
 	"/workspace/observability": "titles.observabilityConnectors",

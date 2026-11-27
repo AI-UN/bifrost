@@ -1,9 +1,9 @@
-import GuardrailsConfigurationView from "@enterprise/components/guardrails/guardrailsConfigurationView";
+import { GuardrailRulesView } from "./views/rulesView";
 
 export default function GuardrailsPage() {
 	return (
-		<div className="mx-auto w-full max-w-7xl">
-			<GuardrailsConfigurationView />
+		<div className="no-padding-parent mx-auto flex h-[calc(var(--app-content-viewport)_-_var(--app-bottom-padding))] min-h-0 w-full flex-col overflow-hidden p-4">
+			<GuardrailRulesView />
 		</div>
 	);
 }

@@ -304,6 +304,7 @@
 		"aboutPage": "Sobre esta página"
 	},
 	"titles": {
+		"guardrailIncidents": "Incidentes de guarda",
 		"dashboard": "Painel",
 		"adaptiveRoutingSettings": "Definições de encaminhamento adaptativo",
 		"alertChannels": "Canais de alerta",
