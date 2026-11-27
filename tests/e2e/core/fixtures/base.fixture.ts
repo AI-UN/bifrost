@@ -12,6 +12,9 @@ import { DashboardPage } from "../../features/dashboard/pages/dashboard.page";
 import { LogsPage } from "../../features/logs/pages/logs.page";
 import { MCPLogsPage } from "../../features/mcp-logs/pages/mcp-logs.page";
 import { RoutingRulesPage } from "../../features/routing-rules/pages/routing-rules.page";
+import { GuardrailsProvidersPage } from "../../features/guardrails/pages/guardrailsProviders.page";
+import { GuardrailsRulesPage } from "../../features/guardrails/pages/guardrailsRules.page";
+import { GuardrailsIncidentsPage } from "../../features/guardrails/pages/guardrailsIncidents.page";
 import { MCPRegistryPage } from "../../features/mcp-registry/pages/mcp-registry.page";
 import { RelaysPage } from "../../features/relays/pages/relays.page";
 import { RelayLogsPage } from "../../features/relay-logs/pages/relay-logs.page";
@@ -43,6 +46,9 @@ type BifrostFixtures = {
 	logsPage: LogsPage;
 	mcpLogsPage: MCPLogsPage;
 	routingRulesPage: RoutingRulesPage;
+	guardrailsProvidersPage: GuardrailsProvidersPage;
+	guardrailsRulesPage: GuardrailsRulesPage;
+	guardrailsIncidentsPage: GuardrailsIncidentsPage;
 	mcpRegistryPage: MCPRegistryPage;
 	pluginsPage: PluginsPage;
 	relaysPage: RelaysPage;
@@ -205,6 +211,18 @@ export const test = base.extend<BifrostFixtures>({
 
 	routingRulesPage: async ({ page }, use) => {
 		await use(new RoutingRulesPage(page));
+	},
+
+	guardrailsProvidersPage: async ({ page }, use) => {
+		await use(new GuardrailsProvidersPage(page));
+	},
+
+	guardrailsRulesPage: async ({ page }, use) => {
+		await use(new GuardrailsRulesPage(page));
+	},
+
+	guardrailsIncidentsPage: async ({ page }, use) => {
+		await use(new GuardrailsIncidentsPage(page));
 	},
 
 
