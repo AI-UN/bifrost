@@ -49,15 +49,17 @@ func init() { RegisterLogNamespace(ProviderJobKindVideo, videoLogNamespace) }
 // implements the VideoGeneration method, so method presence proves nothing — this
 // is the list with a real implementation behind it.
 var videoProviders = map[schemas.ModelProvider]struct{}{
-	schemas.OpenAI:    {},
-	schemas.Gemini:    {},
-	schemas.Vertex:    {},
-	schemas.Replicate: {},
-	schemas.Runway:    {},
-	schemas.Runware:   {},
-	schemas.MiniMax:   {},
-	schemas.BytePlus:  {},
-	schemas.MachGen:   {},
+	schemas.OpenAI:        {},
+	schemas.Gemini:        {},
+	schemas.Vertex:        {},
+	schemas.Replicate:     {},
+	schemas.Runway:        {},
+	schemas.Runware:       {},
+	schemas.MiniMax:       {},
+	schemas.BytePlus:      {},
+	schemas.MachGen:       {},
+	schemas.SiliconFlow:   {},
+	schemas.SiliconFlowCN: {},
 }
 
 // VideoRetriever is the provider call the video settler needs: given a job row,

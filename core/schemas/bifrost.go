@@ -95,6 +95,8 @@ const (
 	Baseten       ModelProvider = "baseten"
 	Kimchi        ModelProvider = "kimchi"
 	Soniox        ModelProvider = "soniox"
+	SiliconFlow   ModelProvider = "siliconflow"
+	SiliconFlowCN ModelProvider = "siliconflow-cn"
 )
 
 // SupportedBaseProviders is the list of base providers allowed for custom providers.
@@ -152,6 +154,8 @@ var StandardProviders = []ModelProvider{
 	Baseten,
 	Kimchi,
 	Soniox,
+	SiliconFlow,
+	SiliconFlowCN,
 }
 
 // RequestType represents the type of request being made to a provider.
