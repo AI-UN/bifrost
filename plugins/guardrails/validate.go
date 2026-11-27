@@ -12,8 +12,8 @@ import (
 // v1 regex limits, enforced at write time so a profile cannot be saved that would make
 // every request pay for an unbounded scan.
 const (
-	maxRegexPatterns     = 200
-	maxRegexPatternBytes = 4 << 10
+	maxRegexPatterns      = 200
+	maxRegexPatternBytes  = 4 << 10
 	defaultProfileTimeout = 30
 	defaultRuleTimeout    = 60
 )
