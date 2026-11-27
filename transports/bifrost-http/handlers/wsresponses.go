@@ -506,6 +506,22 @@ func (h *WSResponsesHandler) tryNativeWSUpstream(
 		}
 	}
 
+	// A plugin that redacted the typed request (guardrails) must redact the bytes upstream
+	// actually receives: the raw event is the client's own frame, so the typed rewrite never
+	// reaches the provider. Fail the turn rather than forward an uninspected frame.
+	if data, ok := schemas.RedactionDataFromContext(ctx); ok && len(data.LiteralReplacements.Input) > 0 {
+		redacted, redactErr := redactWSResponsesFrame(rawEvent, data.LiteralReplacements.Input)
+		if redactErr != nil {
+			logger.Warn("guardrails: refusing the turn for %s: %v", req.Provider, redactErr)
+			guardrailErr := newBifrostError(500, "guardrail_error",
+				"the request could not be rewritten with its redactions, so it was not sent upstream")
+			writeWSBifrostError(session, guardrailErr)
+			finalizeTerminalPostHooks(guardrailErr)
+			return true
+		}
+		rawEvent = redacted
+	}
+
 	// Forward the raw event to upstream
 	if err := upstream.WriteMessage(ws.TextMessage, rawEvent); err != nil {
 		logger.Warn("upstream WS write failed for %s: %v, falling back to HTTP bridge", req.Provider, err)
@@ -1166,6 +1182,50 @@ var wsResponsesKnownFields = map[string]bool{
 	"text":                 true,
 	"truncation":           true,
 	"access_programs":      true,
+}
+
+// redactWSResponsesFrame applies the guardrails input replacements to the client's own frame and
+// verifies none survives anywhere in it. A literal left in a field the rewriter does not own
+// (metadata, a provider extension) would otherwise reach the provider unredacted.
+func redactWSResponsesFrame(rawEvent []byte, replacements map[string]string) ([]byte, error) {
+	redacted, err := integrations.RewriteOpenAIResponsesRawRequestBody(rawEvent, replacements)
+	if err != nil {
+		return nil, err
+	}
+	var frame any
+	if err := sonic.Unmarshal(redacted, &frame); err != nil {
+		return nil, err
+	}
+	if frameContainsLiteral(frame, replacements) {
+		return nil, errors.New("a redaction literal remains in a field the frame rewriter does not own")
+	}
+	return redacted, nil
+}
+
+// frameContainsLiteral reports whether any string in a decoded JSON value still holds one of the
+// replacement literals.
+func frameContainsLiteral(value any, replacements map[string]string) bool {
+	switch v := value.(type) {
+	case string:
+		for literal := range replacements {
+			if literal != "" && strings.Contains(v, literal) {
+				return true
+			}
+		}
+	case map[string]any:
+		for _, child := range v {
+			if frameContainsLiteral(child, replacements) {
+				return true
+			}
+		}
+	case []any:
+		for _, child := range v {
+			if frameContainsLiteral(child, replacements) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // rewriteUpstreamEvent modifies the raw JSON event for upstream consumption:

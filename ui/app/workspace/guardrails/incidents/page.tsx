@@ -1,5 +1,9 @@
-import GuardrailIncidentsView from "@enterprise/components/guardrails/guardrailIncidentsView";
+import { GuardrailIncidentsView } from "../views/incidentsView";
 
 export default function GuardrailIncidentsPage() {
-	return <GuardrailIncidentsView />;
+	return (
+		<div className="no-padding-parent mx-auto flex h-[calc(var(--app-content-viewport)_-_var(--app-bottom-padding))] min-h-0 w-full flex-col overflow-hidden p-4">
+			<GuardrailIncidentsView />
+		</div>
+	);
 }

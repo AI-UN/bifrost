@@ -4,6 +4,10 @@ description: "Create in-process regex guardrails for organization-specific polic
 icon: "code"
 ---
 
+<Warning>
+This fork's OSS build provides Custom Regex as part of Guardrails v1: actions `detect_only`, `block`, and `redact`, strategies `replace`, `mask`, and `hash`, `redaction_mode: "runtime"` only, `target: "llm"` with `apply_to: "input"` only, and at most 200 patterns per profile with 4 KiB per pattern. `logs_only`, `runtime_reversible`, output scanning, and MCP targets are not available here, so the redaction modes described below apply to the enterprise image. Rule fields v1 does not support are rejected with HTTP `400` when set to a non-default value. Other guardrail providers require the enterprise image.
+</Warning>
+
 ## Overview
 
 **Custom Regex** is a Bifrost Enterprise guardrail provider that evaluates request and response text against regex patterns you define.

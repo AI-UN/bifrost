@@ -3166,6 +3166,15 @@ func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks Ser
 			return fmt.Errorf("failed to initialize routing handler: %v", err)
 		}
 	}
+	// Guardrail profiles and rules are config-store rows applied by the guardrails plugin, so
+	// these endpoints have nothing to serve when persistence is disabled.
+	var guardrailsHandler *handlers.GuardrailsHandler
+	if s.Config.ConfigStore != nil {
+		guardrailsHandler, err = handlers.NewGuardrailsHandler(s.Config.ConfigStore, s.Config)
+		if err != nil {
+			return fmt.Errorf("failed to initialize guardrails handler: %v", err)
+		}
+	}
 	// Resolve the semantic_cache plugin per request so plugin reloads via
 	// /api/plugins are honored — the previous boot-time capture left stale
 	// references and (worse) skipped route registration entirely when the
@@ -3354,6 +3363,9 @@ func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks Ser
 	}
 	if routingHandler != nil {
 		routingHandler.RegisterRoutes(s.Router, middlewares...)
+	}
+	if guardrailsHandler != nil {
+		guardrailsHandler.RegisterRoutes(s.Router, middlewares...)
 	}
 	if loggingHandler != nil {
 		loggingHandler.RegisterRoutes(s.Router, middlewares...)

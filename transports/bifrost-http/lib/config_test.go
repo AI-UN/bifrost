@@ -28421,3 +28421,222 @@ func TestLoadClientConfig_AppliesExplicitResponsesToChatSetting(t *testing.T) {
 	require.False(t, config.ClientConfig.Compat.ConvertResponsesToChat)
 	require.False(t, store.clientConfig.Compat.ConvertResponsesToChat)
 }
+
+// guardrailConfigJSON is a valid guardrails_config section: one regex profile, one rule.
+func guardrailConfigJSON(timeout string) string {
+	return `{
+		"guardrails_config": {
+			"guardrail_providers": [
+				{"id": 1, "provider_name": "regex", "policy_name": "pii", "enabled": true, "timeout": ` + timeout + `,
+				 "config": {"patterns": [{"pattern": "a+", "entity_type": "A", "action": "redact"}]}},
+				{"id": 2, "provider_name": "secrets", "policy_name": "keys", "enabled": false,
+				 "config": {"action": "block"}}
+			],
+			"guardrail_rules": [
+				{"id": 7, "name": "all", "enabled": true, "target": "llm", "cel_expression": "true",
+				 "apply_to": "input", "provider_config_ids": [1, 2]}
+			]
+		}
+	}`
+}
+
+func TestLoadGuardrailsConfigSeedsStore(t *testing.T) {
+	initTestLogger()
+	ctx := context.Background()
+	store := createTestSQLiteConfigStore(t, t.TempDir())
+	config := &Config{ConfigStore: store}
+
+	require.NoError(t, loadGuardrailsConfig(ctx, config, parseConfigData(t, guardrailConfigJSON("15"))))
+
+	providers, err := store.GetGuardrailProviders(ctx)
+	require.NoError(t, err)
+	require.Len(t, providers, 2)
+	assert.Equal(t, "regex", providers[0].ProviderName)
+	assert.Equal(t, 15, providers[0].Timeout, "the file's top-level timeout fills the column")
+	assert.NotContains(t, providers[0].ConfigJSON, "timeout", "timeout is not duplicated into the config object")
+	assert.False(t, providers[1].Enabled)
+	assert.NotEmpty(t, providers[0].ConfigHash)
+
+	rules, total, err := store.GetGuardrailRules(ctx, configstore.GuardrailRulesQueryParams{})
+	require.NoError(t, err)
+	require.Equal(t, int64(1), total)
+	assert.Equal(t, []uint{1, 2}, rules[0].ProviderConfigIDs, "execution order is preserved")
+	assert.NotEmpty(t, rules[0].ConfigHash)
+}
+
+// TestLoadGuardrailsConfigKeepsEditsUntilTheFileChanges covers the split-mode contract: the
+// file seeds the database, a later API edit survives a restart while the file is unchanged,
+// and a changed declaration overwrites it.
+func TestLoadGuardrailsConfigKeepsEditsUntilTheFileChanges(t *testing.T) {
+	initTestLogger()
+	ctx := context.Background()
+	store := createTestSQLiteConfigStore(t, t.TempDir())
+	config := &Config{ConfigStore: store}
+
+	configData := parseConfigData(t, guardrailConfigJSON("15"))
+	require.NoError(t, loadGuardrailsConfig(ctx, config, configData))
+
+	// An API edit keeps the stored hash, which is what marks the row as already reconciled.
+	seeded, err := store.GetGuardrailProvider(ctx, 1)
+	require.NoError(t, err)
+	seeded.PolicyName = "edited-in-ui"
+	require.NoError(t, store.UpdateGuardrailProvider(ctx, seeded))
+
+	require.NoError(t, loadGuardrailsConfig(ctx, config, parseConfigData(t, guardrailConfigJSON("15"))))
+	edited, err := store.GetGuardrailProvider(ctx, 1)
+	require.NoError(t, err)
+	assert.Equal(t, "edited-in-ui", edited.PolicyName, "an unchanged declaration leaves the stored row alone")
+
+	require.NoError(t, loadGuardrailsConfig(ctx, config, parseConfigData(t, guardrailConfigJSON("20"))))
+	overwritten, err := store.GetGuardrailProvider(ctx, 1)
+	require.NoError(t, err)
+	assert.Equal(t, "pii", overwritten.PolicyName, "a changed declaration wins")
+	assert.Equal(t, 20, overwritten.Timeout)
+}
+
+// TestLoadGuardrailsConfigSourceOfTruthPrunes covers source_of_truth config.json: rows the
+// file does not declare are removed, rules before profiles.
+func TestLoadGuardrailsConfigSourceOfTruthPrunes(t *testing.T) {
+	initTestLogger()
+	ctx := context.Background()
+	store := createTestSQLiteConfigStore(t, t.TempDir())
+	config := &Config{ConfigStore: store}
+
+	// A profile and rule created through the API, absent from the file.
+	apiProfile := configstoreTables.TableGuardrailProvider{
+		ID:           5,
+		ProviderName: "regex",
+		PolicyName:   "api-only",
+		Enabled:      true,
+		ConfigJSON:   `{"patterns":[{"pattern":"b+"}]}`,
+	}
+	require.NoError(t, store.CreateGuardrailProvider(ctx, &apiProfile))
+	apiRule := configstoreTables.TableGuardrailRule{
+		ID:                6,
+		Name:              "api-only",
+		Enabled:           true,
+		CELExpression:     "true",
+		ApplyTo:           "input",
+		Target:            "llm",
+		ProviderConfigIDs: []uint{5},
+	}
+	require.NoError(t, store.CreateGuardrailRule(ctx, &apiRule))
+
+	configData := parseConfigData(t, `{"source_of_truth": "config.json", "guardrails_config": {
+		"guardrail_providers": [
+			{"id": 1, "provider_name": "regex", "policy_name": "pii", "enabled": true,
+			 "config": {"patterns": [{"pattern": "a+"}]}}
+		],
+		"guardrail_rules": [
+			{"id": 7, "name": "all", "enabled": true, "cel_expression": "true", "apply_to": "input",
+			 "provider_config_ids": [1]}
+		]
+	}}`)
+	require.True(t, configData.isConfigJSONSourceOfTruth(), "fixture must opt into file-as-source-of-truth")
+	require.NoError(t, loadGuardrailsConfig(ctx, config, configData))
+
+	providers, err := store.GetGuardrailProviders(ctx)
+	require.NoError(t, err)
+	require.Len(t, providers, 1)
+	assert.Equal(t, uint(1), providers[0].ID)
+
+	rules, total, err := store.GetGuardrailRules(ctx, configstore.GuardrailRulesQueryParams{})
+	require.NoError(t, err)
+	require.Equal(t, int64(1), total)
+	assert.Equal(t, uint(7), rules[0].ID)
+}
+
+// TestLoadGuardrailsConfigRejectsInvalidEntity checks that a declaration this build cannot run
+// fails startup with the entity named, instead of being skipped.
+func TestLoadGuardrailsConfigRejectsInvalidEntity(t *testing.T) {
+	initTestLogger()
+	ctx := context.Background()
+	store := createTestSQLiteConfigStore(t, t.TempDir())
+	config := &Config{ConfigStore: store}
+
+	err := loadGuardrailsConfig(ctx, config, parseConfigData(t, `{"guardrails_config": {
+		"guardrail_providers": [
+			{"id": 3, "provider_name": "presidio", "policy_name": "p", "enabled": true,
+			 "config": {"analyzer_url": "file:///etc/passwd"}}
+		]
+	}}`))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "provider 3", "the failing entity is named")
+
+	err = loadGuardrailsConfig(ctx, config, parseConfigData(t, `{"guardrails_config": {
+		"guardrail_rules": [
+			{"id": 9, "name": "output-phase", "enabled": true, "cel_expression": "true", "apply_to": "output"}
+		]
+	}}`))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "rule 9")
+	assert.Contains(t, err.Error(), "not supported in this build")
+
+	// Nothing was written by either failed load.
+	providers, storeErr := store.GetGuardrailProviders(ctx)
+	require.NoError(t, storeErr)
+	assert.Empty(t, providers)
+	rules, total, storeErr := store.GetGuardrailRules(ctx, configstore.GuardrailRulesQueryParams{})
+	require.NoError(t, storeErr)
+	assert.Zero(t, total)
+	assert.Empty(t, rules)
+}
+
+// TestLoadGuardrailsConfigRejectsNonCanonicalConfigKey covers a case variant declared in the file:
+// Go's decoder matches struct fields case-insensitively, so API_KEY would be stored beside api_key
+// and never masked by the API views. The error names the key and never the value.
+func TestLoadGuardrailsConfigRejectsNonCanonicalConfigKey(t *testing.T) {
+	initTestLogger()
+	ctx := context.Background()
+	store := createTestSQLiteConfigStore(t, t.TempDir())
+	config := &Config{ConfigStore: store}
+
+	err := loadGuardrailsConfig(ctx, config, parseConfigData(t, `{"guardrails_config": {
+		"guardrail_providers": [
+			{"id": 4, "provider_name": "presidio", "policy_name": "p", "enabled": true,
+			 "config": {"analyzer_url": "http://127.0.0.1:5002", "API_KEY": "sk-live-0123456789abcdef"}}
+		]
+	}}`))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "API_KEY")
+	assert.NotContains(t, err.Error(), "sk-live-0123456789abcdef", "the error must not quote the value")
+
+	providers, storeErr := store.GetGuardrailProviders(ctx)
+	require.NoError(t, storeErr)
+	assert.Empty(t, providers)
+}
+
+// TestLoadGuardrailsConfigRequiresAStore covers a file that declares protection the gateway cannot
+// store: booting without it would serve traffic with no guardrail at all.
+func TestLoadGuardrailsConfigRequiresAStore(t *testing.T) {
+	initTestLogger()
+	err := loadGuardrailsConfig(context.Background(), &Config{}, parseConfigData(t, guardrailConfigJSON("15")))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "config store is disabled")
+}
+
+// TestLoadGuardrailsConfigRollsBackTheSection covers the reconcile transaction: a rule that names
+// no profile fails startup and the profile declared before it is not committed on its own.
+func TestLoadGuardrailsConfigRollsBackTheSection(t *testing.T) {
+	initTestLogger()
+	ctx := context.Background()
+	store := createTestSQLiteConfigStore(t, t.TempDir())
+	config := &Config{ConfigStore: store}
+
+	err := loadGuardrailsConfig(ctx, config, parseConfigData(t, `{"guardrails_config": {
+		"guardrail_providers": [
+			{"id": 1, "provider_name": "regex", "policy_name": "pii", "enabled": true,
+			 "config": {"patterns": [{"pattern": "a+"}]}}
+		],
+		"guardrail_rules": [
+			{"id": 7, "name": "dangling", "enabled": true, "cel_expression": "true", "apply_to": "input",
+			 "provider_config_ids": [99]}
+		]
+	}}`))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "99", "the unmatched profile reference is named")
+
+	providers, storeErr := store.GetGuardrailProviders(ctx)
+	require.NoError(t, storeErr)
+	assert.Empty(t, providers, "a rule that cannot commit must not leave its profile behind")
+}

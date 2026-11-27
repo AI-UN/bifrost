@@ -13660,7 +13660,7 @@
     },
     "guardrails_config": {
       "type": "object",
-      "description": "Guardrails configuration for content moderation and policy enforcement",
+      "description": "Guardrails configuration for content moderation and policy enforcement. This build runs the OSS v1 subset only: guardrail_providers accepts provider_name secrets, regex or presidio, actions detect_only, block and redact, and runtime redaction; guardrail_rules must keep target llm and apply_to input and leave output_mode, input_timing, evaluation_mode, profile_execution_mode and stream_replay_event_interval_ms at their defaults. A declaration outside that subset fails startup rather than being silently narrowed.",
       "properties": {
         "guardrail_rules": {
           "type": "array",

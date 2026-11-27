@@ -616,6 +616,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_notification_subject_resolution_columns"}, run: migrationAddNotificationSubjectResolutionColumns},
 	{IDs: []string{"add_notification_subject_index"}, run: migrationAddNotificationSubjectIndex},
 	{IDs: []string{"add_compat_convert_responses_to_chat_column"}, run: migrationAddCompatConvertResponsesToChatColumn},
+	{IDs: []string{"add_guardrail_tables"}, run: migrationAddGuardrailTables},
 }
 
 // warpLogEmbeddingColumns are the semantic-search configuration columns added
@@ -17944,6 +17945,42 @@ func migrationAddMCPClientAWSSigV4JSONColumn(ctx context.Context, db *gorm.DB, l
 				return fmt.Errorf("failed to drop aws_sigv4_json column: %w", err)
 			}
 			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running %s migration: %w", migrationName, err)
+	}
+	return nil
+}
+
+// migrationAddGuardrailTables adds the guardrail_providers and guardrail_rules tables.
+func migrationAddGuardrailTables(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_guardrail_tables"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			for _, model := range []any{&tables.TableGuardrailProvider{}, &tables.TableGuardrailRule{}} {
+				if !migrator.HasTable(model) {
+					logger.Info("[configstore] %s: creating table %T", migrationName, model)
+					if err := migrator.CreateTable(model); err != nil {
+						return err
+					}
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			logger.Info("[configstore] %s: dropping guardrail tables", migrationName)
+			if err := migrator.DropTable(&tables.TableGuardrailRule{}); err != nil {
+				return err
+			}
+			return migrator.DropTable(&tables.TableGuardrailProvider{})
 		},
 	}})
 	if err := m.Migrate(); err != nil {

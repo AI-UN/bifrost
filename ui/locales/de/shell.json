@@ -304,6 +304,7 @@
 		"aboutPage": "Über diese Seite"
 	},
 	"titles": {
+		"guardrailIncidents": "Guardrail-Vorfälle",
 		"dashboard": "Übersicht",
 		"adaptiveRoutingSettings": "Adaptive Routing-Einstellungen",
 		"alertChannels": "Benachrichtigungskanäle",

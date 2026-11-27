@@ -306,6 +306,7 @@
 		"aboutPage": "Об этой странице"
 	},
 	"titles": {
+		"guardrailIncidents": "Инциденты ограничителей",
 		"dashboard": "Панель",
 		"adaptiveRoutingSettings": "Настройки адаптивной маршрутизации",
 		"alertChannels": "Каналы оповещений",

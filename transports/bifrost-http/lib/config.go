@@ -53,6 +53,7 @@ import (
 	"github.com/maximhq/bifrost/framework/vectorstore"
 	"github.com/maximhq/bifrost/plugins/compat"
 	"github.com/maximhq/bifrost/plugins/governance"
+	"github.com/maximhq/bifrost/plugins/guardrails"
 	"github.com/maximhq/bifrost/plugins/logging"
 	"github.com/maximhq/bifrost/plugins/maxim"
 	"github.com/maximhq/bifrost/plugins/otel"
@@ -153,6 +154,7 @@ var builtinPluginNames = []string{
 	compat.PluginName,
 	maxim.PluginName,
 	routing.PluginName,
+	guardrails.PluginName,
 }
 
 func GetBuiltinPluginNames() []string {
@@ -232,6 +234,7 @@ type ConfigData struct {
 	FrameworkConfig    *framework.FrameworkConfig            `json:"framework,omitempty"`
 	MCP                *schemas.MCPConfig                    `json:"mcp,omitempty"`
 	Webhooks           []*WebhookEndpointConfig              `json:"webhooks,omitempty"`
+	Guardrails         *GuardrailsConfig                     `json:"guardrails_config,omitempty"`
 	Agents             []*AgentRegistrationFileConfig        `json:"agents,omitempty"`
 	Relays             []*schemas.RelayConfig                `json:"relays,omitempty"`
 	DatasheetOverrides []DatasheetOverrideFileConfig         `json:"datasheet_overrides,omitempty"`
@@ -528,6 +531,8 @@ func (cd *ConfigData) sectionPresent(name string) bool {
 		return cd.LogsStoreConfig != nil
 	case "config_store":
 		return cd.ConfigStoreConfig != nil
+	case "guardrails_config":
+		return cd.Guardrails != nil
 	default:
 		return false
 	}
@@ -608,6 +613,7 @@ func (cd *ConfigData) UnmarshalJSON(data []byte) error {
 		Providers          map[string]configstore.ProviderConfig `json:"providers"`
 		MCP                *schemas.MCPConfig                    `json:"mcp,omitempty"`
 		Webhooks           []*WebhookEndpointConfig              `json:"webhooks,omitempty"`
+		Guardrails         *GuardrailsConfig                     `json:"guardrails_config,omitempty"`
 		Agents             []*AgentRegistrationFileConfig        `json:"agents,omitempty"`
 		Relays             []*schemas.RelayConfig                `json:"relays,omitempty"`
 		DatasheetOverrides []DatasheetOverrideFileConfig         `json:"datasheet_overrides,omitempty"`
@@ -642,6 +648,7 @@ func (cd *ConfigData) UnmarshalJSON(data []byte) error {
 	cd.Providers = temp.Providers
 	cd.MCP = temp.MCP
 	cd.Webhooks = temp.Webhooks
+	cd.Guardrails = temp.Guardrails
 	cd.Agents = temp.Agents
 	cd.Relays = temp.Relays
 	cd.DatasheetOverrides = temp.DatasheetOverrides
@@ -1330,6 +1337,10 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 	}
 	// 7. Webhook endpoints
 	loadWebhooksConfig(ctx, config, &configData)
+	// 7b. Guardrails (profiles and rules must exist before the plugin loads them)
+	if err := loadGuardrailsConfig(ctx, config, &configData); err != nil {
+		return nil, err
+	}
 	// 7a. Relays (before governance, whose virtual keys may grant them)
 	loadRelaysConfig(ctx, config, &configData)
 	// 8. Governance config
@@ -3903,6 +3914,370 @@ func syncWebhookEndpointsFromFile(ctx context.Context, config *Config, fileEndpo
 			logger.Warn("failed to delete webhook endpoint %q: %v", existing[i].Name, err)
 		}
 	}
+}
+
+// GuardrailProviderFileConfig declares one guardrail profile in config.json. Unlike the HTTP
+// API, which carries the timeout inside config, the file has it as its own field; the config
+// object holds the provider settings in the snake_case shape the plugin reads.
+type GuardrailProviderFileConfig struct {
+	ID           uint            `json:"id"`
+	ProviderName string          `json:"provider_name"`
+	PolicyName   string          `json:"policy_name"`
+	Enabled      bool            `json:"enabled"`
+	Timeout      int             `json:"timeout,omitempty"`
+	Config       json.RawMessage `json:"config,omitempty"`
+}
+
+// GuardrailRuleSettings are the rule settings this build only implements at their defaults.
+// Both config.json and the HTTP API decode them, so the check lives here once: a rule that
+// asks for anything else is rejected instead of being run with different behaviour than it
+// declares.
+type GuardrailRuleSettings struct {
+	OutputMode                  *string `json:"output_mode,omitempty"`
+	InputTiming                 *string `json:"input_timing,omitempty"`
+	EvaluationMode              *string `json:"evaluation_mode,omitempty"`
+	ProfileExecutionMode        *string `json:"profile_execution_mode,omitempty"`
+	StreamReplayEventIntervalMs *int    `json:"stream_replay_event_interval_ms,omitempty"`
+}
+
+// Validate rejects a setting this build does not implement.
+func (s GuardrailRuleSettings) Validate() error {
+	for _, field := range []struct {
+		name    string
+		value   *string
+		allowed string
+	}{
+		{"output_mode", s.OutputMode, "enforce"},
+		{"input_timing", s.InputTiming, "pre_call"},
+		{"evaluation_mode", s.EvaluationMode, "bundled"},
+		{"profile_execution_mode", s.ProfileExecutionMode, "independent"},
+	} {
+		if field.value != nil && *field.value != field.allowed {
+			return fmt.Errorf("%s %q is %w", field.name, *field.value, guardrails.ErrUnsupported)
+		}
+	}
+	if s.StreamReplayEventIntervalMs != nil && *s.StreamReplayEventIntervalMs != 0 {
+		return fmt.Errorf("stream_replay_event_interval_ms %d is %w", *s.StreamReplayEventIntervalMs, guardrails.ErrUnsupported)
+	}
+	return nil
+}
+
+// GuardrailRuleFileConfig declares one guardrail rule in config.json.
+type GuardrailRuleFileConfig struct {
+	ID                uint   `json:"id"`
+	Name              string `json:"name"`
+	Description       string `json:"description,omitempty"`
+	Enabled           bool   `json:"enabled"`
+	Target            string `json:"target,omitempty"`
+	CELExpression     string `json:"cel_expression"`
+	Query             any    `json:"query,omitempty"`
+	ApplyTo           string `json:"apply_to"`
+	SamplingRate      *int   `json:"sampling_rate,omitempty"`
+	Timeout           int    `json:"timeout,omitempty"`
+	ProviderConfigIDs []uint `json:"provider_config_ids,omitempty"`
+	GuardrailRuleSettings
+}
+
+// GuardrailsConfig is the guardrails_config section of config.json.
+type GuardrailsConfig struct {
+	GuardrailProviders []*GuardrailProviderFileConfig `json:"guardrail_providers,omitempty"`
+	GuardrailRules     []*GuardrailRuleFileConfig     `json:"guardrail_rules,omitempty"`
+}
+
+// GuardrailConfigKeys returns the canonical config keys a guardrail provider accepts, read from
+// its JSON struct tags. Every write path compares keys exactly against this set: Go's decoders
+// match field names case-insensitively, so a spelling such as API_KEY would otherwise be stored
+// and later echoed under a name the API's views do not mask.
+func GuardrailConfigKeys(provider string) (map[string]bool, error) {
+	var configType reflect.Type
+	switch provider {
+	case guardrails.ProviderSecrets:
+		configType = reflect.TypeOf(guardrails.SecretsConfig{})
+	case guardrails.ProviderRegex:
+		configType = reflect.TypeOf(guardrails.RegexConfig{})
+	case guardrails.ProviderPresidio:
+		configType = reflect.TypeOf(guardrails.PresidioConfig{})
+	default:
+		return nil, fmt.Errorf("unknown guardrail provider %q", provider)
+	}
+	keys := make(map[string]bool, configType.NumField())
+	for field := range configType.Fields() {
+		name, _, _ := strings.Cut(field.Tag.Get("json"), ",")
+		if name != "" && name != "-" {
+			keys[name] = true
+		}
+	}
+	return keys, nil
+}
+
+// ValidateGuardrailConfigKeys rejects a config key the provider does not accept. The check is
+// case-sensitive and names the first offending key, so a caller can tell a typo from a provider
+// that does not have the setting at all.
+func ValidateGuardrailConfigKeys(provider string, config map[string]json.RawMessage) error {
+	keys, err := GuardrailConfigKeys(provider)
+	if err != nil {
+		return err
+	}
+	for _, key := range slices.Sorted(maps.Keys(config)) {
+		if !keys[key] {
+			return fmt.Errorf("config key %q is not valid for the %s provider", key, provider)
+		}
+	}
+	return nil
+}
+
+// providerTables validates the declared profiles and converts them to rows. An invalid or
+// v1-unsupported declaration fails startup rather than being skipped: a guardrail that is
+// silently absent is worse than a gateway that refuses to boot.
+func (g *GuardrailsConfig) providerTables() ([]configstoreTables.TableGuardrailProvider, error) {
+	profiles := make([]configstoreTables.TableGuardrailProvider, 0, len(g.GuardrailProviders))
+	seen := make(map[uint]bool, len(g.GuardrailProviders))
+	for _, declared := range g.GuardrailProviders {
+		if declared == nil {
+			continue
+		}
+		if declared.ID == 0 {
+			return nil, fmt.Errorf("guardrails_config: provider %q needs a non-zero id", declared.PolicyName)
+		}
+		if seen[declared.ID] {
+			return nil, fmt.Errorf("guardrails_config: provider id %d is declared twice", declared.ID)
+		}
+		seen[declared.ID] = true
+		config := declared.Config
+		if strings.TrimSpace(string(config)) == "" {
+			config = json.RawMessage("{}")
+		}
+		var configKeys map[string]json.RawMessage
+		if err := json.Unmarshal(config, &configKeys); err != nil {
+			return nil, fmt.Errorf("guardrails_config: provider %d (%s): config must be a JSON object: %w", declared.ID, declared.PolicyName, err)
+		}
+		if err := ValidateGuardrailConfigKeys(declared.ProviderName, configKeys); err != nil {
+			return nil, fmt.Errorf("guardrails_config: provider %d (%s): %w", declared.ID, declared.PolicyName, err)
+		}
+		profile := configstoreTables.TableGuardrailProvider{
+			ID:           declared.ID,
+			ProviderName: declared.ProviderName,
+			PolicyName:   declared.PolicyName,
+			Enabled:      declared.Enabled,
+			Timeout:      declared.Timeout,
+			ConfigJSON:   string(config),
+		}
+		if err := guardrails.ValidateProfile(guardrails.Profile{
+			ID:           profile.ID,
+			ProviderName: profile.ProviderName,
+			PolicyName:   profile.PolicyName,
+			Enabled:      profile.Enabled,
+			Timeout:      profile.Timeout,
+			Config:       config,
+		}); err != nil {
+			return nil, fmt.Errorf("guardrails_config: provider %d (%s): %w", declared.ID, declared.PolicyName, err)
+		}
+		profiles = append(profiles, profile)
+	}
+	return profiles, nil
+}
+
+// ruleTables validates the declared rules and converts them to rows.
+func (g *GuardrailsConfig) ruleTables() ([]configstoreTables.TableGuardrailRule, error) {
+	rules := make([]configstoreTables.TableGuardrailRule, 0, len(g.GuardrailRules))
+	seen := make(map[uint]bool, len(g.GuardrailRules))
+	for _, declared := range g.GuardrailRules {
+		if declared == nil {
+			continue
+		}
+		if declared.ID == 0 {
+			return nil, fmt.Errorf("guardrails_config: rule %q needs a non-zero id", declared.Name)
+		}
+		if seen[declared.ID] {
+			return nil, fmt.Errorf("guardrails_config: rule id %d is declared twice", declared.ID)
+		}
+		seen[declared.ID] = true
+		if err := declared.GuardrailRuleSettings.Validate(); err != nil {
+			return nil, fmt.Errorf("guardrails_config: rule %d (%s): %w", declared.ID, declared.Name, err)
+		}
+		rule := configstoreTables.TableGuardrailRule{
+			ID:                declared.ID,
+			Name:              declared.Name,
+			Description:       declared.Description,
+			Enabled:           declared.Enabled,
+			Target:            declared.Target,
+			CELExpression:     declared.CELExpression,
+			ApplyTo:           declared.ApplyTo,
+			SamplingRate:      declared.SamplingRate,
+			Timeout:           declared.Timeout,
+			ProviderConfigIDs: declared.ProviderConfigIDs,
+		}
+		if declared.Query != nil {
+			query, err := json.Marshal(declared.Query)
+			if err != nil {
+				return nil, fmt.Errorf("guardrails_config: rule %d (%s): query does not encode: %w", declared.ID, declared.Name, err)
+			}
+			rule.QueryJSON = string(query)
+		}
+		if err := guardrails.ValidateRule(guardrails.Rule{
+			ID:            rule.ID,
+			Name:          rule.Name,
+			Description:   rule.Description,
+			Enabled:       rule.Enabled,
+			Target:        rule.Target,
+			CELExpression: rule.CELExpression,
+			ApplyTo:       rule.ApplyTo,
+			SamplingRate:  rule.SamplingRate,
+			Timeout:       rule.Timeout,
+			ProfileIDs:    rule.ProviderConfigIDs,
+		}); err != nil {
+			return nil, fmt.Errorf("guardrails_config: rule %d (%s): %w", declared.ID, declared.Name, err)
+		}
+		rules = append(rules, rule)
+	}
+	return rules, nil
+}
+
+// loadGuardrailsConfig reconciles the guardrails_config section against the config store the
+// way the webhook and routing-rule sections do: a matching config hash keeps the stored row, a
+// changed declaration (or config.json as source of truth) overwrites it, and from
+// source_of_truth config.json a row the file does not declare is pruned. Declarations are
+// validated before anything is written, and the whole reconcile runs in one transaction, so a
+// bad entity or a failed write fails startup instead of half-applying the section and leaving
+// the gateway serving without the protection the file declares.
+func loadGuardrailsConfig(ctx context.Context, config *Config, configData *ConfigData) error {
+	if configData.Guardrails == nil {
+		return nil
+	}
+	providers, err := configData.Guardrails.providerTables()
+	if err != nil {
+		return err
+	}
+	rules, err := configData.Guardrails.ruleTables()
+	if err != nil {
+		return err
+	}
+	if config.ConfigStore == nil {
+		return errors.New("guardrails_config is declared but the config store is disabled, so no guardrail would be enforced")
+	}
+	forceFileSync := configData.isConfigJSONSourceOfTruth() && configData.sectionPresent("guardrails_config")
+
+	return config.ConfigStore.ExecuteTransaction(ctx, func(tx *gorm.DB) error {
+		existingProviders, err := config.ConfigStore.GetGuardrailProviders(ctx, tx)
+		if err != nil {
+			return fmt.Errorf("load guardrail profiles: %w", err)
+		}
+		existingRules, _, err := config.ConfigStore.GetGuardrailRules(ctx, configstore.GuardrailRulesQueryParams{}, tx)
+		if err != nil {
+			return fmt.Errorf("load guardrail rules: %w", err)
+		}
+
+		providersByID := make(map[uint]*configstoreTables.TableGuardrailProvider, len(existingProviders))
+		for i := range existingProviders {
+			providersByID[existingProviders[i].ID] = &existingProviders[i]
+		}
+		for _, profile := range providers {
+			hash, err := configstore.GenerateGuardrailProviderHash(profile)
+			if err != nil {
+				return fmt.Errorf("guardrails_config: hash guardrail provider %d: %w", profile.ID, err)
+			}
+			profile.ConfigHash = hash
+			existing, found := providersByID[profile.ID]
+			if !found {
+				if err := config.ConfigStore.CreateGuardrailProvider(ctx, &profile, tx); err != nil {
+					return fmt.Errorf("guardrails_config: create guardrail provider %d: %w", profile.ID, err)
+				}
+				continue
+			}
+			if !forceFileSync && existing.ConfigHash == hash {
+				continue
+			}
+			if err := config.ConfigStore.UpdateGuardrailProvider(ctx, &profile, tx); err != nil {
+				return fmt.Errorf("guardrails_config: update guardrail provider %d: %w", profile.ID, err)
+			}
+		}
+
+		// Every profile a rule can name: the file's declarations are written above, so the merge
+		// below sees the same ids the plugin will.
+		knownProfiles := make(map[uint]bool, len(providers)+len(existingProviders))
+		for _, profile := range providers {
+			knownProfiles[profile.ID] = true
+		}
+		for _, profile := range existingProviders {
+			knownProfiles[profile.ID] = true
+		}
+		rulesByID := make(map[uint]*configstoreTables.TableGuardrailRule, len(existingRules))
+		for i := range existingRules {
+			rulesByID[existingRules[i].ID] = &existingRules[i]
+		}
+		for _, rule := range rules {
+			for _, id := range rule.ProviderConfigIDs {
+				if knownProfiles[id] {
+					continue
+				}
+				// An enabled rule that names no profile inspects nothing. Refusing it keeps a
+				// typo from silently removing the protection the file declares.
+				if rule.Enabled {
+					return fmt.Errorf("guardrails_config: rule %d (%s) references guardrail profile %d, which does not exist", rule.ID, rule.Name, id)
+				}
+				logger.Warn("guardrails_config: disabled rule %d (%s) references guardrail profile %d, which does not exist", rule.ID, rule.Name, id)
+			}
+			hash, err := configstore.GenerateGuardrailRuleHash(rule)
+			if err != nil {
+				return fmt.Errorf("guardrails_config: hash guardrail rule %d: %w", rule.ID, err)
+			}
+			rule.ConfigHash = hash
+			existing, found := rulesByID[rule.ID]
+			if !found {
+				if err := config.ConfigStore.CreateGuardrailRule(ctx, &rule, tx); err != nil {
+					return fmt.Errorf("guardrails_config: create guardrail rule %d: %w", rule.ID, err)
+				}
+				continue
+			}
+			if !forceFileSync && existing.ConfigHash == hash {
+				continue
+			}
+			if err := config.ConfigStore.UpdateGuardrailRule(ctx, &rule, tx); err != nil {
+				return fmt.Errorf("guardrails_config: update guardrail rule %d: %w", rule.ID, err)
+			}
+		}
+
+		if !forceFileSync {
+			return nil
+		}
+		declaredRules := make(map[uint]bool, len(rules))
+		for _, rule := range rules {
+			declaredRules[rule.ID] = true
+		}
+		// Rules go first: a rule the file dropped is what usually stops a profile from being
+		// referenced, so the profile prune below sees the final rule set.
+		referenced := make(map[uint]string)
+		for _, rule := range existingRules {
+			if !declaredRules[rule.ID] {
+				if err := config.ConfigStore.DeleteGuardrailRule(ctx, rule.ID, tx); err != nil {
+					return fmt.Errorf("guardrails_config: delete guardrail rule %d: %w", rule.ID, err)
+				}
+				continue
+			}
+			for _, id := range rule.ProviderConfigIDs {
+				referenced[id] = rule.Name
+			}
+		}
+		declaredProviders := make(map[uint]bool, len(providers))
+		for _, profile := range providers {
+			declaredProviders[profile.ID] = true
+		}
+		for _, profile := range existingProviders {
+			if declaredProviders[profile.ID] {
+				continue
+			}
+			// A profile a stored rule still runs is kept: deleting it would leave the rule
+			// pointing at nothing instead of at the detector the operator can see.
+			if ruleName, inUse := referenced[profile.ID]; inUse {
+				logger.Warn("guardrails_config: keeping guardrail profile %d (%s) because rule %q still uses it", profile.ID, profile.PolicyName, ruleName)
+				continue
+			}
+			if err := config.ConfigStore.DeleteGuardrailProvider(ctx, profile.ID, tx); err != nil {
+				return fmt.Errorf("guardrails_config: delete guardrail provider %d: %w", profile.ID, err)
+			}
+		}
+		return nil
+	})
 }
 
 // loadAgentsConfig reconciles Agent Gateway registrations declared under the

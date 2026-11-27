@@ -580,7 +580,6 @@ export function useNavItems(): NavItem[] {
 				id: "guardrails",
 				title: t("nav.guardrails"),
 				url: "/workspace/guardrails",
-				enterpriseOnly: true,
 				icon: Construction,
 				hasAccess: hasGuardrailsConfigAccess || hasGuardrailsProvidersAccess,
 				subItems: [

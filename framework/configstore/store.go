@@ -102,6 +102,13 @@ type RoutingRulesQueryParams struct {
 	Search string
 }
 
+// GuardrailRulesQueryParams holds pagination for guardrail rule listings. A Limit of 0
+// returns every rule.
+type GuardrailRulesQueryParams struct {
+	Limit  int
+	Offset int
+}
+
 // WebhookEndpointsQueryParams holds pagination, filtering, and search
 // parameters for webhook endpoint queries.
 type WebhookEndpointsQueryParams struct {
@@ -558,6 +565,21 @@ type ConfigStore interface {
 	// (e.g. swapping two rules' priorities) succeeds despite a transient intermediate collision.
 	SyncRoutingRules(ctx context.Context, toAdd []tables.TableRoutingRule, toUpdate []tables.TableRoutingRule, tx ...*gorm.DB) error
 	DeleteRoutingRule(ctx context.Context, id string, tx ...*gorm.DB) error
+
+	// Guardrail providers and rules CRUD. Creates assign ID = max(id)+1 inside the
+	// write transaction when the caller leaves ID zero; IDs are explicit because the
+	// config.json sync seeds them. Reads take the same optional transaction so a
+	// reference check and the write it guards commit together.
+	GetGuardrailProviders(ctx context.Context, tx ...*gorm.DB) ([]tables.TableGuardrailProvider, error)
+	GetGuardrailProvider(ctx context.Context, id uint, tx ...*gorm.DB) (*tables.TableGuardrailProvider, error)
+	CreateGuardrailProvider(ctx context.Context, provider *tables.TableGuardrailProvider, tx ...*gorm.DB) error
+	UpdateGuardrailProvider(ctx context.Context, provider *tables.TableGuardrailProvider, tx ...*gorm.DB) error
+	DeleteGuardrailProvider(ctx context.Context, id uint, tx ...*gorm.DB) error
+	GetGuardrailRules(ctx context.Context, params GuardrailRulesQueryParams, tx ...*gorm.DB) ([]tables.TableGuardrailRule, int64, error)
+	GetGuardrailRule(ctx context.Context, id uint, tx ...*gorm.DB) (*tables.TableGuardrailRule, error)
+	CreateGuardrailRule(ctx context.Context, rule *tables.TableGuardrailRule, tx ...*gorm.DB) error
+	UpdateGuardrailRule(ctx context.Context, rule *tables.TableGuardrailRule, tx ...*gorm.DB) error
+	DeleteGuardrailRule(ctx context.Context, id uint, tx ...*gorm.DB) error
 
 	// Model config CRUD
 	// GetModelConfigs reads every model config with no row-visibility scope. It serves internal

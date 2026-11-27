@@ -1,6 +1,8 @@
 package encrypt
 
 import (
+	"crypto/hkdf"
+	"crypto/sha256"
 	"testing"
 
 	bifrost "github.com/maximhq/bifrost/core"
@@ -216,7 +218,7 @@ func TestKDFDeterministic(t *testing.T) {
 
 	// Re-initialize with same passphrase (simulating restart)
 	Init(passphrase, bifrost.NewDefaultLogger(schemas.LogLevelInfo))
-	
+
 	// Should be able to decrypt the previously encrypted data
 	decrypted, err := Decrypt(encrypted1)
 	if err != nil {
@@ -241,5 +243,54 @@ func TestKDFDeterministic(t *testing.T) {
 
 	if decrypted2 != plaintext {
 		t.Errorf("Second decryption does not match original.\nExpected: %s\nGot: %s", plaintext, decrypted2)
+	}
+}
+
+func TestDeriveSubkey(t *testing.T) {
+	logger := bifrost.NewDefaultLogger(schemas.LogLevelInfo)
+	Init("test-passphrase", logger)
+	t.Cleanup(func() { Init("test-passphrase", logger) })
+
+	first := DeriveSubkey("bifrost-guardrails-hash")
+	if len(first) != 32 {
+		t.Fatalf("expected a 32-byte subkey, got %d bytes", len(first))
+	}
+	// Deterministic: a restart derives the same bytes, and the caller may persist values
+	// derived from it.
+	Init("test-passphrase", logger)
+	if again := DeriveSubkey("bifrost-guardrails-hash"); string(again) != string(first) {
+		t.Fatal("subkey changed across a re-init with the same passphrase")
+	}
+	// Labels separate domains.
+	if other := DeriveSubkey("another-label"); string(other) == string(first) {
+		t.Fatal("different labels must derive different subkeys")
+	}
+	// A different passphrase derives a different subkey.
+	Init("other-passphrase", logger)
+	if rotated := DeriveSubkey("bifrost-guardrails-hash"); string(rotated) == string(first) {
+		t.Fatal("a different passphrase must derive a different subkey")
+	}
+
+	// Disabled encryption has no subkey to derive.
+	Init("", logger)
+	if key := DeriveSubkey("bifrost-guardrails-hash"); key != nil {
+		t.Fatalf("expected nil when encryption is disabled, got %d bytes", len(key))
+	}
+
+	// The stretch is what HKDF consumes: deriving from the raw passphrase would make a logged
+	// subkey a cheap offline check for passphrase guesses.
+	Init("test-passphrase", logger)
+	raw, err := hkdf.Key(sha256.New, []byte("test-passphrase"), subkeySalt, "bifrost-guardrails-hash", 32)
+	if err != nil {
+		t.Fatalf("failed to derive the raw-passphrase comparison key: %v", err)
+	}
+	if string(raw) == string(DeriveSubkey("bifrost-guardrails-hash")) {
+		t.Fatal("the subkey must be derived from the password-stretched key, not the passphrase")
+	}
+
+	// A short passphrase derives a subkey instead of panicking.
+	Init("short", logger)
+	if key := DeriveSubkey("bifrost-guardrails-hash"); len(key) != 32 {
+		t.Fatalf("expected a 32-byte subkey for a short passphrase, got %d bytes", len(key))
 	}
 }

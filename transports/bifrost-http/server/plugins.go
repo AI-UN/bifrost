@@ -2,13 +2,17 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"math"
 	"slices"
 
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework/configstore"
+	"github.com/maximhq/bifrost/framework/encrypt"
 	"github.com/maximhq/bifrost/plugins/compat"
 	"github.com/maximhq/bifrost/plugins/governance"
+	"github.com/maximhq/bifrost/plugins/guardrails"
 	"github.com/maximhq/bifrost/plugins/logging"
 	"github.com/maximhq/bifrost/plugins/maxim"
 	"github.com/maximhq/bifrost/plugins/modelcatalogresolver"
@@ -95,6 +99,61 @@ func loggingPluginConfig(pluginConfig any, bifrostConfig *lib.Config) (*logging.
 	return loggingConfig, nil
 }
 
+// guardrailHashKeyLabel derives the guardrails plugin's hash redaction key from the
+// deployment's encryption passphrase.
+const guardrailHashKeyLabel = "bifrost-guardrails-hash"
+
+// guardrailLoader reads the guardrail profiles and rules the plugin evaluates. The plugin
+// holds no database handle, so the host supplies this Loader and calls it on every reload.
+func guardrailLoader(configStore configstore.ConfigStore) guardrails.Loader {
+	return func(ctx context.Context) ([]guardrails.Profile, []guardrails.Rule, error) {
+		providers, err := configStore.GetGuardrailProviders(ctx)
+		if err != nil {
+			return nil, nil, err
+		}
+		rules, _, err := configStore.GetGuardrailRules(ctx, configstore.GuardrailRulesQueryParams{})
+		if err != nil {
+			return nil, nil, err
+		}
+		profiles := make([]guardrails.Profile, 0, len(providers))
+		known := make(map[uint]bool, len(providers))
+		for _, provider := range providers {
+			known[provider.ID] = true
+			profiles = append(profiles, guardrails.Profile{
+				ID:           provider.ID,
+				ProviderName: provider.ProviderName,
+				PolicyName:   provider.PolicyName,
+				Enabled:      provider.Enabled,
+				Timeout:      provider.Timeout,
+				Config:       json.RawMessage(provider.ConfigJSON),
+			})
+		}
+		domainRules := make([]guardrails.Rule, 0, len(rules))
+		for _, rule := range rules {
+			// The plugin skips a rule whose profile is gone; the warning belongs here, where
+			// both lists are visible.
+			for _, id := range rule.ProviderConfigIDs {
+				if !known[id] {
+					logger.Warn("[Guardrails] rule %d (%s) references guardrail profile %d, which does not exist", rule.ID, rule.Name, id)
+				}
+			}
+			domainRules = append(domainRules, guardrails.Rule{
+				ID:            rule.ID,
+				Name:          rule.Name,
+				Description:   rule.Description,
+				Enabled:       rule.Enabled,
+				Target:        rule.Target,
+				CELExpression: rule.CELExpression,
+				ApplyTo:       rule.ApplyTo,
+				SamplingRate:  rule.SamplingRate,
+				Timeout:       rule.Timeout,
+				ProfileIDs:    rule.ProviderConfigIDs,
+			})
+		}
+		return profiles, domainRules, nil
+	}
+}
+
 // loadBuiltinPlugin instantiates a built-in plugin by name
 func loadBuiltinPlugin(ctx context.Context, name string, pluginConfig any, bifrostConfig *lib.Config) (schemas.BasePlugin, error) {
 	switch name {
@@ -171,6 +230,26 @@ func loadBuiltinPlugin(ctx context.Context, name string, pluginConfig any, bifro
 			return nil, fmt.Errorf("routing plugin requires the governance plugin: %w", err)
 		}
 		return routing.Init(ctx, routingConfig, logger, bifrostConfig.ConfigStore, governancePlugin)
+
+	case guardrails.PluginName:
+		if bifrostConfig.ConfigStore == nil {
+			return nil, fmt.Errorf("guardrails plugin requires a config store")
+		}
+		// The plugin is default-on, so an absent plugin row is normal and carries no config.
+		guardrailsConfig := &guardrails.Config{}
+		if pluginConfig != nil {
+			parsed, err := MarshalPluginConfig[guardrails.Config](pluginConfig)
+			if err != nil {
+				return nil, fmt.Errorf("failed to marshal guardrails plugin config: %w", err)
+			}
+			if parsed != nil {
+				guardrailsConfig = parsed
+			}
+		}
+		// The hash redaction strategy is keyed from the deployment passphrase, so the same
+		// value redacts to the same placeholder across restarts and across nodes.
+		return guardrails.Init(ctx, guardrailsConfig, logger, guardrailLoader(bifrostConfig.ConfigStore),
+			encrypt.DeriveSubkey(guardrailHashKeyLabel))
 
 	case maxim.PluginName:
 		maximConfig, err := MarshalPluginConfig[maxim.Config](pluginConfig)
@@ -309,7 +388,30 @@ func (s *BifrostHTTPServer) loadBuiltinPlugins(ctx context.Context) error {
 	}
 	s.Config.SetPluginOrderInfo(governance.PluginName, builtinPlacement, schemas.Ptr(4))
 
-	// 5. Routing rules. Runs after governance so rules evaluate against a fully stamped
+	// 5. Guardrails. Runs before routing: the routing plugin's LLM classifier sends user text
+	// to a model with the plugin pipeline disabled, so inspection has to happen first. A rule's
+	// CEL expression therefore sees the requested provider/model (as the enterprise docs describe
+	// the requested tier) and the governance-resolved virtual key, team and customer. Also runs
+	// before compat converts the request, so the detectors walk the shape the caller sent.
+	// Default-on like telemetry: an absent plugin row is treated as enabled, so an upgrade
+	// never silently stops inspecting traffic. Only an explicit Enabled=false disables it.
+	guardrailsPluginConfig := s.getPluginConfig(guardrails.PluginName)
+	var guardrailsPluginConfigAny any
+	if guardrailsPluginConfig != nil {
+		guardrailsPluginConfigAny = guardrailsPluginConfig.Config
+	}
+	if s.Config.ConfigStore != nil && (guardrailsPluginConfig == nil || guardrailsPluginConfig.Enabled) {
+		// failOnError: a store read or decryption failure at startup must stop the gateway
+		// rather than leave it serving traffic with the protection it is configured for absent.
+		if err := s.registerPluginWithStatus(ctx, guardrails.PluginName, nil, guardrailsPluginConfigAny, true); err != nil {
+			return err
+		}
+	} else {
+		s.markPluginDisabled(guardrails.PluginName)
+	}
+	s.Config.SetPluginOrderInfo(guardrails.PluginName, builtinPlacement, schemas.Ptr(5))
+
+	// 6. Routing rules. Runs after governance so rules evaluate against a fully stamped
 	// context, and drives the rest of the routing pipeline itself: it publishes the virtual
 	// key's provider allowlist and load balances its providers once a rule has decided.
 	if s.Config.IsPluginLoaded(s.getGovernancePluginName()) {
@@ -320,27 +422,27 @@ func (s *BifrostHTTPServer) loadBuiltinPlugins(ctx context.Context) error {
 	} else {
 		s.markPluginDisabled(routing.PluginName)
 	}
-	s.Config.SetPluginOrderInfo(routing.PluginName, builtinPlacement, schemas.Ptr(5))
+	s.Config.SetPluginOrderInfo(routing.PluginName, builtinPlacement, schemas.Ptr(6))
 
-	// 6. OTEL (if configured in PluginConfigs)
+	// 7. OTEL (if configured in PluginConfigs)
 	otelConfig := s.getPluginConfig(otel.PluginName)
 	if otelConfig != nil && otelConfig.Enabled {
 		s.registerPluginWithStatus(ctx, otel.PluginName, nil, otelConfig.Config, false)
 	} else {
 		s.markPluginDisabled(otel.PluginName)
 	}
-	s.Config.SetPluginOrderInfo(otel.PluginName, builtinPlacement, schemas.Ptr(6))
+	s.Config.SetPluginOrderInfo(otel.PluginName, builtinPlacement, schemas.Ptr(7))
 
-	// 7. Semantic Cache (if configured in PluginConfigs)
+	// 8. Semantic Cache (if configured in PluginConfigs)
 	semanticCacheConfig := s.getPluginConfig(semanticcache.PluginName)
 	if semanticCacheConfig != nil && semanticCacheConfig.Enabled {
 		s.registerPluginWithStatus(ctx, semanticcache.PluginName, nil, semanticCacheConfig.Config, false)
 	} else {
 		s.markPluginDisabled(semanticcache.PluginName)
 	}
-	s.Config.SetPluginOrderInfo(semanticcache.PluginName, builtinPlacement, schemas.Ptr(7))
+	s.Config.SetPluginOrderInfo(semanticcache.PluginName, builtinPlacement, schemas.Ptr(8))
 
-	// 8. Compat (if any compat feature is enabled in ClientConfig)
+	// 9. Compat (if any compat feature is enabled in ClientConfig)
 	cc := s.Config.ClientConfig.Compat
 	compatCfg := &compat.Config{
 		ConvertTextToChat:                   cc.ConvertTextToChat,
@@ -353,18 +455,18 @@ func (s *BifrostHTTPServer) loadBuiltinPlugins(ctx context.Context) error {
 		ConvertDecisionToResponses:          cc.ConvertDecisionToResponses,
 	}
 	s.registerPluginWithStatus(ctx, compat.PluginName, nil, compatCfg, false)
-	s.Config.SetPluginOrderInfo(compat.PluginName, builtinPlacement, schemas.Ptr(8))
+	s.Config.SetPluginOrderInfo(compat.PluginName, builtinPlacement, schemas.Ptr(9))
 
-	// 9. Maxim (if configured in PluginConfigs)
+	// 10. Maxim (if configured in PluginConfigs)
 	maximConfig := s.getPluginConfig(maxim.PluginName)
 	if maximConfig != nil && maximConfig.Enabled {
 		s.registerPluginWithStatus(ctx, maxim.PluginName, nil, maximConfig.Config, false)
 	} else {
 		s.markPluginDisabled(maxim.PluginName)
 	}
-	s.Config.SetPluginOrderInfo(maxim.PluginName, builtinPlacement, schemas.Ptr(9))
+	s.Config.SetPluginOrderInfo(maxim.PluginName, builtinPlacement, schemas.Ptr(10))
 
-	// 10. ModelCatalogResolver (last routing layer — fills req.Provider from catalog only when
+	// 11. ModelCatalogResolver (last routing layer — fills req.Provider from catalog only when
 	// no earlier routing plugin (governance routing rules, governance VK LB, enterprise LB)
 	// already set one. CEL rules can still match on provider == "" because this runs last.
 	// Requires a model catalog; only register when one is configured.
