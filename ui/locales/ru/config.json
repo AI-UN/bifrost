@@ -335,6 +335,8 @@
 		"convertTextToChatHelp": "Преобразовывать запросы text completion в chat для моделей, которые поддерживают только chat.",
 		"convertChatToResponses": "Преобразовывать Chat в Responses",
 		"convertChatToResponsesHelp": "Преобразовывать запросы chat completion в responses для моделей, которые поддерживают только responses.",
+		"convertResponsesToChat": "Преобразовывать Responses в Chat",
+		"convertResponsesToChatHelp": "Преобразовывать запросы Responses API в chat completion для моделей, которые поддерживают только chat.",
 		"dropUnsupportedParams": "Отбрасывать неподдерживаемые параметры",
 		"dropUnsupportedParamsHelp": "Отбрасывать неподдерживаемые параметры по списку разрешённых каталога моделей.",
 		"convertUnsupportedParams": "Преобразовывать значения неподдерживаемых параметров",

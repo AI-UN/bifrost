@@ -329,6 +329,8 @@
 		"convertTextToChatHelp": "Convertir solicitudes de terminación de texto en chat para modelos que solo admiten chat.",
 		"convertChatToResponses": "Convertir Chat en Respuestas",
 		"convertChatToResponsesHelp": "Convertir solicitudes de terminación de chat en respuestas para modelos que solo admiten respuestas.",
+		"convertResponsesToChat": "Convertir Respuestas en Chat",
+		"convertResponsesToChatHelp": "Convertir solicitudes de la API Responses en terminaciones de chat para modelos que solo admiten chat.",
 		"dropUnsupportedParams": "Parámetros no soportados",
 		"dropUnsupportedParamsHelp": "Suelte los parámetros no soportados basados en el modelo de catálogo permitido.",
 		"convertUnsupportedParams": "Convertir Valores de Param no compatibles",
