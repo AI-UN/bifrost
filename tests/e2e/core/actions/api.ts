@@ -304,6 +304,72 @@ export const featureFlagsApi = {
 }
 
 /**
+ * Guardrail profile and rule API helpers. Profiles are the detectors (secrets, regex,
+ * presidio); rules select the requests that run them.
+ */
+export const guardrailsApi = {
+  /**
+   * Get one provider's guardrail profiles
+   */
+  async getProfiles(request: APIRequestContext, provider: string) {
+    const response = await request.get(`${API_BASE}/guardrails/${provider}`)
+    return handleResponse<{ name: string; configs: { id: number; name: string }[] }>(
+      response,
+      `Get guardrail ${provider} profiles`
+    )
+  },
+
+  /**
+   * Create a guardrail profile for a provider
+   */
+  async createProfile(request: APIRequestContext, provider: string, data: unknown) {
+    const response = await request.post(`${API_BASE}/guardrails/${provider}`, {
+      data,
+    })
+    return handleResponse<{ config: { id: number; name: string } }>(response, `Create guardrail ${provider} profile`)
+  },
+
+  /**
+   * Delete a guardrail profile (the id travels in the body)
+   */
+  async deleteProfile(request: APIRequestContext, provider: string, id: number) {
+    const response = await request.delete(`${API_BASE}/guardrails/${provider}`, {
+      data: { id },
+    })
+    return response.ok()
+  },
+
+  /**
+   * List guardrail rules
+   */
+  async getRules(request: APIRequestContext) {
+    const response = await request.get(`${API_BASE}/guardrails/rules?limit=100`)
+    return handleResponse<{ count: number; rules: { id: number; name: string }[] }>(
+      response,
+      'Get guardrail rules'
+    )
+  },
+
+  /**
+   * Create a guardrail rule
+   */
+  async createRule(request: APIRequestContext, data: unknown) {
+    const response = await request.post(`${API_BASE}/guardrails/rules`, {
+      data,
+    })
+    return handleResponse<{ rule: { id: number; name: string } }>(response, 'Create guardrail rule')
+  },
+
+  /**
+   * Delete a guardrail rule
+   */
+  async deleteRule(request: APIRequestContext, id: number) {
+    const response = await request.delete(`${API_BASE}/guardrails/rules/${id}`)
+    return response.ok()
+  },
+}
+
+/**
  * Cleanup helper - delete all test data
  */
 export async function cleanupTestData(

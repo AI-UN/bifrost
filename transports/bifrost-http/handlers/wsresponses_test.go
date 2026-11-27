@@ -500,6 +500,7 @@ type fakeOpenAIResponses struct {
 
 	mu         sync.Mutex
 	wsAuth     []string
+	wsFrames   []string
 	httpBodies []string
 }
 
@@ -521,6 +522,7 @@ func (f *fakeOpenAIResponses) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 			}
 			f.mu.Lock()
 			f.wsAuth = append(f.wsAuth, auth)
+			f.wsFrames = append(f.wsFrames, string(data))
 			f.mu.Unlock()
 			if f.refuseEncrypted && strings.Contains(string(data), "encrypted_content") {
 				_ = c.WriteMessage(websocket.TextMessage, []byte(fakeEncryptedRefusal))
@@ -547,8 +549,9 @@ func (f *fakeOpenAIResponses) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 }
 
 // newTwoKeyWSResponsesHarness wires a WSResponsesHandler to fake over a two-key OpenAI account and
-// opens a client session whose relayed messages arrive on the returned channel.
-func newTwoKeyWSResponsesHarness(t *testing.T, fake *fakeOpenAIResponses) (*WSResponsesHandler, *bfws.Session, <-chan string) {
+// opens a client session whose relayed messages arrive on the returned channel. Extra plugins join
+// the pipeline, so a test can observe a turn the way guardrails or logging does.
+func newTwoKeyWSResponsesHarness(t *testing.T, fake *fakeOpenAIResponses, plugins ...schemas.LLMPlugin) (*WSResponsesHandler, *bfws.Session, <-chan string) {
 	t.Helper()
 	SetLogger(bifrost.NewDefaultLogger(schemas.LogLevelError))
 
@@ -574,8 +577,9 @@ func newTwoKeyWSResponsesHarness(t *testing.T, fake *fakeOpenAIResponses) (*WSRe
 	t.Cleanup(clientSrv.Close)
 
 	client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{
-		Account: wsTwoKeyAccount{baseURL: upstreamSrv.URL},
-		Logger:  bifrost.NewDefaultLogger(schemas.LogLevelError),
+		Account:    wsTwoKeyAccount{baseURL: upstreamSrv.URL},
+		Logger:     bifrost.NewDefaultLogger(schemas.LogLevelError),
+		LLMPlugins: plugins,
 	})
 	require.NoError(t, err)
 	t.Cleanup(client.Shutdown)
@@ -728,4 +732,94 @@ func TestConvertEventToRequestKeepsAccessPrograms(t *testing.T) {
 	if _, ok := extras["access_programs"]; ok {
 		t.Errorf("access_programs must be typed, not an extra param")
 	}
+}
+
+// wsGuardrailPlugin publishes the input replacements the guardrails plugin publishes after a
+// redacting profile matched, and can refuse a turn the way an enforcing block profile does.
+type wsGuardrailPlugin struct {
+	replacements map[string]string
+	refuse       *schemas.BifrostError
+}
+
+func (*wsGuardrailPlugin) GetName() string { return "ws-guardrail-test" }
+func (*wsGuardrailPlugin) Cleanup() error  { return nil }
+func (*wsGuardrailPlugin) PreRequestHook(*schemas.BifrostContext, *schemas.BifrostRequest) error {
+	return nil
+}
+
+func (p *wsGuardrailPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
+	if p.refuse != nil {
+		return req, &schemas.LLMPluginShortCircuit{Error: p.refuse}, nil
+	}
+	schemas.SetRedactionDataOnContext(ctx, schemas.RedactionData{
+		LiteralReplacements: schemas.RedactionMapsByPhase{Input: p.replacements},
+	})
+	return req, nil, nil
+}
+
+func (*wsGuardrailPlugin) PostLLMHook(_ *schemas.BifrostContext, resp *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
+	return resp, bifrostErr, nil
+}
+
+// TestResponsesWSNativeFrameCarriesTheRedaction covers the native WS relay: the frame upstream
+// receives is the client's own bytes, so a redaction applied to the typed request never reached
+// the provider. The literal must be gone from the frame the upstream actually got.
+func TestResponsesWSNativeFrameCarriesTheRedaction(t *testing.T) {
+	const secret = "alice@example.com"
+	fake := &fakeOpenAIResponses{}
+	h, session, relayed := newTwoKeyWSResponsesHarness(t, fake, &wsGuardrailPlugin{
+		replacements: map[string]string{secret: "<EMAIL>"},
+	})
+
+	event := `{"type":"response.create","model":"openai/gpt-5.5","input":"my email is ` + secret + `"}`
+	h.handleResponseCreate(session, nil, []byte(event))
+
+	msg := awaitTerminalWSMessage(t, relayed)
+	require.Contains(t, msg, `"response.completed"`, "the turn should complete: %s", msg)
+
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+	require.Len(t, fake.wsFrames, 1, "the turn should take the native WS path")
+	assert.NotContains(t, fake.wsFrames[0], secret, "the unredacted literal reached the provider")
+	assert.Contains(t, fake.wsFrames[0], "<EMAIL>", "the frame upstream receives must carry the redaction")
+}
+
+// TestResponsesWSNativeFrameFailsWhenALiteralSurvives covers a literal the frame rewriter cannot
+// own: `metadata.user_id` is not a content field, so the redaction would leave an uninspected copy
+// on the wire. The turn must fail instead of forwarding it.
+func TestResponsesWSNativeFrameFailsWhenALiteralSurvives(t *testing.T) {
+	const secret = "alice@example.com"
+	fake := &fakeOpenAIResponses{}
+	h, session, relayed := newTwoKeyWSResponsesHarness(t, fake, &wsGuardrailPlugin{
+		replacements: map[string]string{secret: "<EMAIL>"},
+	})
+
+	event := `{"type":"response.create","model":"openai/gpt-5.5","input":"` + secret + `","metadata":{"user_id":"` + secret + `"}}`
+	h.handleResponseCreate(session, nil, []byte(event))
+
+	msg := awaitTerminalWSMessage(t, relayed)
+	require.Contains(t, msg, `"type":"error"`, "the turn must fail: %s", msg)
+	assert.Contains(t, msg, "guardrail", "the failure must name the guardrail, not a provider error")
+
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+	assert.Empty(t, fake.wsFrames, "an unrewritable frame must not reach the provider")
+}
+
+// TestResponsesWSBlockedTurnNeverReachesUpstream checks the other half of the same contract: a
+// profile that blocks short-circuits the pipeline before the frame is written.
+func TestResponsesWSBlockedTurnNeverReachesUpstream(t *testing.T) {
+	fake := &fakeOpenAIResponses{}
+	blockErr := newBifrostError(400, "guardrail_intervention", "blocked by policy api-keys: entity types aws_access_key")
+	h, session, relayed := newTwoKeyWSResponsesHarness(t, fake, &wsGuardrailPlugin{refuse: blockErr})
+
+	h.handleResponseCreate(session, nil, []byte(`{"type":"response.create","model":"openai/gpt-5.5","input":"hello"}`))
+
+	msg := awaitTerminalWSMessage(t, relayed)
+	assert.Contains(t, msg, "guardrail_intervention", "the client must receive the guardrail error: %s", msg)
+
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+	assert.Empty(t, fake.wsFrames, "a blocked turn must not be forwarded upstream")
+	assert.Empty(t, fake.httpBodies, "a blocked turn must not fall back to the HTTP bridge")
 }

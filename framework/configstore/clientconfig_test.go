@@ -3,6 +3,7 @@ package configstore
 import (
 	"encoding/json"
 	"testing"
+	"time"
 
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
@@ -275,4 +276,98 @@ func TestClientConfigUnmarshalConvertResponsesToChat(t *testing.T) {
 	if omitted.Compat.ConvertResponsesToChat {
 		t.Fatal("expected convert_responses_to_chat to default to false when omitted")
 	}
+}
+
+func TestGenerateGuardrailProviderHashIsStableUnderKeyReordering(t *testing.T) {
+	base := tables.TableGuardrailProvider{
+		ID:           7,
+		ProviderName: "presidio",
+		PolicyName:   "support-pii",
+		Enabled:      true,
+		Timeout:      30,
+		ConfigJSON:   `{"analyzer_url":"https://presidio.internal","language":"en","score_threshold":0.5}`,
+	}
+	reordered := base
+	reordered.ConfigJSON = `{"score_threshold":0.5,"language":"en","analyzer_url":"https://presidio.internal"}`
+
+	baseHash, err := GenerateGuardrailProviderHash(base)
+	require.NoError(t, err)
+	reorderedHash, err := GenerateGuardrailProviderHash(reordered)
+	require.NoError(t, err)
+	require.Equal(t, baseHash, reorderedHash, "config key order must not change the hash")
+
+	changed := base
+	changed.Timeout = 60
+	changedHash, err := GenerateGuardrailProviderHash(changed)
+	require.NoError(t, err)
+	require.NotEqual(t, baseHash, changedHash, "a field change must change the hash")
+
+	disabled := base
+	disabled.Enabled = false
+	disabledHash, err := GenerateGuardrailProviderHash(disabled)
+	require.NoError(t, err)
+	require.NotEqual(t, baseHash, disabledHash)
+
+	// Meta fields are not part of the hash.
+	meta := base
+	meta.ConfigHash = "stale"
+	meta.CreatedAt = base.CreatedAt.Add(time.Hour)
+	metaHash, err := GenerateGuardrailProviderHash(meta)
+	require.NoError(t, err)
+	require.Equal(t, baseHash, metaHash)
+}
+
+func TestGenerateGuardrailRuleHashCoversProfileOrder(t *testing.T) {
+	rate := 25
+	base := tables.TableGuardrailRule{
+		ID:                3,
+		Name:              "chat-pii",
+		Description:       "blocks PII",
+		Enabled:           true,
+		Target:            "llm",
+		ApplyTo:           "input",
+		CELExpression:     `request.model == "gpt-4o"`,
+		QueryJSON:         `{"provider":"openai","model":"gpt-4o"}`,
+		SamplingRate:      &rate,
+		Timeout:           30,
+		ProviderConfigIDs: []uint{1, 2},
+	}
+
+	baseHash, err := GenerateGuardrailRuleHash(base)
+	require.NoError(t, err)
+
+	reorderedQuery := base
+	reorderedQuery.QueryJSON = `{"model":"gpt-4o","provider":"openai"}`
+	reorderedQueryHash, err := GenerateGuardrailRuleHash(reorderedQuery)
+	require.NoError(t, err)
+	require.Equal(t, baseHash, reorderedQueryHash, "query key order must not change the hash")
+
+	// The stored JSON and the decoded slice describe the same state.
+	fromStored := base
+	fromStored.ProviderConfigIDs = nil
+	fromStored.ProviderConfigIDsJSON = "[1,2]"
+	storedHash, err := GenerateGuardrailRuleHash(fromStored)
+	require.NoError(t, err)
+	require.Equal(t, baseHash, storedHash)
+
+	// Execution order matters.
+	swapped := base
+	swapped.ProviderConfigIDs = []uint{2, 1}
+	swappedHash, err := GenerateGuardrailRuleHash(swapped)
+	require.NoError(t, err)
+	require.NotEqual(t, baseHash, swappedHash, "profile order must change the hash")
+
+	changed := base
+	changed.SamplingRate = nil
+	changedHash, err := GenerateGuardrailRuleHash(changed)
+	require.NoError(t, err)
+	require.NotEqual(t, baseHash, changedHash)
+
+	// Meta fields are not part of the hash.
+	meta := base
+	meta.ConfigHash = "stale"
+	meta.UpdatedAt = base.UpdatedAt.Add(time.Hour)
+	metaHash, err := GenerateGuardrailRuleHash(meta)
+	require.NoError(t, err)
+	require.Equal(t, baseHash, metaHash)
 }

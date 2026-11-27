@@ -5,6 +5,7 @@ import i18n from "@/lib/i18n";
 import { msg } from "@/lib/i18n/validationMessage";
 import { JOB_ID_PLACEHOLDER } from "@/lib/types/relays";
 import { isRedacted } from "@/lib/utils/validation";
+import type { ParseKeys } from "i18next";
 import { z } from "zod";
 
 // Global error map - turns Zod's default messages into readable, human-friendly ones.
@@ -3304,3 +3305,66 @@ export const modelRouterSheetSchema = modelRouterIdentitySchema
 	});
 
 export type ModelRouterSheetFormSchema = z.infer<typeof modelRouterSheetSchema>;
+
+// ---- Guardrails ----
+
+// Lazy governance-namespace message: same contract as msg(), for keys that live
+// beside the guardrails pages rather than with the shared validation strings.
+const gmsg = (key: ParseKeys<"governance">) => ({ error: () => i18n.t(key, { ns: "governance" }) });
+
+const guardrailTimeout = z
+	.number()
+	.int()
+	.min(1, gmsg("guardrails.common.timeoutInvalid"))
+	.max(3600, gmsg("guardrails.common.timeoutInvalid"));
+
+// Rule sheet: the condition is a CEL expression (the "All requests" shortcut
+// writes true) and the profiles are "<provider>:<id>" references in order.
+export const guardrailRuleFormSchema = z.object({
+	name: z.string().trim().min(1, msg("validation.nameIsRequired")),
+	description: z.string().trim(),
+	enabled: z.boolean(),
+	celExpression: z.string().trim().min(1, msg("validation.fieldRequired")),
+	samplingRate: z.number().int().min(0, gmsg("guardrails.rules.samplingInvalid")).max(100, gmsg("guardrails.rules.samplingInvalid")),
+	timeout: guardrailTimeout,
+	profiles: z.array(z.string()),
+});
+
+export type GuardrailRuleFormValues = z.infer<typeof guardrailRuleFormSchema>;
+
+// Shared by all three profile sheets; each provider adds its own config on top.
+export const guardrailProfileBasicsSchema = z.object({
+	name: z.string().trim().min(1, msg("validation.nameIsRequired")),
+	enabled: z.boolean(),
+	timeout: guardrailTimeout,
+});
+
+export type GuardrailProfileBasicsValues = z.infer<typeof guardrailProfileBasicsSchema>;
+
+export const isHttpURL = (raw: string): boolean => {
+	try {
+		const parsed = new URL(raw.trim());
+		return (parsed.protocol === "http:" || parsed.protocol === "https:") && Boolean(parsed.hostname);
+	} catch {
+		return false;
+	}
+};
+
+// Presidio's analyzer URL is what every request talks to, so it is checked
+// before the round-trip to the server (which repeats the check).
+export const guardrailPresidioConfigSchema = z.object({
+	analyzer_url: z
+		.string()
+		.trim()
+		.min(1, msg("validation.endpointIsRequired"))
+		.refine(isHttpURL, gmsg("guardrails.providers.presidio.urlInvalid")),
+	score_threshold: z.coerce.number().min(0).max(1, gmsg("guardrails.providers.presidio.scoreInvalid")),
+});
+
+// A regex profile with no usable pattern detects nothing, so at least one row
+// must carry a pattern.
+export const guardrailRegexConfigSchema = z.object({
+	patterns: z
+		.array(z.object({ pattern: z.string().trim().min(1, gmsg("guardrails.providers.regex.patternRequired")) }))
+		.min(1, gmsg("guardrails.providers.regex.patternsRequired")),
+});

@@ -367953,6 +367953,832 @@
           }
         }
       ]
+    },
+    {
+      "name": "390. OSS guardrails refuse or redact a secret on every inference route (guardrails-oss)",
+      "description": "The OSS guardrails plugin inspects request input before egress. A profile is a detector (secrets, custom regex, Presidio) and a rule selects which requests run it, chosen by a CEL expression over the request. This folder pins the two enforcing actions of a custom whole-request regex profile on the three inference routes that carry a caller's text: /v1/chat/completions (Chat), /v1/responses (Responses) and /anthropic/v1/messages (Chat after the drop-in conversion). block answers HTTP 400 with a local guardrail_intervention error and never echoes the matched text; redact forwards the request with the value replaced by [TEST_SECRET], which the row proves by asking the model to repeat its input verbatim. Every inference row creates its own regex profile and rule in a prerequest, scoped by CEL to a header value unique to that row, and deletes both in its test script, so a shared gateway runs nothing extra and an aborted run leaves only rules no other request can match. The management row pins that this build rejects the rule settings it does not implement (outputMode monitor) instead of running the rule with different behaviour than it declares. The Anthropic drop-in reports the block in its own error envelope (invalid_request_error), since a guardrail_intervention type has no Anthropic vocabulary.",
+      "item": [
+        {
+          "name": "[EXPECT-400] openai/gpt-4o-mini /v1/chat/completions guardrails block: the secret is refused - guardrails block",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// This row is self-contained: it creates a regex profile and a rule scoped to its own",
+                  "// header value, and its test script deletes both. The CEL scope keeps every other",
+                  "// request on a shared gateway (and other runs) out of inspection.",
+                  "var marker = pm.variables.replaceIn('{{$guid}}');",
+                  "pm.variables.set('guardrailMarker', marker);",
+                  "pm.variables.unset('guardrailProfileId');",
+                  "pm.variables.unset('guardrailRuleId');",
+                  "var BASE = pm.variables.replaceIn('{{baseUrl}}');",
+                  "pm.sendRequest({",
+                  "  url: BASE + '/api/guardrails/regex',",
+                  "  method: 'POST',",
+                  "  header: { 'Content-Type': 'application/json' },",
+                  "  body: { mode: 'raw', raw: JSON.stringify({",
+                  "    name: 'harness-guardrails-' + marker,",
+                  "    enabled: true,",
+                  "    config: { patterns: [{ pattern: 'BFGR-TEST-[0-9]{8}', description: 'Harness test secret', entity_type: 'TEST_SECRET', action: 'block' }] }",
+                  "  }) }",
+                  "}, function (profileErr, profileRes) {",
+                  "  pm.test('guardrails setup: the regex profile is saved', function () {",
+                  "    pm.expect(profileErr).to.equal(null);",
+                  "    pm.expect(profileRes && profileRes.code, profileRes ? profileRes.text() : 'no response').to.equal(200);",
+                  "  });",
+                  "  if (profileErr || !profileRes || profileRes.code !== 200) { pm.execution.skipRequest(); return; }",
+                  "  var profileId = profileRes.json().config.id;",
+                  "  pm.variables.set('guardrailProfileId', profileId);",
+                  "  pm.sendRequest({",
+                  "    url: BASE + '/api/guardrails/rules',",
+                  "    method: 'POST',",
+                  "    header: { 'Content-Type': 'application/json' },",
+                  "    body: { mode: 'raw', raw: JSON.stringify({",
+                  "      name: 'harness-guardrails-' + marker,",
+                  "      enabled: true,",
+                  "      target: 'llm',",
+                  "      applyTo: 'input',",
+                  "      celExpression: 'headers[\"x-guardrail-harness\"] == \"' + marker + '\"',",
+                  "      samplingRate: 100,",
+                  "      timeout: 60,",
+                  "      selectedGuardrailProfiles: ['regex:' + profileId]",
+                  "    }) }",
+                  "  }, function (ruleErr, ruleRes) {",
+                  "    pm.test('guardrails setup: the rule selecting that profile is saved', function () {",
+                  "      pm.expect(ruleErr).to.equal(null);",
+                  "      pm.expect(ruleRes && ruleRes.code, ruleRes ? ruleRes.text() : 'no response').to.equal(200);",
+                  "    });",
+                  "    if (ruleErr || !ruleRes || ruleRes.code !== 200) { pm.execution.skipRequest(); return; }",
+                  "    pm.variables.set('guardrailRuleId', ruleRes.json().rule.id);",
+                  "  });",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('the matching request is refused with 400', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.equal(400);",
+                  "});",
+                  "pm.test('the refusal is a local guardrail block that echoes no matched text', function () {",
+                  "  var body;",
+                  "  try { body = pm.response.json(); } catch (e) { pm.expect.fail('response was not JSON: ' + txt.slice(0, 300)); return; }",
+                  "  pm.expect(body.is_bifrost_error, 'body: ' + txt.slice(0, 300)).to.equal(true);",
+                  "  pm.expect(body.error && body.error.type, 'body: ' + txt.slice(0, 300)).to.equal('guardrail_intervention');",
+                  "  pm.expect(body.error.message, 'body: ' + txt.slice(0, 300)).to.match(/^Blocked by harness-guardrails-[0-9a-f-]+ policy: TEST_SECRET$/);",
+                  "  pm.expect(txt, 'the matched secret was echoed back').to.not.include('BFGR-TEST-');",
+                  "});",
+                  "// Rule first: a profile still referenced by a rule is a 409.",
+                  "var BASE = pm.variables.replaceIn('{{baseUrl}}');",
+                  "var ruleId = pm.variables.get('guardrailRuleId');",
+                  "var profileId = pm.variables.get('guardrailProfileId');",
+                  "function deleteProfile(cb) {",
+                  "  if (!profileId) { cb(); return; }",
+                  "  pm.sendRequest({ url: BASE + '/api/guardrails/regex', method: 'DELETE', header: { 'Content-Type': 'application/json' }, body: { mode: 'raw', raw: JSON.stringify({ id: Number(profileId) }) } }, function (err, res) {",
+                  "    pm.test('guardrails teardown: the profile is deleted', function () {",
+                  "      pm.expect(err).to.equal(null);",
+                  "      pm.expect(res && res.code, res ? res.text() : 'no response').to.equal(200);",
+                  "    });",
+                  "    cb();",
+                  "  });",
+                  "}",
+                  "function deleteRule(cb) {",
+                  "  if (!ruleId) { cb(); return; }",
+                  "  pm.sendRequest({ url: BASE + '/api/guardrails/rules/' + ruleId, method: 'DELETE' }, function (err, res) {",
+                  "    pm.test('guardrails teardown: the rule is deleted', function () {",
+                  "      pm.expect(err).to.equal(null);",
+                  "      pm.expect(res && res.code, res ? res.text() : 'no response').to.equal(200);",
+                  "    });",
+                  "    cb();",
+                  "  });",
+                  "}",
+                  "deleteRule(function () { deleteProfile(function () {}); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-guardrail-harness",
+                "value": "{{guardrailMarker}}"
+              }
+            ],
+            "url": "{{baseUrl}}/v1/chat/completions",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"max_tokens\": 32,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Say OK. BFGR-TEST-12345678\"\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] openai/gpt-4o-mini /v1/responses guardrails block: the secret is refused - guardrails block",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// This row is self-contained: it creates a regex profile and a rule scoped to its own",
+                  "// header value, and its test script deletes both. The CEL scope keeps every other",
+                  "// request on a shared gateway (and other runs) out of inspection.",
+                  "var marker = pm.variables.replaceIn('{{$guid}}');",
+                  "pm.variables.set('guardrailMarker', marker);",
+                  "pm.variables.unset('guardrailProfileId');",
+                  "pm.variables.unset('guardrailRuleId');",
+                  "var BASE = pm.variables.replaceIn('{{baseUrl}}');",
+                  "pm.sendRequest({",
+                  "  url: BASE + '/api/guardrails/regex',",
+                  "  method: 'POST',",
+                  "  header: { 'Content-Type': 'application/json' },",
+                  "  body: { mode: 'raw', raw: JSON.stringify({",
+                  "    name: 'harness-guardrails-' + marker,",
+                  "    enabled: true,",
+                  "    config: { patterns: [{ pattern: 'BFGR-TEST-[0-9]{8}', description: 'Harness test secret', entity_type: 'TEST_SECRET', action: 'block' }] }",
+                  "  }) }",
+                  "}, function (profileErr, profileRes) {",
+                  "  pm.test('guardrails setup: the regex profile is saved', function () {",
+                  "    pm.expect(profileErr).to.equal(null);",
+                  "    pm.expect(profileRes && profileRes.code, profileRes ? profileRes.text() : 'no response').to.equal(200);",
+                  "  });",
+                  "  if (profileErr || !profileRes || profileRes.code !== 200) { pm.execution.skipRequest(); return; }",
+                  "  var profileId = profileRes.json().config.id;",
+                  "  pm.variables.set('guardrailProfileId', profileId);",
+                  "  pm.sendRequest({",
+                  "    url: BASE + '/api/guardrails/rules',",
+                  "    method: 'POST',",
+                  "    header: { 'Content-Type': 'application/json' },",
+                  "    body: { mode: 'raw', raw: JSON.stringify({",
+                  "      name: 'harness-guardrails-' + marker,",
+                  "      enabled: true,",
+                  "      target: 'llm',",
+                  "      applyTo: 'input',",
+                  "      celExpression: 'headers[\"x-guardrail-harness\"] == \"' + marker + '\"',",
+                  "      samplingRate: 100,",
+                  "      timeout: 60,",
+                  "      selectedGuardrailProfiles: ['regex:' + profileId]",
+                  "    }) }",
+                  "  }, function (ruleErr, ruleRes) {",
+                  "    pm.test('guardrails setup: the rule selecting that profile is saved', function () {",
+                  "      pm.expect(ruleErr).to.equal(null);",
+                  "      pm.expect(ruleRes && ruleRes.code, ruleRes ? ruleRes.text() : 'no response').to.equal(200);",
+                  "    });",
+                  "    if (ruleErr || !ruleRes || ruleRes.code !== 200) { pm.execution.skipRequest(); return; }",
+                  "    pm.variables.set('guardrailRuleId', ruleRes.json().rule.id);",
+                  "  });",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('the matching request is refused with 400', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.equal(400);",
+                  "});",
+                  "pm.test('the refusal is a local guardrail block that echoes no matched text', function () {",
+                  "  var body;",
+                  "  try { body = pm.response.json(); } catch (e) { pm.expect.fail('response was not JSON: ' + txt.slice(0, 300)); return; }",
+                  "  pm.expect(body.is_bifrost_error, 'body: ' + txt.slice(0, 300)).to.equal(true);",
+                  "  pm.expect(body.error && body.error.type, 'body: ' + txt.slice(0, 300)).to.equal('guardrail_intervention');",
+                  "  pm.expect(body.error.message, 'body: ' + txt.slice(0, 300)).to.match(/^Blocked by harness-guardrails-[0-9a-f-]+ policy: TEST_SECRET$/);",
+                  "  pm.expect(txt, 'the matched secret was echoed back').to.not.include('BFGR-TEST-');",
+                  "});",
+                  "// Rule first: a profile still referenced by a rule is a 409.",
+                  "var BASE = pm.variables.replaceIn('{{baseUrl}}');",
+                  "var ruleId = pm.variables.get('guardrailRuleId');",
+                  "var profileId = pm.variables.get('guardrailProfileId');",
+                  "function deleteProfile(cb) {",
+                  "  if (!profileId) { cb(); return; }",
+                  "  pm.sendRequest({ url: BASE + '/api/guardrails/regex', method: 'DELETE', header: { 'Content-Type': 'application/json' }, body: { mode: 'raw', raw: JSON.stringify({ id: Number(profileId) }) } }, function (err, res) {",
+                  "    pm.test('guardrails teardown: the profile is deleted', function () {",
+                  "      pm.expect(err).to.equal(null);",
+                  "      pm.expect(res && res.code, res ? res.text() : 'no response').to.equal(200);",
+                  "    });",
+                  "    cb();",
+                  "  });",
+                  "}",
+                  "function deleteRule(cb) {",
+                  "  if (!ruleId) { cb(); return; }",
+                  "  pm.sendRequest({ url: BASE + '/api/guardrails/rules/' + ruleId, method: 'DELETE' }, function (err, res) {",
+                  "    pm.test('guardrails teardown: the rule is deleted', function () {",
+                  "      pm.expect(err).to.equal(null);",
+                  "      pm.expect(res && res.code, res ? res.text() : 'no response').to.equal(200);",
+                  "    });",
+                  "    cb();",
+                  "  });",
+                  "}",
+                  "deleteRule(function () { deleteProfile(function () {}); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-guardrail-harness",
+                "value": "{{guardrailMarker}}"
+              }
+            ],
+            "url": "{{baseUrl}}/v1/responses",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"max_output_tokens\": 32,\n  \"input\": \"Say OK. BFGR-TEST-12345678\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] anthropic/claude-haiku-4-5 /anthropic/v1/messages guardrails block: the secret is refused - guardrails block",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// This row is self-contained: it creates a regex profile and a rule scoped to its own",
+                  "// header value, and its test script deletes both. The CEL scope keeps every other",
+                  "// request on a shared gateway (and other runs) out of inspection.",
+                  "var marker = pm.variables.replaceIn('{{$guid}}');",
+                  "pm.variables.set('guardrailMarker', marker);",
+                  "pm.variables.unset('guardrailProfileId');",
+                  "pm.variables.unset('guardrailRuleId');",
+                  "var BASE = pm.variables.replaceIn('{{baseUrl}}');",
+                  "pm.sendRequest({",
+                  "  url: BASE + '/api/guardrails/regex',",
+                  "  method: 'POST',",
+                  "  header: { 'Content-Type': 'application/json' },",
+                  "  body: { mode: 'raw', raw: JSON.stringify({",
+                  "    name: 'harness-guardrails-' + marker,",
+                  "    enabled: true,",
+                  "    config: { patterns: [{ pattern: 'BFGR-TEST-[0-9]{8}', description: 'Harness test secret', entity_type: 'TEST_SECRET', action: 'block' }] }",
+                  "  }) }",
+                  "}, function (profileErr, profileRes) {",
+                  "  pm.test('guardrails setup: the regex profile is saved', function () {",
+                  "    pm.expect(profileErr).to.equal(null);",
+                  "    pm.expect(profileRes && profileRes.code, profileRes ? profileRes.text() : 'no response').to.equal(200);",
+                  "  });",
+                  "  if (profileErr || !profileRes || profileRes.code !== 200) { pm.execution.skipRequest(); return; }",
+                  "  var profileId = profileRes.json().config.id;",
+                  "  pm.variables.set('guardrailProfileId', profileId);",
+                  "  pm.sendRequest({",
+                  "    url: BASE + '/api/guardrails/rules',",
+                  "    method: 'POST',",
+                  "    header: { 'Content-Type': 'application/json' },",
+                  "    body: { mode: 'raw', raw: JSON.stringify({",
+                  "      name: 'harness-guardrails-' + marker,",
+                  "      enabled: true,",
+                  "      target: 'llm',",
+                  "      applyTo: 'input',",
+                  "      celExpression: 'headers[\"x-guardrail-harness\"] == \"' + marker + '\"',",
+                  "      samplingRate: 100,",
+                  "      timeout: 60,",
+                  "      selectedGuardrailProfiles: ['regex:' + profileId]",
+                  "    }) }",
+                  "  }, function (ruleErr, ruleRes) {",
+                  "    pm.test('guardrails setup: the rule selecting that profile is saved', function () {",
+                  "      pm.expect(ruleErr).to.equal(null);",
+                  "      pm.expect(ruleRes && ruleRes.code, ruleRes ? ruleRes.text() : 'no response').to.equal(200);",
+                  "    });",
+                  "    if (ruleErr || !ruleRes || ruleRes.code !== 200) { pm.execution.skipRequest(); return; }",
+                  "    pm.variables.set('guardrailRuleId', ruleRes.json().rule.id);",
+                  "  });",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('the matching request is refused with 400', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.equal(400);",
+                  "});",
+                  "pm.test('the refusal is a guardrail block in the Anthropic error envelope, echoing no matched text', function () {",
+                  "  var body;",
+                  "  try { body = pm.response.json(); } catch (e) { pm.expect.fail('response was not JSON: ' + txt.slice(0, 300)); return; }",
+                  "  pm.expect(body.type, 'body: ' + txt.slice(0, 300)).to.equal('error');",
+                  "  pm.expect(body.error && body.error.type, 'body: ' + txt.slice(0, 300)).to.equal('invalid_request_error');",
+                  "  pm.expect(body.error.message, 'body: ' + txt.slice(0, 300)).to.match(/Blocked by harness-guardrails-[0-9a-f-]+ policy: TEST_SECRET/);",
+                  "  pm.expect(txt, 'the matched secret was echoed back').to.not.include('BFGR-TEST-');",
+                  "});",
+                  "// Rule first: a profile still referenced by a rule is a 409.",
+                  "var BASE = pm.variables.replaceIn('{{baseUrl}}');",
+                  "var ruleId = pm.variables.get('guardrailRuleId');",
+                  "var profileId = pm.variables.get('guardrailProfileId');",
+                  "function deleteProfile(cb) {",
+                  "  if (!profileId) { cb(); return; }",
+                  "  pm.sendRequest({ url: BASE + '/api/guardrails/regex', method: 'DELETE', header: { 'Content-Type': 'application/json' }, body: { mode: 'raw', raw: JSON.stringify({ id: Number(profileId) }) } }, function (err, res) {",
+                  "    pm.test('guardrails teardown: the profile is deleted', function () {",
+                  "      pm.expect(err).to.equal(null);",
+                  "      pm.expect(res && res.code, res ? res.text() : 'no response').to.equal(200);",
+                  "    });",
+                  "    cb();",
+                  "  });",
+                  "}",
+                  "function deleteRule(cb) {",
+                  "  if (!ruleId) { cb(); return; }",
+                  "  pm.sendRequest({ url: BASE + '/api/guardrails/rules/' + ruleId, method: 'DELETE' }, function (err, res) {",
+                  "    pm.test('guardrails teardown: the rule is deleted', function () {",
+                  "      pm.expect(err).to.equal(null);",
+                  "      pm.expect(res && res.code, res ? res.text() : 'no response').to.equal(200);",
+                  "    });",
+                  "    cb();",
+                  "  });",
+                  "}",
+                  "deleteRule(function () { deleteProfile(function () {}); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-guardrail-harness",
+                "value": "{{guardrailMarker}}"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              }
+            ],
+            "url": "{{baseUrl}}/anthropic/v1/messages",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-haiku-4-5\",\n  \"max_tokens\": 64,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Say OK. BFGR-TEST-12345678\"\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "openai/gpt-4o-mini /v1/chat/completions guardrails redact: the secret reaches the provider as a placeholder - guardrails redact",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// This row is self-contained: it creates a regex profile and a rule scoped to its own",
+                  "// header value, and its test script deletes both. The CEL scope keeps every other",
+                  "// request on a shared gateway (and other runs) out of inspection.",
+                  "var marker = pm.variables.replaceIn('{{$guid}}');",
+                  "pm.variables.set('guardrailMarker', marker);",
+                  "pm.variables.unset('guardrailProfileId');",
+                  "pm.variables.unset('guardrailRuleId');",
+                  "var BASE = pm.variables.replaceIn('{{baseUrl}}');",
+                  "pm.sendRequest({",
+                  "  url: BASE + '/api/guardrails/regex',",
+                  "  method: 'POST',",
+                  "  header: { 'Content-Type': 'application/json' },",
+                  "  body: { mode: 'raw', raw: JSON.stringify({",
+                  "    name: 'harness-guardrails-' + marker,",
+                  "    enabled: true,",
+                  "    config: { patterns: [{ pattern: 'BFGR-TEST-[0-9]{8}', description: 'Harness test secret', entity_type: 'TEST_SECRET', action: 'redact' }] }",
+                  "  }) }",
+                  "}, function (profileErr, profileRes) {",
+                  "  pm.test('guardrails setup: the regex profile is saved', function () {",
+                  "    pm.expect(profileErr).to.equal(null);",
+                  "    pm.expect(profileRes && profileRes.code, profileRes ? profileRes.text() : 'no response').to.equal(200);",
+                  "  });",
+                  "  if (profileErr || !profileRes || profileRes.code !== 200) { pm.execution.skipRequest(); return; }",
+                  "  var profileId = profileRes.json().config.id;",
+                  "  pm.variables.set('guardrailProfileId', profileId);",
+                  "  pm.sendRequest({",
+                  "    url: BASE + '/api/guardrails/rules',",
+                  "    method: 'POST',",
+                  "    header: { 'Content-Type': 'application/json' },",
+                  "    body: { mode: 'raw', raw: JSON.stringify({",
+                  "      name: 'harness-guardrails-' + marker,",
+                  "      enabled: true,",
+                  "      target: 'llm',",
+                  "      applyTo: 'input',",
+                  "      celExpression: 'headers[\"x-guardrail-harness\"] == \"' + marker + '\"',",
+                  "      samplingRate: 100,",
+                  "      timeout: 60,",
+                  "      selectedGuardrailProfiles: ['regex:' + profileId]",
+                  "    }) }",
+                  "  }, function (ruleErr, ruleRes) {",
+                  "    pm.test('guardrails setup: the rule selecting that profile is saved', function () {",
+                  "      pm.expect(ruleErr).to.equal(null);",
+                  "      pm.expect(ruleRes && ruleRes.code, ruleRes ? ruleRes.text() : 'no response').to.equal(200);",
+                  "    });",
+                  "    if (ruleErr || !ruleRes || ruleRes.code !== 200) { pm.execution.skipRequest(); return; }",
+                  "    pm.variables.set('guardrailRuleId', ruleRes.json().rule.id);",
+                  "  });",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('the redacted request is served', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.equal(200);",
+                  "});",
+                  "// The prompt asks the model to repeat its input verbatim, so the echoed turn shows what",
+                  "// the provider was actually sent: the placeholder in place of the secret.",
+                  "pm.test('the provider was sent the placeholder, never the secret', function () {",
+                  "  pm.expect(txt, 'the secret reached the provider unredacted: ' + txt.slice(0, 400)).to.not.include('BFGR-TEST-');",
+                  "  pm.expect(txt, 'the model should echo the placeholder it was sent: ' + txt.slice(0, 400)).to.include('[TEST_SECRET]');",
+                  "});",
+                  "// Rule first: a profile still referenced by a rule is a 409.",
+                  "var BASE = pm.variables.replaceIn('{{baseUrl}}');",
+                  "var ruleId = pm.variables.get('guardrailRuleId');",
+                  "var profileId = pm.variables.get('guardrailProfileId');",
+                  "function deleteProfile(cb) {",
+                  "  if (!profileId) { cb(); return; }",
+                  "  pm.sendRequest({ url: BASE + '/api/guardrails/regex', method: 'DELETE', header: { 'Content-Type': 'application/json' }, body: { mode: 'raw', raw: JSON.stringify({ id: Number(profileId) }) } }, function (err, res) {",
+                  "    pm.test('guardrails teardown: the profile is deleted', function () {",
+                  "      pm.expect(err).to.equal(null);",
+                  "      pm.expect(res && res.code, res ? res.text() : 'no response').to.equal(200);",
+                  "    });",
+                  "    cb();",
+                  "  });",
+                  "}",
+                  "function deleteRule(cb) {",
+                  "  if (!ruleId) { cb(); return; }",
+                  "  pm.sendRequest({ url: BASE + '/api/guardrails/rules/' + ruleId, method: 'DELETE' }, function (err, res) {",
+                  "    pm.test('guardrails teardown: the rule is deleted', function () {",
+                  "      pm.expect(err).to.equal(null);",
+                  "      pm.expect(res && res.code, res ? res.text() : 'no response').to.equal(200);",
+                  "    });",
+                  "    cb();",
+                  "  });",
+                  "}",
+                  "deleteRule(function () { deleteProfile(function () {}); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-guardrail-harness",
+                "value": "{{guardrailMarker}}"
+              }
+            ],
+            "url": "{{baseUrl}}/v1/chat/completions",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"max_tokens\": 32,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with exactly this text and nothing else: BFGR-TEST-12345678\"\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "openai/gpt-4o-mini /v1/responses guardrails redact: the secret reaches the provider as a placeholder - guardrails redact",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// This row is self-contained: it creates a regex profile and a rule scoped to its own",
+                  "// header value, and its test script deletes both. The CEL scope keeps every other",
+                  "// request on a shared gateway (and other runs) out of inspection.",
+                  "var marker = pm.variables.replaceIn('{{$guid}}');",
+                  "pm.variables.set('guardrailMarker', marker);",
+                  "pm.variables.unset('guardrailProfileId');",
+                  "pm.variables.unset('guardrailRuleId');",
+                  "var BASE = pm.variables.replaceIn('{{baseUrl}}');",
+                  "pm.sendRequest({",
+                  "  url: BASE + '/api/guardrails/regex',",
+                  "  method: 'POST',",
+                  "  header: { 'Content-Type': 'application/json' },",
+                  "  body: { mode: 'raw', raw: JSON.stringify({",
+                  "    name: 'harness-guardrails-' + marker,",
+                  "    enabled: true,",
+                  "    config: { patterns: [{ pattern: 'BFGR-TEST-[0-9]{8}', description: 'Harness test secret', entity_type: 'TEST_SECRET', action: 'redact' }] }",
+                  "  }) }",
+                  "}, function (profileErr, profileRes) {",
+                  "  pm.test('guardrails setup: the regex profile is saved', function () {",
+                  "    pm.expect(profileErr).to.equal(null);",
+                  "    pm.expect(profileRes && profileRes.code, profileRes ? profileRes.text() : 'no response').to.equal(200);",
+                  "  });",
+                  "  if (profileErr || !profileRes || profileRes.code !== 200) { pm.execution.skipRequest(); return; }",
+                  "  var profileId = profileRes.json().config.id;",
+                  "  pm.variables.set('guardrailProfileId', profileId);",
+                  "  pm.sendRequest({",
+                  "    url: BASE + '/api/guardrails/rules',",
+                  "    method: 'POST',",
+                  "    header: { 'Content-Type': 'application/json' },",
+                  "    body: { mode: 'raw', raw: JSON.stringify({",
+                  "      name: 'harness-guardrails-' + marker,",
+                  "      enabled: true,",
+                  "      target: 'llm',",
+                  "      applyTo: 'input',",
+                  "      celExpression: 'headers[\"x-guardrail-harness\"] == \"' + marker + '\"',",
+                  "      samplingRate: 100,",
+                  "      timeout: 60,",
+                  "      selectedGuardrailProfiles: ['regex:' + profileId]",
+                  "    }) }",
+                  "  }, function (ruleErr, ruleRes) {",
+                  "    pm.test('guardrails setup: the rule selecting that profile is saved', function () {",
+                  "      pm.expect(ruleErr).to.equal(null);",
+                  "      pm.expect(ruleRes && ruleRes.code, ruleRes ? ruleRes.text() : 'no response').to.equal(200);",
+                  "    });",
+                  "    if (ruleErr || !ruleRes || ruleRes.code !== 200) { pm.execution.skipRequest(); return; }",
+                  "    pm.variables.set('guardrailRuleId', ruleRes.json().rule.id);",
+                  "  });",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('the redacted request is served', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.equal(200);",
+                  "});",
+                  "// The prompt asks the model to repeat its input verbatim, so the echoed turn shows what",
+                  "// the provider was actually sent: the placeholder in place of the secret.",
+                  "pm.test('the provider was sent the placeholder, never the secret', function () {",
+                  "  pm.expect(txt, 'the secret reached the provider unredacted: ' + txt.slice(0, 400)).to.not.include('BFGR-TEST-');",
+                  "  pm.expect(txt, 'the model should echo the placeholder it was sent: ' + txt.slice(0, 400)).to.include('[TEST_SECRET]');",
+                  "});",
+                  "// Rule first: a profile still referenced by a rule is a 409.",
+                  "var BASE = pm.variables.replaceIn('{{baseUrl}}');",
+                  "var ruleId = pm.variables.get('guardrailRuleId');",
+                  "var profileId = pm.variables.get('guardrailProfileId');",
+                  "function deleteProfile(cb) {",
+                  "  if (!profileId) { cb(); return; }",
+                  "  pm.sendRequest({ url: BASE + '/api/guardrails/regex', method: 'DELETE', header: { 'Content-Type': 'application/json' }, body: { mode: 'raw', raw: JSON.stringify({ id: Number(profileId) }) } }, function (err, res) {",
+                  "    pm.test('guardrails teardown: the profile is deleted', function () {",
+                  "      pm.expect(err).to.equal(null);",
+                  "      pm.expect(res && res.code, res ? res.text() : 'no response').to.equal(200);",
+                  "    });",
+                  "    cb();",
+                  "  });",
+                  "}",
+                  "function deleteRule(cb) {",
+                  "  if (!ruleId) { cb(); return; }",
+                  "  pm.sendRequest({ url: BASE + '/api/guardrails/rules/' + ruleId, method: 'DELETE' }, function (err, res) {",
+                  "    pm.test('guardrails teardown: the rule is deleted', function () {",
+                  "      pm.expect(err).to.equal(null);",
+                  "      pm.expect(res && res.code, res ? res.text() : 'no response').to.equal(200);",
+                  "    });",
+                  "    cb();",
+                  "  });",
+                  "}",
+                  "deleteRule(function () { deleteProfile(function () {}); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-guardrail-harness",
+                "value": "{{guardrailMarker}}"
+              }
+            ],
+            "url": "{{baseUrl}}/v1/responses",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"max_output_tokens\": 32,\n  \"input\": \"Reply with exactly this text and nothing else: BFGR-TEST-12345678\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "anthropic/claude-haiku-4-5 /anthropic/v1/messages guardrails redact: the secret reaches the provider as a placeholder - guardrails redact",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// This row is self-contained: it creates a regex profile and a rule scoped to its own",
+                  "// header value, and its test script deletes both. The CEL scope keeps every other",
+                  "// request on a shared gateway (and other runs) out of inspection.",
+                  "var marker = pm.variables.replaceIn('{{$guid}}');",
+                  "pm.variables.set('guardrailMarker', marker);",
+                  "pm.variables.unset('guardrailProfileId');",
+                  "pm.variables.unset('guardrailRuleId');",
+                  "var BASE = pm.variables.replaceIn('{{baseUrl}}');",
+                  "pm.sendRequest({",
+                  "  url: BASE + '/api/guardrails/regex',",
+                  "  method: 'POST',",
+                  "  header: { 'Content-Type': 'application/json' },",
+                  "  body: { mode: 'raw', raw: JSON.stringify({",
+                  "    name: 'harness-guardrails-' + marker,",
+                  "    enabled: true,",
+                  "    config: { patterns: [{ pattern: 'BFGR-TEST-[0-9]{8}', description: 'Harness test secret', entity_type: 'TEST_SECRET', action: 'redact' }] }",
+                  "  }) }",
+                  "}, function (profileErr, profileRes) {",
+                  "  pm.test('guardrails setup: the regex profile is saved', function () {",
+                  "    pm.expect(profileErr).to.equal(null);",
+                  "    pm.expect(profileRes && profileRes.code, profileRes ? profileRes.text() : 'no response').to.equal(200);",
+                  "  });",
+                  "  if (profileErr || !profileRes || profileRes.code !== 200) { pm.execution.skipRequest(); return; }",
+                  "  var profileId = profileRes.json().config.id;",
+                  "  pm.variables.set('guardrailProfileId', profileId);",
+                  "  pm.sendRequest({",
+                  "    url: BASE + '/api/guardrails/rules',",
+                  "    method: 'POST',",
+                  "    header: { 'Content-Type': 'application/json' },",
+                  "    body: { mode: 'raw', raw: JSON.stringify({",
+                  "      name: 'harness-guardrails-' + marker,",
+                  "      enabled: true,",
+                  "      target: 'llm',",
+                  "      applyTo: 'input',",
+                  "      celExpression: 'headers[\"x-guardrail-harness\"] == \"' + marker + '\"',",
+                  "      samplingRate: 100,",
+                  "      timeout: 60,",
+                  "      selectedGuardrailProfiles: ['regex:' + profileId]",
+                  "    }) }",
+                  "  }, function (ruleErr, ruleRes) {",
+                  "    pm.test('guardrails setup: the rule selecting that profile is saved', function () {",
+                  "      pm.expect(ruleErr).to.equal(null);",
+                  "      pm.expect(ruleRes && ruleRes.code, ruleRes ? ruleRes.text() : 'no response').to.equal(200);",
+                  "    });",
+                  "    if (ruleErr || !ruleRes || ruleRes.code !== 200) { pm.execution.skipRequest(); return; }",
+                  "    pm.variables.set('guardrailRuleId', ruleRes.json().rule.id);",
+                  "  });",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('the redacted request is served', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.equal(200);",
+                  "});",
+                  "// The prompt asks the model to repeat its input verbatim, so the echoed turn shows what",
+                  "// the provider was actually sent: the placeholder in place of the secret.",
+                  "pm.test('the provider was sent the placeholder, never the secret', function () {",
+                  "  pm.expect(txt, 'the secret reached the provider unredacted: ' + txt.slice(0, 400)).to.not.include('BFGR-TEST-');",
+                  "  pm.expect(txt, 'the model should echo the placeholder it was sent: ' + txt.slice(0, 400)).to.include('[TEST_SECRET]');",
+                  "});",
+                  "// Rule first: a profile still referenced by a rule is a 409.",
+                  "var BASE = pm.variables.replaceIn('{{baseUrl}}');",
+                  "var ruleId = pm.variables.get('guardrailRuleId');",
+                  "var profileId = pm.variables.get('guardrailProfileId');",
+                  "function deleteProfile(cb) {",
+                  "  if (!profileId) { cb(); return; }",
+                  "  pm.sendRequest({ url: BASE + '/api/guardrails/regex', method: 'DELETE', header: { 'Content-Type': 'application/json' }, body: { mode: 'raw', raw: JSON.stringify({ id: Number(profileId) }) } }, function (err, res) {",
+                  "    pm.test('guardrails teardown: the profile is deleted', function () {",
+                  "      pm.expect(err).to.equal(null);",
+                  "      pm.expect(res && res.code, res ? res.text() : 'no response').to.equal(200);",
+                  "    });",
+                  "    cb();",
+                  "  });",
+                  "}",
+                  "function deleteRule(cb) {",
+                  "  if (!ruleId) { cb(); return; }",
+                  "  pm.sendRequest({ url: BASE + '/api/guardrails/rules/' + ruleId, method: 'DELETE' }, function (err, res) {",
+                  "    pm.test('guardrails teardown: the rule is deleted', function () {",
+                  "      pm.expect(err).to.equal(null);",
+                  "      pm.expect(res && res.code, res ? res.text() : 'no response').to.equal(200);",
+                  "    });",
+                  "    cb();",
+                  "  });",
+                  "}",
+                  "deleteRule(function () { deleteProfile(function () {}); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-guardrail-harness",
+                "value": "{{guardrailMarker}}"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              }
+            ],
+            "url": "{{baseUrl}}/anthropic/v1/messages",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-haiku-4-5\",\n  \"max_tokens\": 64,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with exactly this text and nothing else: BFGR-TEST-12345678\"\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] openai guardrails rules API: outputMode monitor is refused, not silently ignored - guardrails unsupported settings",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('a rule asking for output monitoring is refused with 400', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.equal(400);",
+                  "});",
+                  "// The rule is not created either way, so a caller that keeps the field cannot end up with",
+                  "// a rule that runs with different behaviour than it declares.",
+                  "pm.test('the refusal names the unsupported setting', function () {",
+                  "  var body;",
+                  "  try { body = pm.response.json(); } catch (e) { pm.expect.fail('response was not JSON: ' + txt.slice(0, 300)); return; }",
+                  "  pm.expect(body.error && body.error.message, 'body: ' + txt.slice(0, 300)).to.include('output_mode');",
+                  "  pm.expect(body.error.message, 'body: ' + txt.slice(0, 300)).to.include('monitor');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/api/guardrails/rules",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"harness-guardrails-unsupported-{{$guid}}\",\n  \"enabled\": true,\n  \"target\": \"llm\",\n  \"applyTo\": \"input\",\n  \"celExpression\": \"true\",\n  \"samplingRate\": 100,\n  \"timeout\": 60,\n  \"outputMode\": \"monitor\",\n  \"selectedGuardrailProfiles\": []\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        }
+      ]
     }
   ]
 }

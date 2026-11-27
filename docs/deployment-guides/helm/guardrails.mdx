@@ -4,8 +4,12 @@ description: "Configure guardrails providers and rules in Bifrost Helm deploymen
 icon: "shield-halved"
 ---
 
+<Warning>
+This fork's OSS build includes the Guardrails v1 subset: Secrets Detection backed by Gitleaks, Custom Regex, and the Microsoft Presidio Analyzer, with `detect_only`, `block`, and `redact` actions, `redaction_mode` `runtime` only, strategies `replace`, `mask`, and `hash`, `target` `llm` only, and `apply_to` `input` only. Rule fields outside that subset (`output_mode`, `input_timing`, `evaluation_mode`, `profile_execution_mode: chained`, `stream_replay_event_interval_ms`, any other `apply_to` or `target`, any other `redaction_mode`) are rejected with HTTP `400` when set to a non-default value. The other providers documented on this page require the enterprise image.
+</Warning>
+
 <Note>
-Guardrails are an **enterprise-only** feature. They require the enterprise Bifrost image.
+Upstream Bifrost ships Guardrails as an **enterprise-only** feature that requires the enterprise Bifrost image. This fork's OSS build adds the v1 subset described in the warning above; every other provider on this page still requires the enterprise image.
 </Note>
 
 <Note>
@@ -523,6 +527,7 @@ Any field marked **env.\* supported** below accepts a bare `"env.VAR_NAME"` stri
 | `redaction_strategy` | No | **Plain only** | `replace` \| `mask` \| `hash` (default: `replace`) |
 | `redaction_mode` | No | **Plain only** | `runtime` \| `logs_only` \| `runtime_reversible` (default: `runtime`) |
 | `timeout` | No | **Plain only** | Execution timeout in seconds |
+| `fail_open` | No | **Plain only** | Fork-only: forward the request unscanned with a warning when the Analyzer fails (default: `false`) |
 
 ### Azure AI Language PII
 

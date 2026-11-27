@@ -12,6 +12,7 @@ import (
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/fips140"
+	"crypto/hkdf"
 	"crypto/hmac"
 	"crypto/pbkdf2"
 	"crypto/rand"
@@ -62,12 +63,16 @@ var (
 type keySet struct {
 	// write encrypts new values and is tried first on decrypt.
 	write []byte
-	// passphrase is kept so the other key is derived only if a value needs it.
+	// passphrase is kept so the other key and the subkey stretch are derived only if needed.
 	passphrase string
 	// deriveOther derives the key that write is not.
 	deriveOther func(string) []byte
 	otherOnce   sync.Once
 	other       []byte
+	// stretched caches the password-stretched key HKDF consumes, derived at most once per
+	// passphrase.
+	stretchOnce sync.Once
+	stretched   []byte
 }
 
 // otherKey returns the non-write key, deriving it on first use.
@@ -324,6 +329,57 @@ func Key() []byte {
 	out := make([]byte, len(set.write))
 	copy(out, set.write)
 	return out
+}
+
+// subkeySalt is the fixed HKDF salt for domain-separated subkeys. It cannot be random: every
+// node must derive the same subkey from the passphrase alone.
+var subkeySalt = []byte("bifrost-subkey-hkdf-sha256-salt-v1")
+
+// subkeyStretchSalt domain-separates the password stretch that feeds subkey HKDF. Fixed for the
+// same reason as subkeySalt.
+var subkeyStretchSalt = []byte("bifrost-subkey-stretch-pbkdf2-sha256-salt-v1")
+
+// stretchedKey returns the PBKDF2-HMAC-SHA-256 key HKDF consumes, derived once per passphrase.
+// HKDF is fast, so feeding it the raw passphrase would make any logged subkey a cheap offline
+// check for passphrase guesses; this stretch costs the same as the data-key KDF. PBKDF2 rather
+// than Argon2id keeps the value identical in FIPS and standard builds, so a persisted
+// subkey-derived value stays readable if the deployment's mode changes.
+func (k *keySet) stretchedKey() []byte {
+	k.stretchOnce.Do(func() {
+		key, err := pbkdf2.Key(sha256.New, k.passphrase, subkeyStretchSalt, keyDerivationIterations, 32)
+		if err != nil {
+			// Unreachable for a 32-byte output; a caller relying on the subkey must not be
+			// handed a raw-passphrase derivation instead.
+			logger.Error("encrypt: failed to stretch the passphrase for subkey derivation: %v", err)
+			return
+		}
+		k.stretched = key
+	})
+	return k.stretched
+}
+
+// DeriveSubkey returns a 32-byte HKDF-SHA-256 subkey derived from the deployment passphrase,
+// separated from other uses by label. It returns nil when encryption is disabled, and when the
+// passphrase cannot be stretched. The result is stable across restarts and independent of which
+// data-key KDF the build uses, so callers may persist values derived from it.
+func DeriveSubkey(label string) []byte {
+	set := keys.Load()
+	if set == nil {
+		return nil
+	}
+	stretched := set.stretchedKey()
+	if len(stretched) == 0 {
+		return nil
+	}
+	key, err := hkdf.Key(sha256.New, stretched, subkeySalt, label, 32)
+	if err != nil {
+		// The only failure is an out-of-range length, and 32 is valid; a strict mode may still
+		// refuse, and a caller persisting derived values must fail rather than be handed a
+		// weaker key.
+		logger.Error("encrypt: failed to derive the %q subkey: %v", label, err)
+		return nil
+	}
+	return key
 }
 
 // HashSHA256 returns a deterministic hex-encoded SHA-256 hash of the input.

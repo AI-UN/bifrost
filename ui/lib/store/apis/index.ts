@@ -9,6 +9,7 @@ export * from "./configApi";
 export * from "./featureFlagsApi";
 export * from "./devApi";
 export * from "./governanceApi";
+export * from "./guardrailsApi";
 export * from "./logsApi";
 export * from "./mcpApi";
 export * from "./mcpLogsApi";
