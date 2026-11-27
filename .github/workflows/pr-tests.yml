@@ -90,6 +90,8 @@ jobs:
             api.deepseek.com:443
             api.elevenlabs.io:443
             api.fireworks.ai:443
+            api.z.ai:443
+            open.bigmodel.cn:443
             api.github.com:443
             api.githubcopilot.com:443
             api.business.githubcopilot.com:443
@@ -243,6 +245,8 @@ jobs:
           GITHUB_COPILOT_API_KEY: ${{ secrets.GITHUB_COPILOT_API_KEY }}
           COHERE_API_KEY: ${{ secrets.COHERE_API_KEY }}
           FIREWORKS_API_KEY: ${{ secrets.FIREWORKS_API_KEY }}
+          ZAI_API_KEY: ${{ secrets.ZAI_API_KEY }}
+          ZHIPU_API_KEY: ${{ secrets.ZHIPU_API_KEY }}
           SILICONFLOW_API_KEY: ${{ secrets.SILICONFLOW_API_KEY }}
           SILICONFLOWCN_API_KEY: ${{ secrets.SILICONFLOWCN_API_KEY }}
           DEEPINFRA_API_KEY: ${{ secrets.DEEPINFRA_API_KEY }}
