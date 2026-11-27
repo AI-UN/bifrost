@@ -53,6 +53,7 @@ ModelProvider:
     - baseten
     - kimchi
     - soniox
+    - cpa
     - siliconflow
     - siliconflow-cn
     - zai

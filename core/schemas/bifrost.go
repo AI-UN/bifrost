@@ -98,6 +98,7 @@ const (
 	Baseten       ModelProvider = "baseten"
 	Kimchi        ModelProvider = "kimchi"
 	Soniox        ModelProvider = "soniox"
+	CPA           ModelProvider = "cpa"
 	SiliconFlow   ModelProvider = "siliconflow"
 	SiliconFlowCN ModelProvider = "siliconflow-cn"
 )
@@ -111,6 +112,7 @@ var SupportedBaseProviders = []ModelProvider{
 	OpenAI,
 	HuggingFace,
 	Replicate,
+	CPA,
 	ZAI,
 	Zhipu,
 	Typesafe,
@@ -162,6 +164,7 @@ var StandardProviders = []ModelProvider{
 	Baseten,
 	Kimchi,
 	Soniox,
+	CPA,
 	SiliconFlow,
 	SiliconFlowCN,
 }
