@@ -386,9 +386,23 @@ func (p *Plugin) inspect(ctx *schemas.BifrostContext, req *schemas.BifrostReques
 	}
 
 	if len(blocking) > 0 {
-		// A blocked request never reaches a provider, so it is not rewritten; its redaction map
-		// is still published before the verdict, or the incident record holds the originals.
-		p.publishRedactions(ctx, replacements)
+		// A blocked request never reaches a provider, but the logging plugin records its input
+		// after this hook, so the blocked values are masked too and the whole map is applied to
+		// the request in place: an incident record must never hold the secret it was refused for.
+		for _, outcome := range blocking {
+			for _, hit := range outcome.block {
+				if _, ok := replacements[hit.literal]; hit.literal != "" && !ok {
+					replacements[hit.literal] = placeholder(hit.entityType, StrategyReplace, hit.literal, p.hmacKey)
+				}
+			}
+		}
+		if len(replacements) > 0 {
+			applied := segments.rewrite(replacements)
+			// Best effort: the request is refused either way; this only keeps a passthrough or
+			// raw body that a log records free of the values.
+			_ = p.syncRawBody(ctx, req, applied)
+			p.publishRedactions(ctx, applied)
+		}
 		for _, outcome := range blocking {
 			p.recordIntervention(ctx, outcome)
 		}

@@ -230,8 +230,8 @@ func TestBlockShortCircuitError(t *testing.T) {
 	request := chatRequest("contact alex@example.com now")
 	require.NoError(t, plugin.PreRequestHook(ctx, request))
 
-	// A blocked request is not rewritten, and the input is left as the caller sent it.
-	require.Equal(t, "contact alex@example.com now", *request.ChatRequest.Input[0].Content.ContentStr)
+	// The blocked value is masked in place so the logged input never holds it.
+	require.Equal(t, "contact [EMAIL_ADDRESS] now", *request.ChatRequest.Input[0].Content.ContentStr)
 
 	_, shortCircuit, err := plugin.PreLLMHook(ctx, request)
 	require.NoError(t, err)
@@ -424,12 +424,15 @@ func TestBlockingProfileStillPublishesRedactions(t *testing.T) {
 	require.NoError(t, plugin.PreRequestHook(ctx, request))
 	require.NotNil(t, verdictForRequest(ctx))
 
-	// One policy blocked, so nothing is rewritten, but the phone number another policy redacts
-	// must not reach the log as the caller sent it.
+	// The request is refused, but the logging plugin records its input after this hook: both the
+	// blocked email and the phone number another policy redacts must be gone from it and mapped.
 	redaction, ok := schemas.RedactionDataFromContext(ctx)
 	require.True(t, ok)
-	require.Equal(t, map[string]string{"+447700900123": "[PHONE_NUMBER]"}, redaction.LiteralReplacements.Input)
-	require.Equal(t, input, *request.ChatRequest.Input[0].Content.ContentStr)
+	require.Contains(t, redaction.LiteralReplacements.Input, "alex@example.com")
+	require.Equal(t, "[PHONE_NUMBER]", redaction.LiteralReplacements.Input["+447700900123"])
+	logged := *request.ChatRequest.Input[0].Content.ContentStr
+	require.NotContains(t, logged, "alex@example.com")
+	require.NotContains(t, logged, "+447700900123")
 }
 
 // countingDetector counts calls, so a test can tell a re-inspection from a plain replay.
