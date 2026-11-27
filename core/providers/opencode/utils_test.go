@@ -394,3 +394,94 @@ func TestResolveOpencodeSessionConcurrentSameContext(t *testing.T) {
 		t.Fatalf("first = %q, want namespaced UUID", first)
 	}
 }
+
+// TestResolveOpencodeSessionNamespacesPerUser verifies a request attributed to
+// a user rather than a virtual key is still scoped, so two users of the same
+// deployment sending the same session do not collide upstream.
+func TestResolveOpencodeSessionNamespacesPerUser(t *testing.T) {
+	build := func(userID string) *schemas.BifrostContext {
+		ctx := newTestOpencodeCtx(t, map[string]string{OpencodeSessionHeader: "shared-session"})
+		ctx.SetGrant(&opencodeStubGrant{identity: &opencodeStubIdentity{userID: userID}})
+		return ctx
+	}
+
+	user1 := ResolveOpencodeSession(build("user-1"))
+	user2 := ResolveOpencodeSession(build("user-2"))
+	if user1 != "user-1:shared-session" {
+		t.Errorf("ResolveOpencodeSession() = %q, want %q", user1, "user-1:shared-session")
+	}
+	if user1 == user2 {
+		t.Errorf("ResolveOpencodeSession() produced the same value for two users: %q", user1)
+	}
+}
+
+// TestResolveOpencodeSessionUnscopedValueCannotImpersonateScope verifies an
+// unscoped value is escaped, so a caller with no identity cannot send the exact
+// string a scoped request produces and borrow another tenant's session.
+func TestResolveOpencodeSessionUnscopedValueCannotImpersonateScope(t *testing.T) {
+	scoped := newTestOpencodeCtx(t, map[string]string{OpencodeSessionHeader: "conversation-a"})
+	setOpencodeVirtualKey(scoped, "vk-1")
+	want := ResolveOpencodeSession(scoped)
+
+	unscoped := newTestOpencodeCtx(t, map[string]string{OpencodeSessionHeader: "vk-1:conversation-a"})
+	if got := ResolveOpencodeSession(unscoped); got == want {
+		t.Fatalf("unscoped session %q collides with scoped session %q", got, want)
+	}
+}
+
+// TestResolveOpencodeSessionForwardedHeader verifies the x-bf-eh- escape hatch
+// (BifrostContextKeyExtraHeaders) is a session source behind the client's own
+// header, normalized the same way, and never overrides the raw header.
+func TestResolveOpencodeSessionForwardedHeader(t *testing.T) {
+	t.Run("used when the raw header is absent", func(t *testing.T) {
+		ctx := newTestOpencodeCtx(t, nil)
+		ctx.SetValue(schemas.BifrostContextKeyExtraHeaders, map[string][]string{
+			OpencodeSessionHeader: {"forwarded-sess"},
+		})
+		setOpencodeVirtualKey(ctx, "vk-1")
+		if got := ResolveOpencodeSession(ctx); got != "vk-1:forwarded-sess" {
+			t.Errorf("ResolveOpencodeSession() = %q, want %q", got, "vk-1:forwarded-sess")
+		}
+	})
+
+	t.Run("case-variant key is found", func(t *testing.T) {
+		ctx := newTestOpencodeCtx(t, nil)
+		ctx.SetValue(schemas.BifrostContextKeyExtraHeaders, map[string][]string{
+			"X-Opencode-Session": {"forwarded-sess"},
+		})
+		if got := ResolveOpencodeSession(ctx); got != "forwarded-sess" {
+			t.Errorf("ResolveOpencodeSession() = %q, want %q", got, "forwarded-sess")
+		}
+	})
+
+	t.Run("raw client header wins over the forwarded copy", func(t *testing.T) {
+		ctx := newTestOpencodeCtx(t, map[string]string{OpencodeSessionHeader: "raw-sess"})
+		ctx.SetValue(schemas.BifrostContextKeyExtraHeaders, map[string][]string{
+			OpencodeSessionHeader: {"forwarded-sess"},
+		})
+		if got := ResolveOpencodeSession(ctx); got != "raw-sess" {
+			t.Errorf("ResolveOpencodeSession() = %q, want the raw client header", got)
+		}
+	})
+
+	t.Run("invalid entry falls through to the next value", func(t *testing.T) {
+		ctx := newTestOpencodeCtx(t, nil)
+		ctx.SetValue(schemas.BifrostContextKeyExtraHeaders, map[string][]string{
+			OpencodeSessionHeader: {"evil\r\nInjected: x", "forwarded-sess"},
+		})
+		if got := ResolveOpencodeSession(ctx); got != "forwarded-sess" {
+			t.Errorf("ResolveOpencodeSession() = %q, want the usable forwarded value", got)
+		}
+	})
+
+	t.Run("all invalid falls back to the session id", func(t *testing.T) {
+		ctx := newTestOpencodeCtx(t, nil)
+		ctx.SetValue(schemas.BifrostContextKeyExtraHeaders, map[string][]string{
+			OpencodeSessionHeader: {"abc\x01def"},
+		})
+		ctx.SetValue(schemas.BifrostContextKeySessionID, "bf-sess-123")
+		if got := ResolveOpencodeSession(ctx); got != "bf-sess-123" {
+			t.Errorf("ResolveOpencodeSession() = %q, want %q", got, "bf-sess-123")
+		}
+	})
+}
