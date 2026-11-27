@@ -60,6 +60,7 @@ var videoProviders = map[schemas.ModelProvider]struct{}{
 	schemas.MachGen:       {},
 	schemas.SiliconFlow:   {},
 	schemas.SiliconFlowCN: {},
+	schemas.DeepInfra:     {},
 }
 
 // VideoRetriever is the provider call the video settler needs: given a job row,

@@ -166,6 +166,7 @@ const PROVIDER_KEYWORDS = {
   // Not a provider: MCP management rows (OAuth discovery, client registration) name no model, so no
   // provider fork selects them. PROVIDER=mcp runs them, together with FEATURE to narrow the set.
   mcp: ["mcp"],
+  deepinfra: ["deepinfra/", "api.deepinfra.com"],
   siliconflow: ["siliconflow", "siliconflow.com"],
   "siliconflow-cn": ["siliconflow-cn", "siliconflow.cn"],
 };
@@ -361,6 +362,10 @@ const itemMatchesProvider = (item, ancestorNames, provider = PROVIDER) => {
   const isMantle = haystack.includes("bedrock_mantle") || haystack.includes("bedrock-mantle");
   if (provider === "bedrock_mantle") return isMantle;
   if (isMantle) return false;
+  // DeepInfra routes deepseek and Qwen model IDs through its own namespace and host;
+  // keep these requests in the DeepInfra partition rather than another model family.
+  const isDeepInfra = haystack.includes("deepinfra/") || haystack.includes("api.deepinfra.com");
+  if (isDeepInfra) return provider === "deepinfra";
   // SiliconFlow China rows (model "siliconflow-cn/...", host api.siliconflow.cn) contain the
   // substring "siliconflow", so they'd otherwise be claimed by the international siliconflow
   // partition too - same collision class as bedrock/bedrock_mantle above. Route them
