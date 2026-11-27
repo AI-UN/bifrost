@@ -103,15 +103,15 @@ type RegexConfig struct {
 // PresidioConfig is a presidio profile's config. FailOpen is this fork's extension: it
 // decides whether an unreachable Analyzer blocks (default) or only logs.
 type PresidioConfig struct {
-	AnalyzerURL       string           `json:"analyzer_url"`
+	AnalyzerURL       string             `json:"analyzer_url"`
 	APIKey            *schemas.SecretVar `json:"api_key,omitempty"`
-	Language          string           `json:"language,omitempty"`
-	ScoreThreshold    *float64         `json:"score_threshold,omitempty"`
-	Entities          []string         `json:"entities,omitempty"`
-	Action            string           `json:"action,omitempty"`
-	RedactionStrategy string           `json:"redaction_strategy,omitempty"`
-	RedactionMode     string           `json:"redaction_mode,omitempty"`
-	FailOpen          bool             `json:"fail_open,omitempty"`
+	Language          string             `json:"language,omitempty"`
+	ScoreThreshold    *float64           `json:"score_threshold,omitempty"`
+	Entities          []string           `json:"entities,omitempty"`
+	Action            string             `json:"action,omitempty"`
+	RedactionStrategy string             `json:"redaction_strategy,omitempty"`
+	RedactionMode     string             `json:"redaction_mode,omitempty"`
+	FailOpen          bool               `json:"fail_open,omitempty"`
 }
 
 // SecretRuleInfo describes one gitleaks rule, for the rules picker.
