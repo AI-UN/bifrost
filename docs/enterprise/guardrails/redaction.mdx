@@ -4,6 +4,10 @@ description: "Configure Bifrost-managed guardrail redaction for runtime payloads
 icon: "eraser"
 ---
 
+<Warning>
+This fork's OSS build ships Guardrails v1 only, so `redaction_mode` accepts `runtime` alone. `logs_only` and `runtime_reversible` — and therefore the reveal flow described below — are rejected with HTTP `400` here and remain enterprise features. Redaction rewrites the input phase of `llm` rules for Secrets Detection, Custom Regex, and the Microsoft Presidio Analyzer; responses and streams are not rewritten. The other providers listed above require the enterprise image.
+</Warning>
+
 ## Overview
 
 Guardrail redaction lets Bifrost rewrite sensitive text detected by supported guardrail providers instead of only detecting or blocking it.
@@ -64,6 +68,10 @@ Strategies control the replacement value used by the non-reversible `runtime` mo
 | `hash` | `alex@example.com` -> `[EMAIL:8c7dd922ad47494f]` | Uses a deterministic short hash for the detected value. |
 
 Reversible modes use numbered placeholders such as `[EMAIL-1]` so a permitted user can reveal the original values in Bifrost logs.
+
+<Note>
+In this fork's OSS build, `hash` computes HMAC-SHA256 keyed from the deployment encryption key, in the same `[EMAIL:<16 hex>]` format. Without an encryption key, Bifrost generates a random per-process key, so the same value hashes differently after a restart.
+</Note>
 
 ## Redaction Modes
 

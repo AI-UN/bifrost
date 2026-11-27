@@ -4,6 +4,10 @@ description: "Enterprise-grade content safety and security validation with Promp
 icon: "road-barrier"
 ---
 
+<Warning>
+This fork's OSS build includes Guardrails v1: Secrets Detection backed by Gitleaks, Custom Regex, and the Microsoft Presidio Analyzer. Supported actions are `detect_only`, `block`, and `redact`; `redaction_mode` accepts `runtime` only; strategies are `replace`, `mask`, and `hash`; and only the input phase of `llm` rules is checked, so responses and streams are never scanned. Rule fields v1 does not support — `output_mode`, `input_timing`, `evaluation_mode`, `profile_execution_mode: chained`, `stream_replay_event_interval_ms`, `apply_to` other than `input`, `target` other than `llm`, and `redaction_mode` other than `runtime` — are rejected with HTTP `400` when set to a non-default value instead of being ignored. Every other provider described on this page requires the enterprise image. Guardrail rules are evaluated **before routing**: the CEL `model` and `provider` variables hold the values the request asked for (the requested tier), not a destination a routing rule, catalog lookup or fallback picks afterwards, and a request the guardrail blocks is never routed.
+</Warning>
+
 ## Overview
 
 **Guardrails** in Bifrost provide enterprise-grade content safety, security validation, and policy enforcement for LLM traffic and MCP tool executions. The system validates inputs and outputs in real-time against your specified policies, ensuring responsible AI deployment with protection against harmful content, prompt injection, PII leakage, credential leakage, and policy violations.
@@ -190,6 +194,30 @@ flowchart TB
 
 ---
 
+## Request Text Coverage
+
+Guardrails scan the text fields of each request shape. In this fork's OSS build that scan happens once, in the input phase, before the request reaches the provider.
+
+| Request | Scanned text |
+|---------|--------------|
+| Chat completions | Message content, content-block text, tool-call arguments, and tool-message content |
+| Responses, including `/v1/messages` and token counting | Message content, text blocks, function-call arguments, and function output |
+| Text completion | The prompt string and each prompt array entry |
+| Embeddings | Each text input item |
+| Image generation and editing, speech | The prompt or input text |
+| Passthrough | The raw request body as one segment |
+
+| Not scanned | Why |
+|-------------|-----|
+| Image and audio bytes | Guardrails evaluate text, not media |
+| Batch inputs supplied as file IDs | The gateway never sees the file contents |
+
+<Note>
+Passthrough requests can only be redacted when a raw-body text rewriter is registered for them. Without one, Bifrost blocks instead of forwarding a body it cannot rewrite.
+</Note>
+
+---
+
 ## MCP Guardrails
 
 MCP guardrails protect the actual tool-execution boundary, not merely the tool call proposed by an LLM.
@@ -294,6 +322,10 @@ Guardrail Rules are custom policies that define when and how content validation 
 | `input_timing` | enum | No | `pre_call` (default) finishes the input check before the request is sent; `parallel` runs it alongside the LLM call, holds the response for the verdict, and enforces only blocks. `parallel` requires target `llm` and `apply_to` `input` or `both` |
 | `provider_config_ids` | array | No | IDs of profiles to use for evaluation, in execution order |
 | `profile_execution_mode` | enum | No | `independent` (default) gives every linked profile the original payload; `chained` gives each profile the payload as earlier profiles redacted or transformed it. See [Chained Profile Execution](#chained-profile-execution) |
+
+<Note>
+In this fork's OSS build a rule is selected with a CEL text field rather than the visual builder, and only the CEL expression is evaluated. The dashboard's **All requests** quick action writes `true`, which is the expression the examples below use.
+</Note>
 
 ### Creating Rules
 
@@ -1066,3 +1098,7 @@ Trimmed example:
 ```
 
 Use `type` (or `error.type`) equal to `guardrail_intervention` to tell guardrail blocks apart from other `400` errors.
+
+<Note>
+In this fork's OSS build a blocked request always answers HTTP `400` with error type `guardrail_intervention`. The message names the policy and the detected entity types only; matched text is never echoed back in the error.
+</Note>
