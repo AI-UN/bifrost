@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/maximhq/bifrost/core/providers/anthropic"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -688,4 +689,107 @@ func TestResponsesStream_GatewayToolSearch(t *testing.T) {
 	require.NotNil(t, final)
 	require.NotNil(t, final.Usage)
 	assert.Equal(t, 30, final.Usage.InputTokens, "usage summed across turns")
+}
+
+func TestResponsesStream_GatewayToolSearchAnthropicStopOrder(t *testing.T) {
+	toolTurn := func(id, name, arguments string) http.HandlerFunc {
+		frames := []string{
+			fmt.Sprintf(`{"type":"message_start","message":{"id":%q,"type":"message","role":"assistant","model":"deepseek-v4-flash","content":[],"usage":{"input_tokens":10,"output_tokens":0}}}`, "msg_"+id),
+			fmt.Sprintf(`{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":%q,"name":%q,"input":{}}}`, "toolu_"+id, name),
+			fmt.Sprintf(`{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":%q}}`, arguments),
+			`{"type":"content_block_stop","index":0}`,
+			`{"type":"message_delta","delta":{"stop_reason":"tool_use","stop_sequence":null},"usage":{"output_tokens":3}}`,
+			`{"type":"message_stop"}`,
+		}
+		return func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "text/event-stream")
+			for _, frame := range frames {
+				fmt.Fprintf(w, "event: %s\ndata: %s\n\n", gjson.Get(frame, "type").String(), frame)
+			}
+		}
+	}
+	for _, searchFirst := range []bool{false, true} {
+		t.Run(fmt.Sprintf("search first=%t", searchFirst), func(t *testing.T) {
+			var turns atomic.Int32
+			search := toolTurn("search", "bifrost_tool_search", `{"query":"weather"}`)
+			answer := toolTurn("answer", "lookup_city", `{"city":"Tokyo"}`)
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if turns.Add(1) == 1 && searchFirst {
+					search(w, r)
+					return
+				}
+				answer(w, r)
+			}))
+			defer upstream.Close()
+			account := NewMockAccount()
+			configureUpstream(account, schemas.DeepSeek, "deepseek-key", upstream.URL, 0)
+			account.SetKeysForProvider(schemas.DeepSeek, []schemas.Key{{
+				ID: "deepseek-key", Value: *schemas.NewSecretVar("test-key"), Models: schemas.WhiteList{"*"},
+				Weight: 100, UseAnthropicEndpoints: schemas.Ptr(true),
+			}})
+			client := newStreamTestClient(t, account)
+			ctx := schemas.NewBifrostContext(context.Background(), time.Now().Add(10*time.Second))
+			ctx.SetValue(schemas.BifrostContextKeyIntegrationType, "anthropic")
+			defer anthropic.ReleaseStreamPromptUsage(ctx)
+			req := deferredToolsResponsesRequest(schemas.DeepSeek, "deepseek-v4-flash").ResponsesRequest
+			stream, bifrostErr := client.ResponsesStreamRequest(ctx, req)
+			if bifrostErr != nil {
+				t.Fatalf("open stream: %s", bifrostErr.Error.Message)
+			}
+			var shape []anthropic.AnthropicStreamEventType
+			var arguments strings.Builder
+			for chunk := range stream {
+				require.Nil(t, chunk.BifrostError)
+				for _, event := range anthropic.ToAnthropicResponsesStreamResponse(ctx, chunk.BifrostResponsesStreamResponse) {
+					shape = append(shape, event.Type)
+					switch event.Type {
+					case anthropic.AnthropicStreamEventTypeContentBlockStart:
+						require.NotNil(t, event.ContentBlock)
+						assert.Equal(t, anthropic.AnthropicContentBlockTypeToolUse, event.ContentBlock.Type)
+						assert.Equal(t, schemas.Ptr("lookup_city"), event.ContentBlock.Name)
+					case anthropic.AnthropicStreamEventTypeContentBlockDelta:
+						if event.Delta.PartialJSON != nil {
+							arguments.WriteString(*event.Delta.PartialJSON)
+						}
+					case anthropic.AnthropicStreamEventTypeMessageDelta:
+						assert.Equal(t, schemas.Ptr(anthropic.AnthropicStopReasonToolUse), event.Delta.StopReason)
+					}
+				}
+			}
+			assert.Equal(t, []anthropic.AnthropicStreamEventType{
+				anthropic.AnthropicStreamEventTypeMessageStart,
+				anthropic.AnthropicStreamEventTypeContentBlockStart,
+				anthropic.AnthropicStreamEventTypeContentBlockDelta,
+				anthropic.AnthropicStreamEventTypeContentBlockStop,
+				anthropic.AnthropicStreamEventTypeMessageDelta,
+				anthropic.AnthropicStreamEventTypeMessageStop,
+			}, shape)
+			assert.JSONEq(t, `{"city":"Tokyo"}`, arguments.String())
+			if searchFirst {
+				assert.EqualValues(t, 2, turns.Load(), "the hidden search runs before the client tool")
+			}
+		})
+	}
+}
+
+func BenchmarkInjectedResponsesStream_AnthropicToolCall(b *testing.B) {
+	set := &injectedToolSet{}
+	r := &responsesEvents{respID: "resp_1"}
+	delta := r.ev("message_delta")
+	delta.Response = &schemas.BifrostResponsesResponse{StopReason: schemas.Ptr("tool_calls")}
+	events := []*schemas.BifrostResponsesStreamResponse{
+		r.created(),
+		r.item(schemas.ResponsesStreamResponseTypeOutputItemAdded, 0, responsesFunctionCall("c1", "lookup_city")),
+		r.argsDelta(0, "fc_c1", `{"city":"Tokyo"}`),
+		r.item(schemas.ResponsesStreamResponseTypeOutputItemDone, 0, responsesFunctionCall("c1", "lookup_city")),
+		delta,
+		r.completed(10),
+	}
+	b.ReportAllocs()
+	for b.Loop() {
+		s := newInjectedResponsesStream(set)
+		for i, event := range events {
+			s.onEvent(event, i == len(events)-1)
+		}
+	}
 }
