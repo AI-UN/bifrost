@@ -166,6 +166,8 @@ const PROVIDER_KEYWORDS = {
   // Not a provider: MCP management rows (OAuth discovery, client registration) name no model, so no
   // provider fork selects them. PROVIDER=mcp runs them, together with FEATURE to narrow the set.
   mcp: ["mcp"],
+  zai: ["zai/", "z.ai"],
+  zhipu: ["zhipu", "bigmodel.cn"],
   deepinfra: ["deepinfra/", "api.deepinfra.com"],
   siliconflow: ["siliconflow", "siliconflow.com"],
   "siliconflow-cn": ["siliconflow-cn", "siliconflow.cn"],
@@ -362,6 +364,14 @@ const itemMatchesProvider = (item, ancestorNames, provider = PROVIDER) => {
   const isMantle = haystack.includes("bedrock_mantle") || haystack.includes("bedrock-mantle");
   if (provider === "bedrock_mantle") return isMantle;
   if (isMantle) return false;
+  // Z.AI and Zhipu share the GLM model family; keep their regional endpoint rows exclusive
+  // so ZAI rows carrying Zhipu documentation terms do not enter the Zhipu provider shard.
+  const isZhipu = haystack.includes("zhipu") || haystack.includes("bigmodel.cn");
+  if (provider === "zhipu") return isZhipu;
+  if (isZhipu) return false;
+  const isZAI = haystack.includes("zai/") || haystack.includes("z.ai");
+  if (provider === "zai") return isZAI;
+  if (isZAI) return false;
   // DeepInfra routes deepseek and Qwen model IDs through its own namespace and host;
   // keep these requests in the DeepInfra partition rather than another model family.
   const isDeepInfra = haystack.includes("deepinfra/") || haystack.includes("api.deepinfra.com");
