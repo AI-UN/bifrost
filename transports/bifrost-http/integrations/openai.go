@@ -4365,6 +4365,14 @@ func parseContainerFileCreateMultipartRequest(ctx *fasthttp.RequestCtx, req inte
 	return nil
 }
 
+// RewriteOpenAIResponsesRawRequestBody applies runtime literal replacements to an OpenAI Responses
+// JSON body and verifies each patched field. Exported for the native WebSocket Responses relay,
+// which forwards the client's own `response.create` frame instead of a normalized request, so a
+// redaction applied to the typed request has to be carried into the frame upstream receives.
+func RewriteOpenAIResponsesRawRequestBody(rawBody []byte, replacements map[string]string) ([]byte, error) {
+	return rewriteRawRequestTextFields(rawBody, replacements, collectOpenAIResponsesRawRequestTextPaths)
+}
+
 // openAIRawRequestBodyRewriter returns the raw-body rewriter for an OpenAI request kind whose JSON body carries text a
 // plugin may change, or nil when the kind carries none or is sent as a multipart upload.
 func openAIRawRequestBodyRewriter(requestType schemas.RequestType) schemas.RawRequestBodyTextRewriter {
