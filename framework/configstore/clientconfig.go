@@ -2306,6 +2306,74 @@ func GenerateRoutingRuleHash(r tables.TableRoutingRule) (string, error) {
 	return hex.EncodeToString(hash.Sum(nil)), nil
 }
 
+// canonicalGuardrailConfigJSON re-encodes a provider config with sorted keys, so key order in
+// config.json never changes the hash. An unparseable config hashes its raw bytes.
+func canonicalGuardrailConfigJSON(raw string) []byte {
+	if strings.TrimSpace(raw) == "" {
+		return nil
+	}
+	var config map[string]any
+	if err := sonic.UnmarshalString(raw, &config); err != nil {
+		return []byte(raw)
+	}
+	canonical, err := schemas.MarshalSorted(config)
+	if err != nil {
+		return []byte(raw)
+	}
+	return canonical
+}
+
+// GenerateGuardrailProviderHash generates a SHA256 hash for a guardrail profile.
+// Skips: ConfigHash, EncryptionStatus, CreatedAt, UpdatedAt (dynamic/meta fields).
+func GenerateGuardrailProviderHash(p tables.TableGuardrailProvider) (string, error) {
+	hash := sha256.New()
+	hash.Write([]byte(strconv.FormatUint(uint64(p.ID), 10)))
+	hash.Write([]byte(p.ProviderName))
+	hash.Write([]byte(p.PolicyName))
+	if p.Enabled {
+		hash.Write([]byte("enabled:true"))
+	} else {
+		hash.Write([]byte("enabled:false"))
+	}
+	hash.Write([]byte(strconv.Itoa(p.Timeout)))
+	hash.Write(canonicalGuardrailConfigJSON(p.ConfigJSON))
+	return hex.EncodeToString(hash.Sum(nil)), nil
+}
+
+// GenerateGuardrailRuleHash generates a SHA256 hash for a guardrail rule.
+// Skips: ConfigHash, CreatedAt, UpdatedAt (dynamic/meta fields).
+func GenerateGuardrailRuleHash(r tables.TableGuardrailRule) (string, error) {
+	hash := sha256.New()
+	hash.Write([]byte(strconv.FormatUint(uint64(r.ID), 10)))
+	hash.Write([]byte(r.Name))
+	hash.Write([]byte(r.Description))
+	if r.Enabled {
+		hash.Write([]byte("enabled:true"))
+	} else {
+		hash.Write([]byte("enabled:false"))
+	}
+	hash.Write([]byte(r.Target))
+	hash.Write([]byte(r.ApplyTo))
+	hash.Write([]byte(r.CELExpression))
+	hash.Write(canonicalGuardrailConfigJSON(r.QueryJSON))
+	if r.SamplingRate != nil {
+		hash.Write([]byte(strconv.Itoa(*r.SamplingRate)))
+	}
+	hash.Write([]byte(strconv.Itoa(r.Timeout)))
+	// Execution order matters, so the IDs hash as an ordered list: the decoded slice when the
+	// caller set it (config-origin), else the stored JSON.
+	if r.ProviderConfigIDs != nil {
+		data, err := sonic.Marshal(r.ProviderConfigIDs)
+		if err != nil {
+			return "", err
+		}
+		hash.Write(data)
+	} else {
+		hash.Write([]byte(r.ProviderConfigIDsJSON))
+	}
+	return hex.EncodeToString(hash.Sum(nil)), nil
+}
+
 // GeneratePricingOverrideHash generates a SHA256 hash for a pricing override.
 // Skips: CreatedAt, UpdatedAt, ConfigHash (dynamic/meta fields).
 func GeneratePricingOverrideHash(p tables.TablePricingOverride) (string, error) {

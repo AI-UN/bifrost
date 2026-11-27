@@ -184,6 +184,13 @@ func (s *RDBConfigStore) EncryptPlaintextRows(ctx context.Context) error {
 	}
 	totalEncrypted += count
 
+	// guardrail_providers
+	count, err = s.encryptPlaintextGuardrailProviders(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to encrypt guardrail provider configs: %w", err)
+	}
+	totalEncrypted += count
+
 	if totalEncrypted > 0 && s.logger != nil {
 		s.logger.Info(fmt.Sprintf("encrypted %d plaintext rows across all tables", totalEncrypted))
 	}
@@ -541,6 +548,37 @@ func (s *RDBConfigStore) encryptPlaintextRelays(ctx context.Context) (int, error
 		cursor = names[len(names)-1]
 		n, err := encryptClaimedRows(ctx, s, names, "(encryption_status = ? OR encryption_status IS NULL OR encryption_status = '') AND name = ?",
 			func(r *tables.TableRelay) string { return r.EncryptionStatus })
+		count += n
+		if err != nil {
+			return count, err
+		}
+	}
+	return count, nil
+}
+
+// encryptPlaintextGuardrailProviders finds guardrail_providers rows with plaintext
+// encryption status and re-saves them one row per transaction. The
+// TableGuardrailProvider.BeforeSave hook encrypts ConfigJSON.
+func (s *RDBConfigStore) encryptPlaintextGuardrailProviders(ctx context.Context) (int, error) {
+	var count int
+	var cursor uint
+	for {
+		// Read ids only, so no provider config is decrypted (or vault ref resolved) twice.
+		var ids []uint
+		if err := s.DB().WithContext(ctx).
+			Model(&tables.TableGuardrailProvider{}).
+			Where("(encryption_status = ? OR encryption_status IS NULL OR encryption_status = '') AND id > ?", encryptionStatusPlainText, cursor).
+			Order("id").
+			Limit(encryptionBatchSize).
+			Pluck("id", &ids).Error; err != nil {
+			return count, err
+		}
+		if len(ids) == 0 {
+			break
+		}
+		cursor = ids[len(ids)-1]
+		n, err := encryptClaimedRows(ctx, s, ids, "(encryption_status = ? OR encryption_status IS NULL OR encryption_status = '') AND id = ?",
+			func(r *tables.TableGuardrailProvider) string { return r.EncryptionStatus })
 		count += n
 		if err != nil {
 			return count, err
